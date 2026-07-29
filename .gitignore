@@ -1,0 +1,14 @@
+CLAUDE.md
+docs/
+build/
+*.obj
+*.exe
+*.pdb
+*.ilk
+*.lib
+*.exp
+.vs/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
