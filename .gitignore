@@ -12,3 +12,5 @@ CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
 Makefile
+wintun/
+build.bat

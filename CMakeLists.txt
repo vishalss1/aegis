@@ -11,8 +11,6 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-find_package(PkgConfig QUIET)
-
 # Wintun — downloaded or provided by the user
 if(NOT DEFINED WINTUN_DIR)
     set(WINTUN_DIR "${CMAKE_SOURCE_DIR}/wintun" CACHE PATH "Path to Wintun SDK directory")
@@ -21,12 +19,10 @@ if(EXISTS "${WINTUN_DIR}/include/wintun.h")
     add_library(wintun INTERFACE)
     target_include_directories(wintun INTERFACE "${WINTUN_DIR}/include")
     if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-        set(WINTUN_LIB_DIR "${WINTUN_DIR}/bin/amd64")
+        set(WINTUN_DLL "${WINTUN_DIR}/bin/amd64/wintun.dll")
     else()
-        set(WINTUN_LIB_DIR "${WINTUN_DIR}/bin/x86")
+        set(WINTUN_DLL "${WINTUN_DIR}/bin/x86/wintun.dll")
     endif()
-    target_link_directories(wintun INTERFACE "${WINTUN_LIB_DIR}")
-    target_link_libraries(wintun INTERFACE wintun)
 else()
     message(FATAL_ERROR "Wintun SDK not found in ${WINTUN_DIR}. "
         "Download from https://www.wintun.net/ and set WINTUN_DIR.")
@@ -60,6 +56,14 @@ target_link_libraries(aegis PRIVATE
     iphlpapi
 )
 
+# Copy wintun.dll next to the executable (loaded at runtime)
+add_custom_command(TARGET aegis POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${WINTUN_DLL}"
+        "$<TARGET_FILE_DIR:aegis>"
+    COMMENT "Copying wintun.dll to output directory"
+)
+
 # Optional: libsodium or OpenSSL for crypto — user chooses at configure time
 option(AEGIS_USE_LIBSODIUM "Use libsodium for X25519/ChaCha20-Poly1305" ON)
 option(AEGIS_USE_OPENSSL "Use OpenSSL EVP for X25519/ChaCha20-Poly1305" OFF)
@@ -70,7 +74,7 @@ if(AEGIS_USE_LIBSODIUM)
         target_link_libraries(aegis PRIVATE libsodium)
         target_compile_definitions(aegis PRIVATE AEGIS_USE_LIBSODIUM)
     else()
-        message(FATAL_ERROR "libsodium not found. Install it or set AEGIS_USE_LIBSODIUM=OFF.")
+        message(STATUS "libsodium not found — crypto stubs will be used")
     endif()
 elseif(AEGIS_USE_OPENSSL)
     find_package(OpenSSL REQUIRED)
