@@ -55,7 +55,7 @@ bool Adapter::load_wintun_dll() {
     return true;
 }
 
-bool Adapter::create() {
+bool Adapter::create(uint32_t ip, uint8_t prefix, const wchar_t* adapter_name) {
     fprintf(stderr, "[adapter] create: loading dll\n");
     if (!load_wintun_dll())
         return false;
@@ -64,7 +64,7 @@ bool Adapter::create() {
     fprintf(stderr, "[adapter] logger set\n");
 
     fprintf(stderr, "[adapter] create: calling WintunCreateAdapter\n");
-    adapter_ = WintunCreateAdapter_(L"Aegis Tunnel", L"Aegis", nullptr);
+    adapter_ = WintunCreateAdapter_(adapter_name, L"Aegis", nullptr);
     if (!adapter_) {
         fprintf(stderr, "[adapter] WintunCreateAdapter failed (error %lu)\n",
                 GetLastError());
@@ -105,7 +105,7 @@ bool Adapter::create() {
 
 interface_ready:
     // Configure IP BEFORE starting session (WireGuard example order)
-    if (!configure_ip()) {
+    if (!configure_ip(ip, prefix)) {
         close();
         return false;
     }
@@ -120,7 +120,14 @@ interface_ready:
         return false;
     }
 
-    fprintf(stderr, "[adapter] up  if_index=%lu  ip=10.10.0.1/24\n", if_index_);
+    {
+        uint32_t ip_net = ntohl(ip);
+        fprintf(stderr, "[adapter] up  if_index=%lu  ip=%u.%u.%u.%u/%u\n",
+                if_index_,
+                (ip_net >> 24) & 0xFF, (ip_net >> 16) & 0xFF,
+                (ip_net >>  8) & 0xFF,  ip_net        & 0xFF,
+                prefix);
+    }
     return true;
 }
 
@@ -140,22 +147,30 @@ void Adapter::close() {
     if_index_ = 0;
 }
 
-bool Adapter::configure_ip() {
+bool Adapter::configure_ip(uint32_t ip, uint8_t prefix) {
     MIB_UNICASTIPADDRESS_ROW row = {};
     InitializeUnicastIpAddressEntry(&row);
     row.Address.Ipv4.sin_family = AF_INET;
-    row.Address.Ipv4.sin_addr.S_un.S_addr = htonl((10 << 24) | (10 << 16) | (0 << 8) | 1);
-    row.OnLinkPrefixLength = 24;
+    row.Address.Ipv4.sin_addr.S_un.S_addr = ip;
+    row.OnLinkPrefixLength = prefix;
     row.DadState = IpDadStatePreferred;
     row.InterfaceIndex = if_index_;
 
     ULONG ret = CreateUnicastIpAddressEntry(&row);
     if (ret == NO_ERROR) {
-        fprintf(stderr, "[adapter] ip 10.10.0.1/24 configured\n");
+        uint32_t ip_net = ntohl(ip);
+        fprintf(stderr, "[adapter] ip %u.%u.%u.%u/%u configured\n",
+                (ip_net >> 24) & 0xFF, (ip_net >> 16) & 0xFF,
+                (ip_net >>  8) & 0xFF,  ip_net        & 0xFF,
+                prefix);
         return true;
     }
     if (ret == ERROR_OBJECT_ALREADY_EXISTS) {
-        fprintf(stderr, "[adapter] ip 10.10.0.1/24 already configured\n");
+        uint32_t ip_net = ntohl(ip);
+        fprintf(stderr, "[adapter] ip %u.%u.%u.%u/%u already configured\n",
+                (ip_net >> 24) & 0xFF, (ip_net >> 16) & 0xFF,
+                (ip_net >>  8) & 0xFF,  ip_net        & 0xFF,
+                prefix);
         return true;
     }
     fprintf(stderr, "[adapter] CreateUnicastIpAddressEntry failed (error %lu)\n", ret);

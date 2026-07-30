@@ -24,11 +24,17 @@ target_include_directories(test_identity PRIVATE ../include)
 target_link_libraries(test_identity OpenSSL::Crypto)
 add_test(NAME test_identity COMMAND test_identity)
 
+add_executable(test_tunnel test_tunnel.cpp ../src/crypto/chacha20poly1305.cpp)
+target_include_directories(test_tunnel PRIVATE ../include)
+target_link_libraries(test_tunnel OpenSSL::Crypto)
+add_test(NAME test_tunnel COMMAND test_tunnel)
+
 add_custom_target(check
     COMMAND test_packet
     COMMAND test_transport
     COMMAND test_crypto
     COMMAND test_aead
     COMMAND test_identity
+    COMMAND test_tunnel
     COMMENT "Running all unit tests"
 )

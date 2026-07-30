@@ -36,6 +36,7 @@ set(AEGIS_SOURCES
     src/crypto/crypto.cpp
     src/crypto/x25519.cpp
     src/crypto/chacha20poly1305.cpp
+    src/tunnel/tunnel.cpp
     src/session/session.cpp
     src/transport/transport.cpp
     src/routing/routing.cpp

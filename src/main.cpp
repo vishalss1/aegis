@@ -4,6 +4,7 @@
 #include "aegis/crypto/x25519.hpp"
 #include "aegis/crypto/chacha20poly1305.hpp"
 #include "aegis/identity/identity.hpp"
+#include "aegis/tunnel/tunnel.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -61,6 +62,7 @@ static void print_usage(const char* prog) {
     printf("  --crypto-test      X25519 key generation and shared secret derivation\n");
     printf("  --aead-test        ChaCha20-Poly1305 AEAD encrypt/decrypt with tamper rejection\n");
     printf("  --identity-test    Identity creation, NodeID determinism, NetworkID matching\n");
+    printf("  --tunnel <args>   point-to-point encrypted tunnel (see source for arg format)\n");
 }
 
 // RFC 8439 Section 2.8.2 AEAD_CHACHA20_POLY1305 test vector
@@ -403,6 +405,100 @@ static int run_identity_test() {
     return 0;
 }
 
+// ---- tunnel -----------------------------------------------------------------
+static int run_tunnel(int argc, char* argv[]) {
+    // usage: --tunnel <local_ip> <prefix> <listen_port> <peer_ip> <peer_port> <psk_hex>
+    if (argc < 8) {
+        fprintf(stderr, "usage: %s --tunnel <local_ip> <prefix> <listen_port> <peer_ip> <peer_port> <psk_hex>\n", argv[0]);
+        fprintf(stderr, "  e.g.: aegis --tunnel 10.10.0.1 24 51820 10.10.0.2 51821 <64-char-hex>\n");
+        return 1;
+    }
+
+    // Parse local IP
+    uint32_t local_ip = 0;
+    {
+        uint8_t a, b, c, d;
+        if (sscanf_s(argv[2], "%hhu.%hhu.%hhu.%hhu", &a, &b, &c, &d) != 4) {
+            fprintf(stderr, "error: invalid local_ip '%s'\n", argv[2]);
+            return 1;
+        }
+        local_ip = htonl((static_cast<uint32_t>(a) << 24) |
+                         (static_cast<uint32_t>(b) << 16) |
+                         (static_cast<uint32_t>(c) << 8)  |
+                         static_cast<uint32_t>(d));
+    }
+
+    uint8_t prefix = (uint8_t)std::atoi(argv[3]);
+    uint16_t listen_port = (uint16_t)std::atoi(argv[4]);
+
+    // Parse peer IP
+    uint32_t peer_ip = 0;
+    {
+        uint8_t a, b, c, d;
+        if (sscanf_s(argv[5], "%hhu.%hhu.%hhu.%hhu", &a, &b, &c, &d) != 4) {
+            fprintf(stderr, "error: invalid peer_ip '%s'\n", argv[5]);
+            return 1;
+        }
+        peer_ip = htonl((static_cast<uint32_t>(a) << 24) |
+                        (static_cast<uint32_t>(b) << 16) |
+                        (static_cast<uint32_t>(c) << 8)  |
+                        static_cast<uint32_t>(d));
+    }
+    uint16_t peer_port = (uint16_t)std::atoi(argv[6]);
+
+    // Parse PSK hex (expects 64 hex chars = 32 bytes)
+    if (std::strlen(argv[7]) != 64) {
+        fprintf(stderr, "error: psk must be exactly 64 hex characters (32 bytes)\n");
+        return 1;
+    }
+
+    ChaCha20Poly1305Key psk{};
+    for (int i = 0; i < 32; i++) {
+        char buf[3] = {argv[7][i * 2], argv[7][i * 2 + 1], 0};
+        char* end;
+        psk[i] = (uint8_t)std::strtoul(buf, &end, 16);
+        if (*end != 0) {
+            fprintf(stderr, "error: invalid hex char at position %d\n", i * 2);
+            return 1;
+        }
+    }
+
+    // Build adapter name from local IP (unique per instance)
+    char adapter_name_buf[64];
+    uint32_t ip_host = ntohl(local_ip);
+    snprintf(adapter_name_buf, sizeof(adapter_name_buf),
+             "Aegis %u.%u.%u.%u",
+             (ip_host >> 24) & 0xFF, (ip_host >> 16) & 0xFF,
+             (ip_host >>  8) & 0xFF,  ip_host        & 0xFF);
+
+    TunnelConfig cfg;
+    cfg.local_ip = local_ip;
+    cfg.local_prefix = prefix;
+    cfg.listen_port = listen_port;
+    cfg.peer_endpoint = Endpoint::from_parts(
+        (uint8_t)((ntohl(peer_ip) >> 24) & 0xFF),
+        (uint8_t)((ntohl(peer_ip) >> 16) & 0xFF),
+        (uint8_t)((ntohl(peer_ip) >> 8) & 0xFF),
+        (uint8_t)(ntohl(peer_ip) & 0xFF),
+        peer_port);
+    cfg.psk = psk;
+
+    Tunnel tunnel;
+    if (!tunnel.start(cfg, adapter_name_buf)) {
+        fprintf(stderr, "error: tunnel start failed\n");
+        return 1;
+    }
+
+    printf("[tunnel] running — press Ctrl+C to stop\n");
+    // Keep running until Ctrl+C
+    while (true) {
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+
+    tunnel.stop();
+    return 0;
+}
+
 // ---- transport-test --------------------------------------------------------
 static int run_transport_test() {
     printf("[transport-test] starting\n");
@@ -538,6 +634,15 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         mode_inject = true;
+    } else if (std::strcmp(argv[1], "--tunnel") == 0) {
+        if (!platform_is_admin()) {
+            fprintf(stderr, "error: tunnel mode requires administrator privileges\n");
+            platform_cleanup_winsock();
+            return 1;
+        }
+        int ret = run_tunnel(argc, argv);
+        platform_cleanup_winsock();
+        return ret;
     } else {
         print_usage(argv[0]);
         platform_cleanup_winsock();

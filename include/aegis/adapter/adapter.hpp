@@ -25,7 +25,9 @@ public:
     Adapter(const Adapter&) = delete;
     Adapter& operator=(const Adapter&) = delete;
 
-    bool create();
+    bool create(uint32_t ip = htonl((10 << 24) | (10 << 16) | (0 << 8) | 1),
+                uint8_t prefix = 24,
+                const wchar_t* adapter_name = L"Aegis Tunnel");
     void close();
 
     bool read_packet(std::vector<uint8_t>& out, DWORD timeout_ms = 5000);
@@ -38,7 +40,7 @@ public:
 
 private:
     bool load_wintun_dll();
-    bool configure_ip();
+    bool configure_ip(uint32_t ip, uint8_t prefix);
 
     HMODULE wintun_dll_ = nullptr;
 
