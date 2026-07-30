@@ -1,6 +1,7 @@
 #include "aegis/adapter/adapter.hpp"
 #include "aegis/platform/platform.hpp"
 #include "aegis/transport/transport.hpp"
+#include "aegis/crypto/x25519.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -50,11 +51,79 @@ static bool parse_hex(const char* hex, std::vector<uint8_t>& out) {
 }
 
 static void print_usage(const char* prog) {
-    printf("usage: %s [--listen | --inject <hex> | --ping-test | --transport-test]\n\n", prog);
+    printf("usage: %s [--listen | --inject <hex> | --ping-test | --transport-test | --crypto-test]\n\n", prog);
     printf("  --listen           create adapter at 10.10.0.1/24 and print packets for 30s\n");
     printf("  --inject <hex>     inject a raw hex-encoded IP packet, then read one reply\n");
     printf("  --ping-test        inject a UDP packet, confirm OS listener receives it\n");
     printf("  --transport-test   loopback UDP send/receive via Transport class\n");
+}
+
+// ---- crypto-test ------------------------------------------------------------
+static int run_crypto_test() {
+    printf("[crypto-test] generating keypairs...\n");
+
+    X25519KeyPair alice = x25519_generate_keypair();
+    X25519KeyPair bob   = x25519_generate_keypair();
+
+    // Check keys are non-zero
+    auto key_all_zero = [](const X25519Key& k) {
+        for (auto b : k) if (b != 0) return false;
+        return true;
+    };
+
+    if (key_all_zero(alice.private_key) || key_all_zero(alice.public_key)) {
+        fprintf(stderr, "[crypto-test] FAIL — alice keypair generation returned all zeros\n");
+        return 1;
+    }
+    if (key_all_zero(bob.private_key) || key_all_zero(bob.public_key)) {
+        fprintf(stderr, "[crypto-test] FAIL — bob keypair generation returned all zeros\n");
+        return 1;
+    }
+
+    printf("[crypto-test] alice priv: ");
+    for (auto b : alice.private_key) printf("%02x", b);
+    printf("\n[crypto-test] alice pub:  ");
+    for (auto b : alice.public_key) printf("%02x", b);
+
+    printf("\n[crypto-test] bob priv:   ");
+    for (auto b : bob.private_key) printf("%02x", b);
+    printf("\n[crypto-test] bob pub:    ");
+    for (auto b : bob.public_key) printf("%02x", b);
+    printf("\n");
+
+    // Derive from both directions
+    printf("[crypto-test] deriving shared secret (A-side)...\n");
+    auto s_alice = x25519_derive_shared_secret(alice.private_key, bob.public_key);
+    if (!s_alice.has_value()) {
+        fprintf(stderr, "[crypto-test] FAIL — alice-side derivation returned nullopt\n");
+        return 1;
+    }
+
+    printf("[crypto-test] deriving shared secret (B-side)...\n");
+    auto s_bob = x25519_derive_shared_secret(bob.private_key, alice.public_key);
+    if (!s_bob.has_value()) {
+        fprintf(stderr, "[crypto-test] FAIL — bob-side derivation returned nullopt\n");
+        return 1;
+    }
+
+    printf("[crypto-test] secret (A-side): ");
+    for (auto b : *s_alice) printf("%02x", b);
+    printf("\n[crypto-test] secret (B-side): ");
+    for (auto b : *s_bob) printf("%02x", b);
+    printf("\n");
+
+    // Verify match
+    bool match = true;
+    for (size_t i = 0; i < X25519_KEY_SIZE; i++)
+        if ((*s_alice)[i] != (*s_bob)[i]) { match = false; break; }
+
+    if (!match) {
+        fprintf(stderr, "[crypto-test] FAIL — shared secrets do not match\n");
+        return 1;
+    }
+
+    printf("[crypto-test] *** PASS *** shared secret matches from both sides\n");
+    return 0;
 }
 
 // ---- transport-test --------------------------------------------------------
@@ -166,6 +235,7 @@ int main(int argc, char* argv[]) {
     bool mode_inject       = false;
     bool mode_ping_test    = false;
     bool mode_transport_test = false;
+    bool mode_crypto_test  = false;
     std::vector<uint8_t> inject_data;
 
     if (argc < 2) {
@@ -176,6 +246,8 @@ int main(int argc, char* argv[]) {
         mode_ping_test = true;
     } else if (std::strcmp(argv[1], "--transport-test") == 0) {
         mode_transport_test = true;
+    } else if (std::strcmp(argv[1], "--crypto-test") == 0) {
+        mode_crypto_test = true;
     } else if (argc > 2 && std::strcmp(argv[1], "--inject") == 0) {
         if (!parse_hex(argv[2], inject_data)) {
             fprintf(stderr, "error: invalid hex string\n");
@@ -187,6 +259,11 @@ int main(int argc, char* argv[]) {
         print_usage(argv[0]);
         platform_cleanup_winsock();
         return 1;
+    }
+
+    // ---- modes that don't need adapter or winsock --------------------------
+    if (mode_crypto_test) {
+        return run_crypto_test();
     }
 
     // ---- transport-test (no adapter needed) --------------------------------

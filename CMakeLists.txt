@@ -34,6 +34,7 @@ set(AEGIS_SOURCES
     src/adapter/adapter.cpp
     src/identity/identity.cpp
     src/crypto/crypto.cpp
+    src/crypto/x25519.cpp
     src/session/session.cpp
     src/transport/transport.cpp
     src/routing/routing.cpp
@@ -64,22 +65,18 @@ add_custom_command(TARGET aegis POST_BUILD
     COMMENT "Copying wintun.dll to output directory"
 )
 
-# Optional: libsodium or OpenSSL for crypto — user chooses at configure time
-option(AEGIS_USE_LIBSODIUM "Use libsodium for X25519/ChaCha20-Poly1305" ON)
-option(AEGIS_USE_OPENSSL "Use OpenSSL EVP for X25519/ChaCha20-Poly1305" OFF)
+# OpenSSL EVP (decided per CLAUDE.md)
+option(AEGIS_USE_LIBSODIUM "Use libsodium instead of OpenSSL" OFF)
+option(AEGIS_USE_OPENSSL "Use OpenSSL EVP for X25519/ChaCha20-Poly1305" ON)
 
-if(AEGIS_USE_LIBSODIUM)
-    find_package(libsodium QUIET)
-    if(libsodium_FOUND)
-        target_link_libraries(aegis PRIVATE libsodium)
-        target_compile_definitions(aegis PRIVATE AEGIS_USE_LIBSODIUM)
-    else()
-        message(STATUS "libsodium not found — crypto stubs will be used")
-    endif()
-elseif(AEGIS_USE_OPENSSL)
+if(AEGIS_USE_OPENSSL)
     find_package(OpenSSL REQUIRED)
     target_link_libraries(aegis PRIVATE OpenSSL::Crypto)
     target_compile_definitions(aegis PRIVATE AEGIS_USE_OPENSSL)
+elseif(AEGIS_USE_LIBSODIUM)
+    find_package(libsodium REQUIRED)
+    target_link_libraries(aegis PRIVATE libsodium)
+    target_compile_definitions(aegis PRIVATE AEGIS_USE_LIBSODIUM)
 endif()
 
 # Tests
