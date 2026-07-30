@@ -1,5 +1,5 @@
-#include "aegis/transport.hpp"
-#include "aegis/platform.hpp"
+#include "aegis/transport/transport.hpp"
+#include "aegis/platform/platform.hpp"
 #include <cstdio>
 #include <cstring>
 

@@ -1,4 +1,4 @@
-#include "aegis/crypto.hpp"
+#include "aegis/crypto/crypto.hpp"
 #include <cstdio>
 
 #ifdef AEGIS_USE_LIBSODIUM

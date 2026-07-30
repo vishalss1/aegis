@@ -1,7 +1,9 @@
-# Test targets — placeholder for now
-# Will use a test framework (e.g. doctest, Catch2, or Google Test) once decided.
+add_executable(test_packet test_packet.cpp ../src/packet/packet.cpp)
+target_include_directories(test_packet PRIVATE ../include)
+
+add_test(NAME test_packet COMMAND test_packet)
 
 add_custom_target(check
-    COMMAND ${CMAKE_COMMAND} -E echo "No tests defined yet"
-    COMMENT "Run tests (placeholder)"
+    COMMAND test_packet
+    COMMENT "Running packet parse tests"
 )

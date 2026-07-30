@@ -1,7 +1,7 @@
 #pragma once
 
-#include "identity.hpp"
-#include "crypto.hpp"
+#include "aegis/identity/identity.hpp"
+#include "aegis/crypto/crypto.hpp"
 #include <cstdint>
 #include <vector>
 #include <map>

@@ -1,4 +1,5 @@
-#include "aegis/adapter.hpp"
+#include "aegis/adapter/adapter.hpp"
+#include "aegis/packet/packet.hpp"
 
 Adapter::Adapter() {
     setvbuf(stdout, nullptr, _IONBF, 0);
@@ -198,7 +199,14 @@ bool Adapter::write_packet(const std::vector<uint8_t>& data) {
 }
 
 void Adapter::print_packet(const uint8_t* data, size_t len) {
-    if (len < 20 || (data[0] >> 4) != 4) {
+    auto ip_str = [](uint32_t ip, char* out, size_t out_len) {
+        std::snprintf(out, out_len, "%u.%u.%u.%u",
+                 (ip >> 24) & 0xFF, (ip >> 16) & 0xFF,
+                 (ip >>  8) & 0xFF,  ip        & 0xFF);
+    };
+
+    auto parsed = IPPacket::parse(data, len);
+    if (!parsed) {
         printf("[pkt] non-IPv4 (ver=%u  len=%zu) | raw=",
                (len >= 1) ? (unsigned)(data[0] >> 4) : 0, len);
         size_t dump = (len > 64) ? 64 : len;
@@ -208,34 +216,21 @@ void Adapter::print_packet(const uint8_t* data, size_t len) {
         return;
     }
 
-    uint8_t version_ihl = data[0];
-    uint8_t proto        = data[9];
-    uint32_t src = (uint32_t)data[12] << 24 | (uint32_t)data[13] << 16 |
-                   (uint32_t)data[14] <<  8 | (uint32_t)data[15];
-    uint32_t dst = (uint32_t)data[16] << 24 | (uint32_t)data[17] << 16 |
-                   (uint32_t)data[18] <<  8 | (uint32_t)data[19];
-    uint16_t total_len = (uint16_t)data[2] << 8 | data[3];
-
+    const IPPacket& pkt = *parsed;
     const char* proto_name = "???";
-    switch (proto) {
+    switch (pkt.protocol) {
         case 1:  proto_name = "ICMP"; break;
         case 6:  proto_name = "TCP";  break;
         case 17: proto_name = "UDP";  break;
     }
 
-    auto ip_str = [](uint32_t ip, char* out, size_t out_len) {
-        std::snprintf(out, out_len, "%u.%u.%u.%u",
-                 (ip >> 24) & 0xFF, (ip >> 16) & 0xFF,
-                 (ip >>  8) & 0xFF,  ip        & 0xFF);
-    };
-
     char src_str[16], dst_str[16];
-    ip_str(src, src_str, sizeof(src_str));
-    ip_str(dst, dst_str, sizeof(dst_str));
+    ip_str(pkt.source_ip, src_str, sizeof(src_str));
+    ip_str(pkt.dest_ip, dst_str, sizeof(dst_str));
 
     printf("[pkt] %s -> %s | %s | len=%u | hdr=%u | raw=",
-           src_str, dst_str, proto_name, total_len,
-           (version_ihl & 0x0F) * 4);
+           src_str, dst_str, proto_name, pkt.total_length,
+           (pkt.version_ihl & 0x0F) * 4);
 
     size_t dump = (len > 64) ? 64 : len;
     for (size_t i = 0; i < dump; i++)

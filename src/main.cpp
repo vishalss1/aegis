@@ -1,5 +1,5 @@
-#include "aegis/adapter.hpp"
-#include "aegis/platform.hpp"
+#include "aegis/adapter/adapter.hpp"
+#include "aegis/platform/platform.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -191,13 +191,34 @@ int main(int argc, char* argv[]) {
             printf("[main] write OK\n");
         }
 
-        // Read any response packets from Wintun
-        printf("[main] reading from Wintun for 5s...\n");
-        std::vector<uint8_t> reply;
-        for (int i = 0; i < 20; i++) {
-            reply.clear();
-            if (!adapter.read_packet(reply, 250)) break;
-            Adapter::print_packet(reply.data(), reply.size());
+        // Send a packet from the OS through Wintun and verify typed parsing
+        printf("[main] testing typed parser with OS outbound traffic...\n");
+        {
+            SOCKET sender = socket(AF_INET, SOCK_DGRAM, 0);
+            if (sender != INVALID_SOCKET) {
+                struct sockaddr_in local = {};
+                local.sin_family = AF_INET;
+                local.sin_addr.s_addr = htonl((10 << 24) | (10 << 16) | (0 << 8) | 1);
+                local.sin_port = htons(54321);
+                bind(sender, (struct sockaddr*)&local, sizeof(local));
+
+                struct sockaddr_in dest = {};
+                dest.sin_family = AF_INET;
+                dest.sin_addr.s_addr = htonl((10 << 24) | (10 << 16) | (0 << 8) | 2);
+                dest.sin_port = htons(9999);
+                const char* msg = "probe";
+                sendto(sender, msg, 5, 0, (struct sockaddr*)&dest, sizeof(dest));
+                printf("[main] OS sent UDP to 10.10.0.2:9999\n");
+                closesocket(sender);
+            }
+
+            // The OS-routed packet should appear on Wintun read
+            std::vector<uint8_t> reply;
+            for (int i = 0; i < 20; i++) {
+                reply.clear();
+                if (!adapter.read_packet(reply, 250)) continue;
+                Adapter::print_packet(reply.data(), reply.size());
+            }
         }
 
         adapter.close();

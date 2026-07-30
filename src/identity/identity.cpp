@@ -1,5 +1,5 @@
-#include "aegis/identity.hpp"
-#include "aegis/crypto.hpp"
+#include "aegis/identity/identity.hpp"
+#include "aegis/crypto/crypto.hpp"
 #include <cstdio>
 #include <algorithm>
 #include <fstream>
