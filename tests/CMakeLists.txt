@@ -14,9 +14,15 @@ target_include_directories(test_crypto PRIVATE ../include)
 target_link_libraries(test_crypto OpenSSL::Crypto)
 add_test(NAME test_crypto COMMAND test_crypto)
 
+add_executable(test_aead test_aead.cpp ../src/crypto/chacha20poly1305.cpp)
+target_include_directories(test_aead PRIVATE ../include)
+target_link_libraries(test_aead OpenSSL::Crypto)
+add_test(NAME test_aead COMMAND test_aead)
+
 add_custom_target(check
     COMMAND test_packet
     COMMAND test_transport
     COMMAND test_crypto
+    COMMAND test_aead
     COMMENT "Running all unit tests"
 )

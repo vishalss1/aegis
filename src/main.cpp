@@ -2,6 +2,7 @@
 #include "aegis/platform/platform.hpp"
 #include "aegis/transport/transport.hpp"
 #include "aegis/crypto/x25519.hpp"
+#include "aegis/crypto/chacha20poly1305.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -51,11 +52,219 @@ static bool parse_hex(const char* hex, std::vector<uint8_t>& out) {
 }
 
 static void print_usage(const char* prog) {
-    printf("usage: %s [--listen | --inject <hex> | --ping-test | --transport-test | --crypto-test]\n\n", prog);
+    printf("usage: %s [--listen | --inject <hex> | --ping-test | --transport-test | --crypto-test | --aead-test]\n\n", prog);
     printf("  --listen           create adapter at 10.10.0.1/24 and print packets for 30s\n");
     printf("  --inject <hex>     inject a raw hex-encoded IP packet, then read one reply\n");
     printf("  --ping-test        inject a UDP packet, confirm OS listener receives it\n");
     printf("  --transport-test   loopback UDP send/receive via Transport class\n");
+    printf("  --crypto-test      X25519 key generation and shared secret derivation\n");
+    printf("  --aead-test        ChaCha20-Poly1305 AEAD encrypt/decrypt with tamper rejection\n");
+}
+
+// RFC 8439 Section 2.8.2 AEAD_CHACHA20_POLY1305 test vector
+static const uint8_t RFC8439_KEY[] = {
+    0x80,0x81,0x82,0x83,0x84,0x85,0x86,0x87,
+    0x88,0x89,0x8a,0x8b,0x8c,0x8d,0x8e,0x8f,
+    0x90,0x91,0x92,0x93,0x94,0x95,0x96,0x97,
+    0x98,0x99,0x9a,0x9b,0x9c,0x9d,0x9e,0x9f,
+};
+static const uint8_t RFC8439_NONCE[] = {
+    0x07,0x00,0x00,0x00,0x40,0x41,0x42,0x43,0x44,0x45,0x46,0x47,
+};
+static const uint8_t RFC8439_AAD[] = {
+    0x50,0x51,0x52,0x53,0xc0,0xc1,0xc2,0xc3,0xc4,0xc5,0xc6,0xc7,
+};
+static const uint8_t RFC8439_CT[] = {
+    0xd3,0x1a,0x8d,0x34,0x64,0x8e,0x60,0xdb,0x7b,0x86,0xaf,0xbc,
+    0x53,0xef,0x7e,0xc2,0xa4,0xad,0xed,0x51,0x29,0x6e,0x08,0xfe,
+    0xa9,0xe2,0xb5,0xa7,0x36,0xee,0x62,0xd6,0x3d,0xbe,0xa4,0x5e,
+    0x8c,0xa9,0x67,0x12,0x82,0xfa,0xfb,0x69,0xda,0x92,0x72,0x8b,
+    0x1a,0x71,0xde,0x0a,0x9e,0x06,0x0b,0x29,0x05,0xd6,0xa5,0xb6,
+    0x7e,0xcd,0x3b,0x36,0x92,0xdd,0xbd,0x7f,0x2d,0x77,0x8b,0x8c,
+    0x98,0x03,0xae,0xe3,0x28,0x09,0x1b,0x58,0xfa,0xb3,0x24,0xe4,
+    0xfa,0xd6,0x75,0x94,0x55,0x85,0x80,0x8b,0x48,0x31,0xd7,0xbc,
+    0x3f,0xf4,0xde,0xf0,0x8e,0x4b,0x7a,0x9d,0xe5,0x76,0xd2,0x65,
+    0x86,0xce,0xc6,0x4b,0x61,0x16,
+};
+static const uint8_t RFC8439_TAG[] = {
+    0x1a,0xe1,0x0b,0x59,0x4f,0x09,0xe2,0x6a,0x7e,0x90,0x2e,0xcb,
+    0xd0,0x60,0x06,0x91,
+};
+static const uint8_t RFC8439_PT[] = {
+    0x4c,0x61,0x64,0x69,0x65,0x73,0x20,0x61,0x6e,0x64,0x20,0x47,
+    0x65,0x6e,0x74,0x6c,0x65,0x6d,0x65,0x6e,0x20,0x6f,0x66,0x20,
+    0x74,0x68,0x65,0x20,0x63,0x6c,0x61,0x73,0x73,0x20,0x6f,0x66,
+    0x20,0x27,0x39,0x39,0x3a,0x20,0x49,0x66,0x20,0x49,0x20,0x63,
+    0x6f,0x75,0x6c,0x64,0x20,0x6f,0x66,0x66,0x65,0x72,0x20,0x79,
+    0x6f,0x75,0x20,0x6f,0x6e,0x6c,0x79,0x20,0x6f,0x6e,0x65,0x20,
+    0x74,0x69,0x70,0x20,0x66,0x6f,0x72,0x20,0x74,0x68,0x65,0x20,
+    0x66,0x75,0x74,0x75,0x72,0x65,0x2c,0x20,0x73,0x75,0x6e,0x73,
+    0x63,0x72,0x65,0x65,0x6e,0x20,0x77,0x6f,0x75,0x6c,0x64,0x20,
+    0x62,0x65,0x20,0x69,0x74,0x2e,
+};
+
+// ---- aead-test --------------------------------------------------------------
+static int run_aead_test() {
+    printf("[aead-test] starting\n");
+
+    // --- RFC 8439 test vector (ground truth against published spec) -----------
+    printf("[aead-test] RFC 8439 Section 2.8.2 test vector:\n");
+    printf("[aead-test]   key:   ");
+    for (auto b : RFC8439_KEY) printf("%02x", b);
+    printf("\n[aead-test]   nonce: ");
+    for (auto b : RFC8439_NONCE) printf("%02x", b);
+    printf("\n[aead-test]   aad:   ");
+    for (auto b : RFC8439_AAD) printf("%02x", b);
+    printf("\n[aead-test]   pt:    ");
+    for (auto b : RFC8439_PT) printf("%02x", b);
+    printf("\n");
+
+    ChaCha20Poly1305Key rfc_key;
+    std::memcpy(rfc_key.data(), RFC8439_KEY, CHACHA20_POLY1305_KEY_SIZE);
+    ChaCha20Poly1305Nonce rfc_nonce;
+    std::memcpy(rfc_nonce.data(), RFC8439_NONCE, CHACHA20_POLY1305_NONCE_SIZE);
+
+    uint8_t rfc_ct[sizeof(RFC8439_CT)];
+    uint8_t rfc_tag[CHACHA20_POLY1305_TAG_SIZE];
+    if (!chacha20_poly1305_encrypt(
+            rfc_key, rfc_nonce,
+            RFC8439_PT, sizeof(RFC8439_PT),
+            rfc_ct, rfc_tag, RFC8439_AAD, sizeof(RFC8439_AAD))) {
+        fprintf(stderr, "[aead-test] FAIL — RFC 8439 encrypt returned false\n");
+        return 1;
+    }
+
+    bool rfc_ct_ok = (std::memcmp(rfc_ct, RFC8439_CT, sizeof(RFC8439_CT)) == 0);
+    bool rfc_tag_ok = (std::memcmp(rfc_tag, RFC8439_TAG, CHACHA20_POLY1305_TAG_SIZE) == 0);
+
+    printf("[aead-test]   ct:    ");
+    for (size_t i = 0; i < sizeof(RFC8439_CT); i++) printf("%02x", rfc_ct[i]);
+    printf("\n[aead-test]   tag:   ");
+    for (size_t i = 0; i < CHACHA20_POLY1305_TAG_SIZE; i++) printf("%02x", rfc_tag[i]);
+    printf("\n");
+    printf("[aead-test]   expected ct:  ");
+    for (auto b : RFC8439_CT) printf("%02x", b);
+    printf("\n[aead-test]   expected tag: ");
+    for (auto b : RFC8439_TAG) printf("%02x", b);
+    printf("\n");
+
+    if (!rfc_ct_ok) {
+        fprintf(stderr, "[aead-test] FAIL — RFC 8439 ciphertext mismatch\n");
+        return 1;
+    }
+    if (!rfc_tag_ok) {
+        fprintf(stderr, "[aead-test] FAIL — RFC 8439 tag mismatch\n");
+        return 1;
+    }
+
+    uint8_t rfc_pt[sizeof(RFC8439_PT)];
+    if (!chacha20_poly1305_decrypt(
+            rfc_key, rfc_nonce,
+            rfc_ct, sizeof(RFC8439_CT), rfc_tag, rfc_pt,
+            RFC8439_AAD, sizeof(RFC8439_AAD))) {
+        fprintf(stderr, "[aead-test] FAIL — RFC 8439 decrypt returned false\n");
+        return 1;
+    }
+    bool rfc_pt_ok = (std::memcmp(rfc_pt, RFC8439_PT, sizeof(RFC8439_PT)) == 0);
+    if (!rfc_pt_ok) {
+        fprintf(stderr, "[aead-test] FAIL — RFC 8439 decrypted plaintext mismatch\n");
+        return 1;
+    }
+    printf("[aead-test] RFC 8439 test vector: *** PASS ***\n");
+
+    // --- Internal round-trip with arbitrary key/nonce -------------------------
+    ChaCha20Poly1305Key key{};
+    ChaCha20Poly1305Nonce nonce{};
+    for (uint8_t i = 0; i < CHACHA20_POLY1305_KEY_SIZE; i++) key[i] = i;
+    for (uint8_t i = 0; i < CHACHA20_POLY1305_NONCE_SIZE; i++) nonce[i] = 0x80 | i;
+
+    const char* PLAINTEXT = "hello-aead-0123456789";
+    size_t pt_len = std::strlen(PLAINTEXT);
+
+    uint8_t ct[64];
+    uint8_t tag[CHACHA20_POLY1305_TAG_SIZE];
+    if (!chacha20_poly1305_encrypt(key, nonce,
+            (const uint8_t*)PLAINTEXT, pt_len, ct, tag)) {
+        fprintf(stderr, "[aead-test] FAIL — encrypt returned false\n");
+        return 1;
+    }
+
+    uint8_t pt2[64];
+    if (!chacha20_poly1305_decrypt(key, nonce, ct, pt_len, tag, pt2)) {
+        fprintf(stderr, "[aead-test] FAIL — decrypt returned false\n");
+        return 1;
+    }
+    bool match = (std::memcmp(pt2, PLAINTEXT, pt_len) == 0);
+    if (!match) {
+        fprintf(stderr, "[aead-test] FAIL — plaintext mismatch\n");
+        return 1;
+    }
+    printf("[aead-test] internal round-trip: *** PASS ***\n");
+
+    // Tampered tag: must fail
+    {
+        uint8_t ct2[64];
+        uint8_t tag2[CHACHA20_POLY1305_TAG_SIZE];
+        chacha20_poly1305_encrypt(key, nonce,
+            (const uint8_t*)PLAINTEXT, pt_len, ct2, tag2);
+        tag2[5] ^= 0x01;
+        bool rejected = !chacha20_poly1305_decrypt(key, nonce, ct2, pt_len, tag2, pt2);
+        if (!rejected) {
+            fprintf(stderr, "[aead-test] FAIL — tampered tag was not rejected\n");
+            return 1;
+        }
+    }
+    printf("[aead-test] tag-tamper rejected: *** PASS ***\n");
+
+    // Tampered ciphertext: must fail
+    {
+        uint8_t ct2[64];
+        uint8_t tag2[CHACHA20_POLY1305_TAG_SIZE];
+        chacha20_poly1305_encrypt(key, nonce,
+            (const uint8_t*)PLAINTEXT, pt_len, ct2, tag2);
+        ct2[3] ^= 0x01;
+        bool rejected = !chacha20_poly1305_decrypt(key, nonce, ct2, pt_len, tag2, pt2);
+        if (!rejected) {
+            fprintf(stderr, "[aead-test] FAIL — tampered ciphertext was not rejected\n");
+            return 1;
+        }
+    }
+    printf("[aead-test] ct-tamper rejected: *** PASS ***\n");
+
+    // Wrong key: must fail
+    {
+        uint8_t ct2[64];
+        uint8_t tag2[CHACHA20_POLY1305_TAG_SIZE];
+        chacha20_poly1305_encrypt(key, nonce,
+            (const uint8_t*)PLAINTEXT, pt_len, ct2, tag2);
+        ChaCha20Poly1305Key wrong_key{};
+        wrong_key[0] = 0x42;
+        bool rejected = !chacha20_poly1305_decrypt(wrong_key, nonce, ct2, pt_len, tag2, pt2);
+        if (!rejected) {
+            fprintf(stderr, "[aead-test] FAIL — wrong key was not rejected\n");
+            return 1;
+        }
+    }
+    printf("[aead-test] wrong-key rejected: *** PASS ***\n");
+
+    // Wrong nonce: must fail
+    {
+        uint8_t ct2[64];
+        uint8_t tag2[CHACHA20_POLY1305_TAG_SIZE];
+        chacha20_poly1305_encrypt(key, nonce,
+            (const uint8_t*)PLAINTEXT, pt_len, ct2, tag2);
+        ChaCha20Poly1305Nonce wrong_nonce{};
+        wrong_nonce[0] = 0x42;
+        bool rejected = !chacha20_poly1305_decrypt(key, wrong_nonce, ct2, pt_len, tag2, pt2);
+        if (!rejected) {
+            fprintf(stderr, "[aead-test] FAIL — wrong nonce was not rejected\n");
+            return 1;
+        }
+    }
+    printf("[aead-test] wrong-nonce rejected: *** PASS ***\n");
+
+    printf("[aead-test] *** ALL PASS ***\n");
+    return 0;
 }
 
 // ---- crypto-test ------------------------------------------------------------
@@ -236,6 +445,7 @@ int main(int argc, char* argv[]) {
     bool mode_ping_test    = false;
     bool mode_transport_test = false;
     bool mode_crypto_test  = false;
+    bool mode_aead_test    = false;
     std::vector<uint8_t> inject_data;
 
     if (argc < 2) {
@@ -248,6 +458,8 @@ int main(int argc, char* argv[]) {
         mode_transport_test = true;
     } else if (std::strcmp(argv[1], "--crypto-test") == 0) {
         mode_crypto_test = true;
+    } else if (std::strcmp(argv[1], "--aead-test") == 0) {
+        mode_aead_test = true;
     } else if (argc > 2 && std::strcmp(argv[1], "--inject") == 0) {
         if (!parse_hex(argv[2], inject_data)) {
             fprintf(stderr, "error: invalid hex string\n");
@@ -264,6 +476,9 @@ int main(int argc, char* argv[]) {
     // ---- modes that don't need adapter or winsock --------------------------
     if (mode_crypto_test) {
         return run_crypto_test();
+    }
+    if (mode_aead_test) {
+        return run_aead_test();
     }
 
     // ---- transport-test (no adapter needed) --------------------------------
