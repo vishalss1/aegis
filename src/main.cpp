@@ -1,11 +1,15 @@
 #include "aegis/adapter/adapter.hpp"
 #include "aegis/platform/platform.hpp"
+#include "aegis/transport/transport.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <thread>
 #include <atomic>
 #include <chrono>
+#include <mutex>
+#include <condition_variable>
+#include <vector>
 
 // UDP packet: 10.10.0.2:12345 -> 10.10.0.1:9999, payload "hello" (5 bytes)
 // Total 33 bytes: 20 IP + 8 UDP + 5 payload
@@ -46,12 +50,109 @@ static bool parse_hex(const char* hex, std::vector<uint8_t>& out) {
 }
 
 static void print_usage(const char* prog) {
-    printf("usage: %s [--listen | --inject <hex> | --ping-test]\n\n", prog);
-    printf("  --listen       create adapter at 10.10.0.1/24 and print packets for 30s\n");
-    printf("  --inject <hex> inject a raw hex-encoded IP packet, then read one reply\n");
-    printf("  --ping-test    inject an ICMP Echo Request, prove both directions\n");
+    printf("usage: %s [--listen | --inject <hex> | --ping-test | --transport-test]\n\n", prog);
+    printf("  --listen           create adapter at 10.10.0.1/24 and print packets for 30s\n");
+    printf("  --inject <hex>     inject a raw hex-encoded IP packet, then read one reply\n");
+    printf("  --ping-test        inject a UDP packet, confirm OS listener receives it\n");
+    printf("  --transport-test   loopback UDP send/receive via Transport class\n");
 }
 
+// ---- transport-test --------------------------------------------------------
+static int run_transport_test() {
+    printf("[transport-test] starting\n");
+
+    Transport tx;
+    Transport rx;
+
+    if (!tx.bind(7001)) {
+        fprintf(stderr, "[transport-test] tx bind failed\n");
+        return 1;
+    }
+    printf("[transport-test] tx bound to port 7001\n");
+
+    if (!rx.bind(7002)) {
+        fprintf(stderr, "[transport-test] rx bind failed\n");
+        return 1;
+    }
+    printf("[transport-test] rx bound to port 7002\n");
+
+    // State shared between callback and main thread
+    bool received = false;
+    std::vector<uint8_t> recv_data;
+    Endpoint recv_from{};
+    std::mutex mtx;
+    std::condition_variable cv;
+
+    if (!rx.start_receive([&](const uint8_t* data, size_t len, Endpoint sender) {
+        std::lock_guard<std::mutex> lock(mtx);
+        received = true;
+        recv_data.assign(data, data + len);
+        recv_from = sender;
+        cv.notify_one();
+    })) {
+        fprintf(stderr, "[transport-test] rx start_receive failed\n");
+        tx.close();
+        rx.close();
+        return 1;
+    }
+
+    // Send known payload
+    const char* payload = "hello-transport";
+    size_t payload_len = std::strlen(payload);
+    Endpoint dest = Endpoint::from_parts(127, 0, 0, 1, 7002);
+    if (!tx.send((const uint8_t*)payload, payload_len, dest)) {
+        fprintf(stderr, "[transport-test] tx.send failed\n");
+        rx.stop_receive();
+        tx.close();
+        rx.close();
+        return 1;
+    }
+    printf("[transport-test] sent %zu bytes to 127.0.0.1:7002\n", payload_len);
+
+    // Wait for receipt (1s timeout)
+    {
+        std::unique_lock<std::mutex> lock(mtx);
+        if (!cv.wait_for(lock, std::chrono::seconds(1), [&] { return received; })) {
+            fprintf(stderr, "[transport-test] FAIL — rx timed out, no packet received\n");
+            rx.stop_receive();
+            tx.close();
+            rx.close();
+            return 1;
+        }
+    }
+
+    // Verify payload
+    bool payload_ok = (recv_data.size() == payload_len &&
+                       std::memcmp(recv_data.data(), payload, payload_len) == 0);
+    if (!payload_ok) {
+        fprintf(stderr, "[transport-test] FAIL — payload mismatch\n");
+        rx.stop_receive();
+        tx.close();
+        rx.close();
+        return 1;
+    }
+
+    // Verify sender endpoint (127.0.0.1:7001)
+    Endpoint expected_sender = Endpoint::from_parts(127, 0, 0, 1, 7001);
+    if (!(recv_from == expected_sender)) {
+        fprintf(stderr, "[transport-test] FAIL — sender mismatch: got %08x:%04x, expected %08x:%04x\n",
+                recv_from.ip, recv_from.port, expected_sender.ip, expected_sender.port);
+        rx.stop_receive();
+        tx.close();
+        rx.close();
+        return 1;
+    }
+
+    printf("[transport-test] *** PASS *** received %zu bytes from 127.0.0.1:7001: \"%s\"\n",
+           recv_data.size(), recv_data.data());
+
+    rx.stop_receive();
+    tx.close();
+    rx.close();
+    return 0;
+}
+
+// ---- main ------------------------------------------------------------------
 int main(int argc, char* argv[]) {
     setvbuf(stdout, nullptr, _IONBF, 0);
     setvbuf(stderr, nullptr, _IONBF, 0);
@@ -60,6 +161,42 @@ int main(int argc, char* argv[]) {
 
     if (!platform_init_winsock()) return 1;
 
+    // ---- parse mode --------------------------------------------------------
+    bool mode_listen       = false;
+    bool mode_inject       = false;
+    bool mode_ping_test    = false;
+    bool mode_transport_test = false;
+    std::vector<uint8_t> inject_data;
+
+    if (argc < 2) {
+        mode_listen = true;
+    } else if (std::strcmp(argv[1], "--listen") == 0) {
+        mode_listen = true;
+    } else if (std::strcmp(argv[1], "--ping-test") == 0) {
+        mode_ping_test = true;
+    } else if (std::strcmp(argv[1], "--transport-test") == 0) {
+        mode_transport_test = true;
+    } else if (argc > 2 && std::strcmp(argv[1], "--inject") == 0) {
+        if (!parse_hex(argv[2], inject_data)) {
+            fprintf(stderr, "error: invalid hex string\n");
+            platform_cleanup_winsock();
+            return 1;
+        }
+        mode_inject = true;
+    } else {
+        print_usage(argv[0]);
+        platform_cleanup_winsock();
+        return 1;
+    }
+
+    // ---- transport-test (no adapter needed) --------------------------------
+    if (mode_transport_test) {
+        int ret = run_transport_test();
+        platform_cleanup_winsock();
+        return ret;
+    }
+
+    // ---- modes requiring adapter: check admin + create adapter ------------
     if (!platform_is_admin()) {
         fprintf(stderr, "error: must run as administrator\n");
         platform_cleanup_winsock();
@@ -73,39 +210,11 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // ---- parse mode --------------------------------------------------------
-    bool mode_listen    = false;
-    bool mode_inject    = false;
-    bool mode_ping_test = false;
-    std::vector<uint8_t> inject_data;
-
-    if (argc < 2) {
-        mode_listen = true;
-    } else if (std::strcmp(argv[1], "--listen") == 0) {
-        mode_listen = true;
-    } else if (std::strcmp(argv[1], "--ping-test") == 0) {
-        mode_ping_test = true;
-    } else if (argc > 2 && std::strcmp(argv[1], "--inject") == 0) {
-        if (!parse_hex(argv[2], inject_data)) {
-            fprintf(stderr, "error: invalid hex string\n");
-            adapter.close();
-            platform_cleanup_winsock();
-            return 1;
-        }
-        mode_inject = true;
-    } else {
-        print_usage(argv[0]);
-        adapter.close();
-        platform_cleanup_winsock();
-        return 1;
-    }
-
     // ---- inject / ping-test ------------------------------------------------
     if (mode_ping_test || mode_inject) {
         const uint8_t* data;
         size_t len;
         if (mode_ping_test) {
-            // Create UDP listener on 10.10.0.1:9999 to receive injected packet
             SOCKET listener = socket(AF_INET, SOCK_DGRAM, 0);
             bool listener_ok = false;
             if (listener != INVALID_SOCKET) {
@@ -118,7 +227,6 @@ int main(int argc, char* argv[]) {
                     printf("[main] listening on 10.10.0.1:9999\n");
             }
 
-            // Add temp firewall rule BEFORE injecting (packet drops if rule missing)
             char rule_name[] = "AegisTempPingTest";
             char exe_path[MAX_PATH];
             GetModuleFileNameA(NULL, exe_path, sizeof(exe_path));
@@ -130,7 +238,6 @@ int main(int argc, char* argv[]) {
             int fw_ret = system(cmd);
             printf("[main] firewall rule add returned %d\n", fw_ret);
 
-            // Drain init packets then inject UDP through Wintun
             std::vector<uint8_t> drain;
             for (int i = 0; i < 5; i++) {
                 if (!adapter.read_packet(drain, 200)) break;
@@ -151,7 +258,6 @@ int main(int argc, char* argv[]) {
             }
             printf("[main] write OK\n");
 
-            // Check if OS socket received the injected packet
             if (listener_ok) {
                 DWORD timeout = 5000;
                 setsockopt(listener, SOL_SOCKET, SO_RCVTIMEO,
@@ -174,7 +280,6 @@ int main(int argc, char* argv[]) {
                 closesocket(listener);
             }
 
-            // Remove the temp firewall rule
             snprintf(cmd, sizeof(cmd),
                 "netsh advfirewall firewall delete rule name=%s", rule_name);
             system(cmd);
@@ -213,7 +318,6 @@ int main(int argc, char* argv[]) {
                 closesocket(sender);
             }
 
-            // The OS-routed packet should appear on Wintun read
             std::vector<uint8_t> reply;
             for (int i = 0; i < 20; i++) {
                 reply.clear();
