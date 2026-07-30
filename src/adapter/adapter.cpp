@@ -7,6 +7,18 @@ Adapter::Adapter() {
 
 Adapter::~Adapter() { close(); }
 
+static void CALLBACK wintun_log(_In_ WINTUN_LOGGER_LEVEL Level,
+                                _In_ DWORD64 Timestamp,
+                                _In_z_ LPCWSTR Message) {
+    const char* level_str = "?";
+    switch (Level) {
+        case WINTUN_LOG_INFO: level_str = "INFO"; break;
+        case WINTUN_LOG_WARN: level_str = "WARN"; break;
+        case WINTUN_LOG_ERR:  level_str = "ERR";  break;
+    }
+    fprintf(stderr, "[wintun] %s: %ws\n", level_str, Message);
+}
+
 bool Adapter::load_wintun_dll() {
     wintun_dll_ = LoadLibraryExW(L"wintun.dll", nullptr,
                                  LOAD_LIBRARY_SEARCH_APPLICATION_DIR |
@@ -46,6 +58,9 @@ bool Adapter::create() {
     fprintf(stderr, "[adapter] create: loading dll\n");
     if (!load_wintun_dll())
         return false;
+
+    WintunSetLogger_(wintun_log);
+    fprintf(stderr, "[adapter] logger set\n");
 
     fprintf(stderr, "[adapter] create: calling WintunCreateAdapter\n");
     adapter_ = WintunCreateAdapter_(L"Aegis Tunnel", L"Aegis", nullptr);
@@ -88,17 +103,19 @@ bool Adapter::create() {
     return false;
 
 interface_ready:
-    session_ = WintunStartSession_(adapter_, WINTUN_MIN_RING_CAPACITY);
+    // Configure IP BEFORE starting session (WireGuard example order)
+    if (!configure_ip()) {
+        close();
+        return false;
+    }
+
+    // Use same ring capacity as WireGuard example
+    session_ = WintunStartSession_(adapter_, 0x400000);
     if (!session_) {
         fprintf(stderr, "[adapter] WintunStartSession failed (error %lu)\n",
                 GetLastError());
         WintunCloseAdapter_(adapter_);
         adapter_ = nullptr;
-        return false;
-    }
-
-    if (!configure_ip()) {
-        close();
         return false;
     }
 
@@ -170,6 +187,8 @@ bool Adapter::write_packet(const std::vector<uint8_t>& data) {
 
     BYTE* buf = WintunAllocateSendPacket_(session_, (DWORD)data.size());
     if (!buf) {
+        fprintf(stderr, "[adapter] WintunAllocateSendPacket failed (error %lu)\n",
+                GetLastError());
         return false;
     }
 
@@ -179,8 +198,13 @@ bool Adapter::write_packet(const std::vector<uint8_t>& data) {
 }
 
 void Adapter::print_packet(const uint8_t* data, size_t len) {
-    if (len < 20) {
-        printf("[pkt] short (%zu bytes)\n", len);
+    if (len < 20 || (data[0] >> 4) != 4) {
+        printf("[pkt] non-IPv4 (ver=%u  len=%zu) | raw=",
+               (len >= 1) ? (unsigned)(data[0] >> 4) : 0, len);
+        size_t dump = (len > 64) ? 64 : len;
+        for (size_t i = 0; i < dump; i++)
+            printf("%02x", data[i]);
+        putchar('\n');
         return;
     }
 

@@ -8,12 +8,14 @@
 #include <chrono>
 
 // UDP packet: 10.10.0.2:12345 -> 10.10.0.1:9999, payload "hello" (5 bytes)
-// IP: id=1, ttl=64, checksum=0x66a9 (proto 17 = UDP)
+// Total 33 bytes: 20 IP + 8 UDP + 5 payload
+// IP: tot_len=33(0x21), id=1, ttl=64, proto=17(UDP), csum=0x66b5
+// UDP: sport=12345, dport=9999, len=13(0x0d), csum=0x50a3
 static const uint8_t UDP_TEST_PACKET[] = {
-    0x45, 0x00, 0x00, 0x2d, 0x00, 0x01, 0x00, 0x00,
-    0x40, 0x11, 0x66, 0xa9, 0x0a, 0x0a, 0x00, 0x02,
+    0x45, 0x00, 0x00, 0x21, 0x00, 0x01, 0x00, 0x00,
+    0x40, 0x11, 0x66, 0xb5, 0x0a, 0x0a, 0x00, 0x02,
     0x0a, 0x0a, 0x00, 0x01,
-    0x30, 0x39, 0x27, 0x0f, 0x00, 0x19, 0x00, 0x00,
+    0x30, 0x39, 0x27, 0x0f, 0x00, 0x0d, 0x50, 0xa3,
     0x68, 0x65, 0x6c, 0x6c, 0x6f};
 
 // ICMP Echo Request:  10.10.0.2 -> 10.10.0.1
@@ -103,27 +105,78 @@ int main(int argc, char* argv[]) {
         const uint8_t* data;
         size_t len;
         if (mode_ping_test) {
-            // Send a packet through the OS socket API and verify it appears on Wintun
-            SOCKET sender = socket(AF_INET, SOCK_DGRAM, 0);
-            if (sender != INVALID_SOCKET) {
-                struct sockaddr_in local = {};
-                local.sin_family = AF_INET;
-                local.sin_addr.s_addr = htonl((10 << 24) | (10 << 16) | (0 << 8) | 1);
-                local.sin_port = htons(12345);
-                if (bind(sender, (struct sockaddr*)&local, sizeof(local)) == 0)
-                    printf("[main] sender bound to 10.10.0.1:12345\n");
+            // Create UDP listener on 10.10.0.1:9999 to receive injected packet
+            SOCKET listener = socket(AF_INET, SOCK_DGRAM, 0);
+            bool listener_ok = false;
+            if (listener != INVALID_SOCKET) {
+                struct sockaddr_in addr = {};
+                addr.sin_family = AF_INET;
+                addr.sin_addr.s_addr = htonl((10 << 24) | (10 << 16) | (0 << 8) | 1);
+                addr.sin_port = htons(9999);
+                listener_ok = (bind(listener, (struct sockaddr*)&addr, sizeof(addr)) == 0);
+                if (listener_ok)
+                    printf("[main] listening on 10.10.0.1:9999\n");
             }
 
-            struct sockaddr_in dest = {};
-            dest.sin_family = AF_INET;
-            dest.sin_addr.s_addr = htonl((10 << 24) | (10 << 16) | (0 << 8) | 2);
-            dest.sin_port = htons(9999);
-            const char* msg = "hello";
-            int sent = sendto(sender, msg, 5, 0, (struct sockaddr*)&dest, sizeof(dest));
-            if (sent > 0)
-                printf("[main] OS sent %d bytes to 10.10.0.2:9999\n", sent);
-            else
-                printf("[main] sendto failed (error %d)\n", WSAGetLastError());
+            // Drain init packets then inject UDP through Wintun
+            std::vector<uint8_t> drain;
+            for (int i = 0; i < 5; i++) {
+                if (!adapter.read_packet(drain, 200)) break;
+            }
+
+            data = UDP_TEST_PACKET;
+            len  = sizeof(UDP_TEST_PACKET);
+            printf("[main] ping-test: injecting %zu bytes:\n      ", len);
+            for (size_t i = 0; i < len; i++)
+                printf("%02x%c", data[i], (i % 16 == 15) ? '\n' : ' ');
+            putchar('\n');
+
+            if (!adapter.write_packet({data, data + len})) {
+                fprintf(stderr, "error: write_packet failed\n");
+                adapter.close();
+                platform_cleanup_winsock();
+                return 1;
+            }
+            printf("[main] write OK\n");
+
+            // Add temp firewall rule allowing inbound UDP 9999 for our binary
+            char rule_name[] = "AegisTempPingTest";
+            char exe_path[MAX_PATH];
+            GetModuleFileNameA(NULL, exe_path, sizeof(exe_path));
+            char cmd[512];
+            snprintf(cmd, sizeof(cmd),
+                "netsh advfirewall firewall add rule name=%s dir=in"
+                " program=\"%s\" protocol=udp localport=9999 action=allow >nul 2>nul",
+                rule_name, exe_path);
+            system(cmd);
+
+            // Check if OS socket received the injected packet
+            if (listener_ok) {
+                DWORD timeout = 5000;
+                setsockopt(listener, SOL_SOCKET, SO_RCVTIMEO,
+                           (const char*)&timeout, sizeof(timeout));
+                char buf[64] = {};
+                struct sockaddr_in from = {};
+                int fromlen = sizeof(from);
+                int r = recvfrom(listener, buf, sizeof(buf), 0,
+                                 (struct sockaddr*)&from, &fromlen);
+                if (r > 0) {
+                    buf[r] = 0;
+                    printf("[main] *** INJECTION CONFIRMED *** listener received %d bytes"
+                           " from %s:%d: \"%s\"\n",
+                           r, inet_ntoa(from.sin_addr), ntohs(from.sin_port), buf);
+                } else {
+                    int err = WSAGetLastError();
+                    printf("[main] listener error %d (0x%x)"
+                           " — injection may have failed\n", err, err);
+                }
+                closesocket(listener);
+            }
+
+            // Remove the temp firewall rule
+            snprintf(cmd, sizeof(cmd),
+                "netsh advfirewall firewall delete rule name=%s >nul 2>nul", rule_name);
+            system(cmd);
         } else {
             data = inject_data.data();
             len  = inject_data.size();
@@ -138,13 +191,12 @@ int main(int argc, char* argv[]) {
             printf("[main] write OK\n");
         }
 
-        // Read from Wintun — the OS-routed packet should appear here
+        // Read any response packets from Wintun
         printf("[main] reading from Wintun for 5s...\n");
         std::vector<uint8_t> reply;
         for (int i = 0; i < 20; i++) {
             reply.clear();
             if (!adapter.read_packet(reply, 250)) break;
-            printf("[main] read %zu bytes\n", reply.size());
             Adapter::print_packet(reply.data(), reply.size());
         }
 
