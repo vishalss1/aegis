@@ -22,7 +22,7 @@ bool SessionManager::handle_handshake_message(
 }
 
 bool SessionManager::is_network_match(const NetworkId& peer_network) const {
-    return identity_.network_id() == peer_network;
+    return identity_.network_id == peer_network;
 }
 
 std::optional<Session*> SessionManager::get_session(const NodeId& peer_id) {

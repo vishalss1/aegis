@@ -3,6 +3,7 @@
 #include "aegis/transport/transport.hpp"
 #include "aegis/crypto/x25519.hpp"
 #include "aegis/crypto/chacha20poly1305.hpp"
+#include "aegis/identity/identity.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -52,13 +53,14 @@ static bool parse_hex(const char* hex, std::vector<uint8_t>& out) {
 }
 
 static void print_usage(const char* prog) {
-    printf("usage: %s [--listen | --inject <hex> | --ping-test | --transport-test | --crypto-test | --aead-test]\n\n", prog);
+    printf("usage: %s [--listen | --inject <hex> | --ping-test | --transport-test | --crypto-test | --aead-test | --identity-test]\n\n", prog);
     printf("  --listen           create adapter at 10.10.0.1/24 and print packets for 30s\n");
     printf("  --inject <hex>     inject a raw hex-encoded IP packet, then read one reply\n");
     printf("  --ping-test        inject a UDP packet, confirm OS listener receives it\n");
     printf("  --transport-test   loopback UDP send/receive via Transport class\n");
     printf("  --crypto-test      X25519 key generation and shared secret derivation\n");
     printf("  --aead-test        ChaCha20-Poly1305 AEAD encrypt/decrypt with tamper rejection\n");
+    printf("  --identity-test    Identity creation, NodeID determinism, NetworkID matching\n");
 }
 
 // RFC 8439 Section 2.8.2 AEAD_CHACHA20_POLY1305 test vector
@@ -335,6 +337,72 @@ static int run_crypto_test() {
     return 0;
 }
 
+// ---- identity-test ----------------------------------------------------------
+static int run_identity_test() {
+    printf("[identity-test] starting\n");
+
+    // Create two identities with the same NetworkID
+    NetworkId net_a{};
+    net_a[0] = 0x01;
+    NetworkId net_b{};
+    net_b[0] = 0x02;
+
+    Identity alice = Identity::create(net_a);
+    Identity bob   = Identity::create(net_a);
+    Identity charlie = Identity::create(net_b);
+
+    printf("[identity-test] alice node_id:  ");
+    for (auto b : alice.node_id) printf("%02x", b);
+    printf("\n[identity-test] bob node_id:    ");
+    for (auto b : bob.node_id) printf("%02x", b);
+    printf("\n[identity-test] charlie node_id:");
+    for (auto b : charlie.node_id) printf("%02x", b);
+    printf("\n");
+
+    // Same-network peers: must match
+    if (!alice.matches_network(bob.network_id)) {
+        fprintf(stderr, "[identity-test] FAIL — alice and bob share net_a but matches_network returned false\n");
+        return 1;
+    }
+    printf("[identity-test] alice matches bob's network: YES\n");
+
+    if (!bob.matches_network(alice.network_id)) {
+        fprintf(stderr, "[identity-test] FAIL — bob and alice share net_a but matches_network returned false\n");
+        return 1;
+    }
+    printf("[identity-test] bob matches alice's network: YES\n");
+
+    // Different-network peers: must NOT match
+    if (alice.matches_network(charlie.network_id)) {
+        fprintf(stderr, "[identity-test] FAIL — alice (net_a) matches charlie (net_b) but should not\n");
+        return 1;
+    }
+    printf("[identity-test] alice matches charlie's network: NO\n");
+
+    if (charlie.matches_network(alice.network_id)) {
+        fprintf(stderr, "[identity-test] FAIL — charlie (net_b) matches alice (net_a) but should not\n");
+        return 1;
+    }
+    printf("[identity-test] charlie matches alice's network: NO\n");
+
+    // NodeID determinism: hash the same public key twice
+    NodeId h1 = hash_public_key(alice.keypair.public_key);
+    NodeId h2 = hash_public_key(alice.keypair.public_key);
+    if (h1 != h2) {
+        fprintf(stderr, "[identity-test] FAIL — hash_public_key not deterministic\n");
+        return 1;
+    }
+    // Also confirm it matches what Identity::create stored
+    if (h1 != alice.node_id) {
+        fprintf(stderr, "[identity-test] FAIL — hash_public_key != stored node_id\n");
+        return 1;
+    }
+    printf("[identity-test] NodeID is deterministic: YES\n");
+
+    printf("[identity-test] *** ALL PASS ***\n");
+    return 0;
+}
+
 // ---- transport-test --------------------------------------------------------
 static int run_transport_test() {
     printf("[transport-test] starting\n");
@@ -446,6 +514,7 @@ int main(int argc, char* argv[]) {
     bool mode_transport_test = false;
     bool mode_crypto_test  = false;
     bool mode_aead_test    = false;
+    bool mode_identity_test = false;
     std::vector<uint8_t> inject_data;
 
     if (argc < 2) {
@@ -460,6 +529,8 @@ int main(int argc, char* argv[]) {
         mode_crypto_test = true;
     } else if (std::strcmp(argv[1], "--aead-test") == 0) {
         mode_aead_test = true;
+    } else if (std::strcmp(argv[1], "--identity-test") == 0) {
+        mode_identity_test = true;
     } else if (argc > 2 && std::strcmp(argv[1], "--inject") == 0) {
         if (!parse_hex(argv[2], inject_data)) {
             fprintf(stderr, "error: invalid hex string\n");
@@ -479,6 +550,9 @@ int main(int argc, char* argv[]) {
     }
     if (mode_aead_test) {
         return run_aead_test();
+    }
+    if (mode_identity_test) {
+        return run_identity_test();
     }
 
     // ---- transport-test (no adapter needed) --------------------------------

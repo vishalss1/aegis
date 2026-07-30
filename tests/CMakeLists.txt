@@ -19,10 +19,16 @@ target_include_directories(test_aead PRIVATE ../include)
 target_link_libraries(test_aead OpenSSL::Crypto)
 add_test(NAME test_aead COMMAND test_aead)
 
+add_executable(test_identity test_identity.cpp ../src/identity/identity.cpp ../src/crypto/x25519.cpp)
+target_include_directories(test_identity PRIVATE ../include)
+target_link_libraries(test_identity OpenSSL::Crypto)
+add_test(NAME test_identity COMMAND test_identity)
+
 add_custom_target(check
     COMMAND test_packet
     COMMAND test_transport
     COMMAND test_crypto
     COMMAND test_aead
+    COMMAND test_identity
     COMMENT "Running all unit tests"
 )
