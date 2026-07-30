@@ -118,6 +118,18 @@ int main(int argc, char* argv[]) {
                     printf("[main] listening on 10.10.0.1:9999\n");
             }
 
+            // Add temp firewall rule BEFORE injecting (packet drops if rule missing)
+            char rule_name[] = "AegisTempPingTest";
+            char exe_path[MAX_PATH];
+            GetModuleFileNameA(NULL, exe_path, sizeof(exe_path));
+            char cmd[512];
+            snprintf(cmd, sizeof(cmd),
+                "netsh advfirewall firewall add rule name=%s dir=in"
+                " program=\"%s\" protocol=udp localport=9999 action=allow",
+                rule_name, exe_path);
+            int fw_ret = system(cmd);
+            printf("[main] firewall rule add returned %d\n", fw_ret);
+
             // Drain init packets then inject UDP through Wintun
             std::vector<uint8_t> drain;
             for (int i = 0; i < 5; i++) {
@@ -138,17 +150,6 @@ int main(int argc, char* argv[]) {
                 return 1;
             }
             printf("[main] write OK\n");
-
-            // Add temp firewall rule allowing inbound UDP 9999 for our binary
-            char rule_name[] = "AegisTempPingTest";
-            char exe_path[MAX_PATH];
-            GetModuleFileNameA(NULL, exe_path, sizeof(exe_path));
-            char cmd[512];
-            snprintf(cmd, sizeof(cmd),
-                "netsh advfirewall firewall add rule name=%s dir=in"
-                " program=\"%s\" protocol=udp localport=9999 action=allow >nul 2>nul",
-                rule_name, exe_path);
-            system(cmd);
 
             // Check if OS socket received the injected packet
             if (listener_ok) {
@@ -175,7 +176,7 @@ int main(int argc, char* argv[]) {
 
             // Remove the temp firewall rule
             snprintf(cmd, sizeof(cmd),
-                "netsh advfirewall firewall delete rule name=%s >nul 2>nul", rule_name);
+                "netsh advfirewall firewall delete rule name=%s", rule_name);
             system(cmd);
         } else {
             data = inject_data.data();
