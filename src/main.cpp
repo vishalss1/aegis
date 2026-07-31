@@ -8,6 +8,7 @@
 #include "aegis/tunnel/tunnel_test.hpp"
 #include "aegis/session/session.hpp"
 #include "aegis/peer/peer.hpp"
+#include "aegis/routing/routing.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -67,6 +68,7 @@ static void print_usage(const char* prog) {
     printf("  --identity-test    Identity creation, NodeID determinism, NetworkID matching\n");
     printf("  --session-test     Session Manager handshake, key derivation, replay, encrypt/decrypt\n");
     printf("  --peer-test        Peer Manager multi-peer table, states, endpoints, session lookup\n");
+    printf("  --routing-test     Routing Engine prefix->next-hop->peer resolution and loop avoidance\n");
     printf("  --tunnel-test      self-test: two loopback tunnels, forced-route UDP round-trip both ways\n");
     printf("  --tunnel <args>   point-to-point encrypted tunnel (see source for arg format)\n");
 }
@@ -650,6 +652,128 @@ static int run_peer_test() {
     return 0;
 }
 
+// ---- routing-test -----------------------------------------------------------
+static uint32_t rt_ip(uint8_t a, uint8_t b, uint8_t c, uint8_t d) {
+    return (static_cast<uint32_t>(a) << 24) |
+           (static_cast<uint32_t>(b) << 16) |
+           (static_cast<uint32_t>(c) << 8)  |
+           static_cast<uint32_t>(d);
+}
+
+static NodeId rt_id(uint8_t tag) {
+    NodeId n{};
+    n[0] = tag;
+    return n;
+}
+
+static Route rt_direct(uint32_t prefix, uint8_t plen, const NodeId& peer) {
+    Route r;
+    r.prefix = prefix;
+    r.prefix_length = plen;
+    r.type = NextHopType::Direct;
+    r.next_hop = peer;
+    r.destination = peer;
+    return r;
+}
+
+static Route rt_relay(uint32_t prefix, uint8_t plen,
+                      const NodeId& next_hop, const NodeId& destination) {
+    Route r;
+    r.prefix = prefix;
+    r.prefix_length = plen;
+    r.type = NextHopType::Relay;
+    r.next_hop = next_hop;
+    r.destination = destination;
+    return r;
+}
+
+static int run_routing_test() {
+    printf("[routing-test] starting\n");
+
+    NodeId p1 = rt_id(1);
+    NodeId p2 = rt_id(2);
+    NodeId d  = rt_id(9);
+
+    // ---- longest-prefix match ----------------------------------------------
+    RoutingEngine re;
+    re.add_route(rt_direct(rt_ip(10, 10, 0, 0), 24, p1));
+    re.add_route(rt_direct(rt_ip(10, 10, 0, 2), 32, p2));
+
+    auto best = re.find_peer(rt_ip(10, 10, 0, 2));
+    if (!best || *best != p2) {
+        fprintf(stderr, "[routing-test] FAIL: longest-prefix match\n");
+        return 1;
+    }
+    printf("[routing-test] longest-prefix match (/32 beats /24): OK\n");
+
+    auto wide = re.find_peer(rt_ip(10, 10, 0, 99));
+    if (!wide || *wide != p1) {
+        fprintf(stderr, "[routing-test] FAIL: /24 fallback\n");
+        return 1;
+    }
+    printf("[routing-test] /24 fallback: OK\n");
+
+    if (re.find_peer(rt_ip(10, 20, 0, 1)).has_value()) {
+        fprintf(stderr, "[routing-test] FAIL: unexpected route for 10.20.0.1\n");
+        return 1;
+    }
+    printf("[routing-test] no-route returns nullopt: OK\n");
+
+    // ---- relay next-hop abstraction ----------------------------------------
+    RoutingEngine mesh;
+    NodeId A = rt_id(10);
+    mesh.add_route(rt_direct(rt_ip(10, 0, 0, 10), 32, A));
+    mesh.add_route(rt_relay(rt_ip(10, 60, 0, 0), 24, A, d));
+
+    auto dpeer = mesh.find_peer(rt_ip(10, 60, 0, 5));
+    auto dnh   = mesh.find_next_hop(rt_ip(10, 60, 0, 5));
+    if (!dpeer || *dpeer != d || !dnh || *dnh != A) {
+        fprintf(stderr, "[routing-test] FAIL: relay next-hop resolution\n");
+        return 1;
+    }
+    printf("[routing-test] relay: dest=%02x.. next_hop=%02x..: OK\n", d[0], A[0]);
+
+    // ---- loop avoidance ----------------------------------------------------
+    RoutingEngine loops;
+    loops.add_route(rt_relay(rt_ip(10, 50, 0, 1), 32, A, d));
+    loops.add_route(rt_relay(rt_ip(10, 50, 0, 2), 32, d, A));
+    if (loops.find_peer(rt_ip(10, 50, 0, 1)).has_value()) {
+        fprintf(stderr, "[routing-test] FAIL: relay loop not rejected\n");
+        return 1;
+    }
+    printf("[routing-test] relay loop rejected: OK\n");
+
+    // ---- self-relay rejection ----------------------------------------------
+    RoutingEngine selfrelay;
+    NodeId X = rt_id(30);
+    if (selfrelay.add_route(rt_relay(rt_ip(10, 80, 0, 1), 32, X, X))) {
+        fprintf(stderr, "[routing-test] FAIL: self-relay accepted\n");
+        return 1;
+    }
+    printf("[routing-test] self-relay rejected at insert: OK\n");
+
+    // ---- upsert + withdraw -------------------------------------------------
+    re.add_route(rt_direct(rt_ip(10, 10, 0, 2), 32, p2));
+    if (re.size() != 2) {
+        fprintf(stderr, "[routing-test] FAIL: upsert must replace same prefix\n");
+        return 1;
+    }
+    printf("[routing-test] upsert replaces same prefix: OK\n");
+
+    RoutingEngine w;
+    w.add_route(rt_direct(rt_ip(10, 20, 0, 1), 32, p2));
+    w.add_route(rt_relay(rt_ip(10, 30, 0, 0), 24, p2, d));
+    w.remove_route(p2);
+    if (!w.empty()) {
+        fprintf(stderr, "[routing-test] FAIL: withdraw did not remove routes\n");
+        return 1;
+    }
+    printf("[routing-test] route withdrawal through dead peer: OK\n");
+
+    printf("[routing-test] *** ALL PASS ***\n");
+    return 0;
+}
+
 // ---- tunnel -----------------------------------------------------------------
 static int run_tunnel(int argc, char* argv[]) {
     // usage: --tunnel <local_ip> <prefix> <listen_port> <peer_ip> <peer_port>
@@ -838,6 +962,7 @@ int main(int argc, char* argv[]) {
     bool mode_aead_test    = false;
     bool mode_identity_test = false;
     bool mode_peer_test = false;
+    bool mode_routing_test = false;
     std::vector<uint8_t> inject_data;
 
     if (argc < 2) {
@@ -860,6 +985,8 @@ int main(int argc, char* argv[]) {
         mode_identity_test = true;
     } else if (std::strcmp(argv[1], "--peer-test") == 0) {
         mode_peer_test = true;
+    } else if (std::strcmp(argv[1], "--routing-test") == 0) {
+        mode_routing_test = true;
     } else if (argc > 2 && std::strcmp(argv[1], "--inject") == 0) {
         if (!parse_hex(argv[2], inject_data)) {
             fprintf(stderr, "error: invalid hex string\n");
@@ -903,6 +1030,11 @@ int main(int argc, char* argv[]) {
     }
     if (mode_peer_test) {
         int ret = run_peer_test();
+        platform_cleanup_winsock();
+        return ret;
+    }
+    if (mode_routing_test) {
+        int ret = run_routing_test();
         platform_cleanup_winsock();
         return ret;
     }

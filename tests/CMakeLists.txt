@@ -39,6 +39,10 @@ target_include_directories(test_peer PRIVATE ../include)
 target_link_libraries(test_peer OpenSSL::Crypto ws2_32)
 add_test(NAME test_peer COMMAND test_peer)
 
+add_executable(test_routing test_routing.cpp ../src/routing/routing.cpp)
+target_include_directories(test_routing PRIVATE ../include)
+add_test(NAME test_routing COMMAND test_routing)
+
 add_custom_target(check
     COMMAND test_packet
     COMMAND test_transport
@@ -48,5 +52,6 @@ add_custom_target(check
     COMMAND test_tunnel
     COMMAND test_session
     COMMAND test_peer
+    COMMAND test_routing
     COMMENT "Running all unit tests"
 )
