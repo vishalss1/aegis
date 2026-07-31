@@ -1,27 +1,22 @@
 #pragma once
 
-#include "aegis/crypto/chacha20poly1305.hpp"
+#include "aegis/session/session.hpp"
 #include "aegis/transport/transport.hpp"
 #include "aegis/adapter/adapter.hpp"
-#include "aegis/packet/packet.hpp"
 #include <array>
 #include <cstdint>
 #include <string>
 #include <atomic>
 #include <thread>
 #include <vector>
-
-static constexpr size_t WIRE_NONCE_SIZE = CHACHA20_POLY1305_NONCE_SIZE;
-static constexpr size_t WIRE_TAG_SIZE   = CHACHA20_POLY1305_TAG_SIZE;
-
-void increment_nonce(std::array<uint8_t, WIRE_NONCE_SIZE>& nonce);
+#include <mutex>
+#include <condition_variable>
 
 struct TunnelConfig {
     uint32_t local_ip;         // Network byte order
     uint8_t  local_prefix;     // e.g. 24
     uint16_t listen_port;      // Host byte order
     Endpoint peer_endpoint;
-    ChaCha20Poly1305Key psk;
 };
 
 class Tunnel {
@@ -40,12 +35,18 @@ private:
     Transport transport_;
     TunnelConfig config_;
 
-    std::array<uint8_t, WIRE_NONCE_SIZE> tx_nonce_{};
+    Identity identity_;
+    SessionManager session_manager_;
+    NodeId peer_id_{};
 
     std::thread tx_thread_;
-    std::thread rx_thread_;
     std::atomic<bool> running_{false};
 
     void tx_loop();
-    void rx_loop();
+    void rx_callback(const uint8_t* data, size_t len, Endpoint sender);
+
+    std::mutex hs_mtx_;
+    std::condition_variable hs_cv_;
+    bool hs_done_ = false;
+    uint32_t pending_session_id_ = 0;
 };

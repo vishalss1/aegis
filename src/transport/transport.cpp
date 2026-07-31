@@ -50,6 +50,9 @@ bool Transport::send(const uint8_t* data, size_t len, const Endpoint& dest) {
     addr.sin_port = dest.port;
     int ret = sendto(sock_, (const char*)data, (int)len, 0,
                      (const sockaddr*)&addr, sizeof(addr));
+    if (ret == SOCKET_ERROR)
+        fprintf(stderr, "[transport] sendto %08x:%04x failed: %d\n",
+                ntohl(dest.ip), ntohs(dest.port), platform_last_error());
     return ret != SOCKET_ERROR;
 }
 
@@ -80,7 +83,13 @@ void Transport::recv_loop(OnReceiveCallback callback) {
                            (sockaddr*)&sender, &from_len);
         if (ret == SOCKET_ERROR) {
             int err = WSAGetLastError();
-            if (err == WSAETIMEDOUT)
+            // WSAETIMEDOUT: normal poll timeout, keep looping.
+            // WSAECONNRESET / WSAENETRESET: a prior sendto to an unreachable
+            // port produced an ICMP error queued on this UDP socket (classic
+            // Windows behavior). The socket is still valid - just swallow the
+            // error and continue receiving.
+            if (err == WSAETIMEDOUT || err == WSAECONNRESET ||
+                err == WSAENETRESET)
                 continue;
             break;
         }

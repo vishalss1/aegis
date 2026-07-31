@@ -29,6 +29,11 @@ target_include_directories(test_tunnel PRIVATE ../include)
 target_link_libraries(test_tunnel OpenSSL::Crypto)
 add_test(NAME test_tunnel COMMAND test_tunnel)
 
+add_executable(test_session test_session.cpp ../src/session/session.cpp ../src/identity/identity.cpp ../src/crypto/x25519.cpp ../src/crypto/chacha20poly1305.cpp)
+target_include_directories(test_session PRIVATE ../include)
+target_link_libraries(test_session OpenSSL::Crypto)
+add_test(NAME test_session COMMAND test_session)
+
 add_custom_target(check
     COMMAND test_packet
     COMMAND test_transport
@@ -36,5 +41,6 @@ add_custom_target(check
     COMMAND test_aead
     COMMAND test_identity
     COMMAND test_tunnel
+    COMMAND test_session
     COMMENT "Running all unit tests"
 )

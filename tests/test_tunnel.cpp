@@ -8,8 +8,7 @@
 static constexpr size_t WIRE_NONCE_SIZE = 12;
 static constexpr size_t WIRE_TAG_SIZE   = 16;
 
-void increment_nonce(std::array<uint8_t, WIRE_NONCE_SIZE>& nonce);
-void increment_nonce(std::array<uint8_t, WIRE_NONCE_SIZE>& nonce) {
+static void increment_nonce(std::array<uint8_t, WIRE_NONCE_SIZE>& nonce) {
     for (int i = WIRE_NONCE_SIZE - 1; i >= 0; i--) {
         if (++nonce[i] != 0) break;
     }

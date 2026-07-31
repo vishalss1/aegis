@@ -1,14 +1,30 @@
 #include "aegis/tunnel/tunnel.hpp"
+#include "aegis/packet/packet.hpp"
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
+#include <ctime>
 
-Tunnel::Tunnel() = default;
+Tunnel::Tunnel()
+    : identity_(Identity::create(NetworkId{})),
+      session_manager_(identity_)
+{
+    fprintf(stderr, "[tunnel] identity: ");
+    for (auto b : identity_.node_id) fprintf(stderr, "%02x", b);
+    fprintf(stderr, "\n");
+}
+
 Tunnel::~Tunnel() { stop(); }
 
-void increment_nonce(std::array<uint8_t, WIRE_NONCE_SIZE>& nonce) {
-    for (int i = WIRE_NONCE_SIZE - 1; i >= 0; i--) {
-        if (++nonce[i] != 0) break;
-    }
+static uint32_t rand_session_id() {
+    uint32_t id = 0;
+#ifdef _MSC_VER
+    srand((unsigned)time(nullptr));
+    id = ((uint32_t)rand() << 16) ^ (uint32_t)rand();
+#else
+    id = (uint32_t)rand();
+#endif
+    return id;
 }
 
 bool Tunnel::start(const TunnelConfig& config, const std::string& adapter_name) {
@@ -34,9 +50,64 @@ bool Tunnel::start(const TunnelConfig& config, const std::string& adapter_name) 
             ntohl(config.peer_endpoint.ip),
             ntohs(config.peer_endpoint.port));
 
+    // ---- Handshake phase ------------------------------------------------
+    // Role is resolved deterministically by listen port: the lower port
+    // initiates, the higher port only responds. This avoids the deadlock
+    // where both sides initiate with different session IDs and neither can
+    // decrypt the other's data packets.
+    bool initiator =
+        config.listen_port < ntohs(config.peer_endpoint.port);
+
+    transport_.start_receive(
+        [this](const uint8_t* d, size_t l, Endpoint s) { rx_callback(d, l, s); });
+
+    if (initiator) {
+        pending_session_id_ = rand_session_id();
+        auto init_payload = session_manager_.create_handshake_init(pending_session_id_);
+
+        PacketHeader init_hdr{};
+        init_hdr.version = PACKET_VERSION;
+        init_hdr.packet_type = TYPE_HANDSHAKE_INIT;
+        init_hdr.session_id = pending_session_id_;
+        init_hdr.payload_length = (uint32_t)init_payload.size();
+        auto init_hdr_bytes = SessionManager::serialize_header(init_hdr);
+
+        std::vector<uint8_t> init_wire;
+        init_wire.reserve(16 + init_payload.size());
+        init_wire.insert(init_wire.end(), init_hdr_bytes.begin(), init_hdr_bytes.end());
+        init_wire.insert(init_wire.end(), init_payload.begin(), init_payload.end());
+
+        fprintf(stderr, "[tunnel] sent handshake init (session_id=%08x)\n",
+                pending_session_id_);
+
+        // Wait for handshake completion (with retries)
+        std::unique_lock<std::mutex> lock(hs_mtx_);
+        for (int attempt = 0; attempt < 10; attempt++) {
+            transport_.send(init_wire.data(), init_wire.size(), config_.peer_endpoint);
+            if (hs_cv_.wait_for(lock, std::chrono::seconds(1),
+                                [this] { return hs_done_; }))
+                break;
+            fprintf(stderr, "[tunnel] handshake retry %d...\n", attempt + 1);
+        }
+    } else {
+        // Responder: wait for the peer's init; rx_callback responds.
+        std::unique_lock<std::mutex> lock(hs_mtx_);
+        hs_cv_.wait_for(lock, std::chrono::seconds(10),
+                        [this] { return hs_done_; });
+    }
+
+    if (!hs_done_) {
+        fprintf(stderr, "[tunnel] handshake failed: no response\n");
+        transport_.stop_receive();
+        transport_.close();
+        adapter_.close();
+        return false;
+    }
+
+    fprintf(stderr, "[tunnel] session established (%s)\n",
+            initiator ? "initiator" : "responder");
     running_ = true;
     tx_thread_ = std::thread(&Tunnel::tx_loop, this);
-    rx_thread_ = std::thread(&Tunnel::rx_loop, this);
     return true;
 }
 
@@ -44,7 +115,6 @@ void Tunnel::stop() {
     running_ = false;
     transport_.stop_receive();
     if (tx_thread_.joinable()) tx_thread_.join();
-    if (rx_thread_.joinable()) rx_thread_.join();
     transport_.close();
     adapter_.close();
 }
@@ -52,11 +122,6 @@ void Tunnel::stop() {
 void Tunnel::tx_loop() {
     fprintf(stderr, "[tunnel] tx loop started\n");
     std::vector<uint8_t> raw;
-    std::vector<uint8_t> out;
-
-    // Buffers for encrypt: max IP packet size (1500) is safe
-    uint8_t ct_buf[2048];
-    uint8_t tag_buf[WIRE_TAG_SIZE];
 
     while (running_) {
         raw.clear();
@@ -67,68 +132,78 @@ void Tunnel::tx_loop() {
         if (!parsed)
             continue;
 
-        // Encrypt IP packet with current tx_nonce
-        ChaCha20Poly1305Nonce nonce_arr{};
-        std::memcpy(nonce_arr.data(), tx_nonce_.data(), WIRE_NONCE_SIZE);
-
-        if (!chacha20_poly1305_encrypt(
-                config_.psk, nonce_arr,
-                raw.data(), raw.size(),
-                ct_buf, tag_buf)) {
+        auto enc = session_manager_.encrypt_data(
+            peer_id_, raw.data(), raw.size());
+        if (!enc) {
             fprintf(stderr, "[tunnel] encrypt failed, dropping packet\n");
             continue;
         }
 
-        // Build wire packet: [nonce][ciphertext][tag]
-        out.clear();
-        out.insert(out.end(), tx_nonce_.begin(), tx_nonce_.end());
-        out.insert(out.end(), ct_buf, ct_buf + raw.size());
-        out.insert(out.end(), tag_buf, tag_buf + WIRE_TAG_SIZE);
-
-        if (!transport_.send(out.data(), out.size(), config_.peer_endpoint)) {
+        if (!transport_.send(enc->data(), enc->size(), config_.peer_endpoint)) {
             fprintf(stderr, "[tunnel] send failed, dropping packet\n");
         }
-
-        increment_nonce(tx_nonce_);
     }
     fprintf(stderr, "[tunnel] tx loop ended\n");
 }
 
-void Tunnel::rx_loop() {
-    fprintf(stderr, "[tunnel] rx loop started\n");
+void Tunnel::rx_callback(const uint8_t* data, size_t len, Endpoint) {
+    if (len < 16) return;
 
-    uint8_t pt_buf[2048];
+    uint8_t type = data[1];
 
-    transport_.start_receive([this, pt_buf](const uint8_t* data, size_t len, Endpoint) mutable {
+    if (type == TYPE_DATA) {
         if (!running_) return;
-
-        if (len < WIRE_NONCE_SIZE + WIRE_TAG_SIZE) {
-            fprintf(stderr, "[tunnel] drop: packet too small (%zu bytes)\n", len);
-            return;
+        auto dec = session_manager_.decrypt_data(data, len);
+        if (!dec) return;
+        if (!adapter_.write_packet(*dec)) {
+            fprintf(stderr, "[tunnel] write_packet failed\n");
         }
+        return;
+    }
 
-        size_t ct_len = len - WIRE_NONCE_SIZE - WIRE_TAG_SIZE;
-
-        // Parse nonce from first 12 bytes
-        ChaCha20Poly1305Nonce nonce{};
-        std::memcpy(nonce.data(), data, WIRE_NONCE_SIZE);
-
-        // Tag is last 16 bytes
-        const uint8_t* tag = data + WIRE_NONCE_SIZE + ct_len;
-
-        // Ciphertext is in the middle
-        const uint8_t* ct = data + WIRE_NONCE_SIZE;
-
-        if (!chacha20_poly1305_decrypt(
-                config_.psk, nonce,
-                ct, ct_len, tag, pt_buf)) {
-            fprintf(stderr, "[tunnel] drop: decrypt/auth failure\n");
-            return;
+    if (type == TYPE_HANDSHAKE_RESP) {
+        std::vector<uint8_t> payload(data + 16, data + len);
+        if (payload.size() < 36) return;
+        std::memcpy(peer_id_.data(), payload.data() + 36, 32);
+        if (session_manager_.handle_handshake_resp(payload, pending_session_id_)) {
+            std::lock_guard<std::mutex> lock(hs_mtx_);
+            hs_done_ = true;
+            hs_cv_.notify_one();
         }
+        return;
+    }
 
-        std::vector<uint8_t> pt_vec(pt_buf, pt_buf + ct_len);
-        if (!adapter_.write_packet(pt_vec)) {
-            fprintf(stderr, "[tunnel] write_packet failed, dropping\n");
+    if (type == TYPE_HANDSHAKE_INIT) {
+        std::vector<uint8_t> payload(data + 16, data + len);
+        if (payload.size() < 36) return;
+
+        NodeId sender_id{};
+        std::memcpy(sender_id.data(), payload.data() + 36, 32);
+        peer_id_ = sender_id;
+
+        auto resp_payload = session_manager_.handle_handshake_init(payload, sender_id);
+        if (!resp_payload) return;
+
+        uint32_t sid = ((uint32_t)payload[0] << 24) | ((uint32_t)payload[1] << 16) |
+                       ((uint32_t)payload[2] << 8) | (uint32_t)payload[3];
+
+        PacketHeader hdr{};
+        hdr.version = PACKET_VERSION;
+        hdr.packet_type = TYPE_HANDSHAKE_RESP;
+        hdr.session_id = sid;
+        hdr.payload_length = (uint32_t)resp_payload->size();
+        auto hdr_bytes = SessionManager::serialize_header(hdr);
+
+        std::vector<uint8_t> out;
+        out.reserve(16 + resp_payload->size());
+        out.insert(out.end(), hdr_bytes.begin(), hdr_bytes.end());
+        out.insert(out.end(), resp_payload->begin(), resp_payload->end());
+        transport_.send(out.data(), out.size(), config_.peer_endpoint);
+
+        {
+            std::lock_guard<std::mutex> lock(hs_mtx_);
+            hs_done_ = true;
+            hs_cv_.notify_one();
         }
-    });
+    }
 }
