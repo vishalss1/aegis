@@ -69,7 +69,8 @@ std::array<uint8_t, 16> SessionManager::serialize_header(const PacketHeader& hdr
 }
 
 std::vector<uint8_t> SessionManager::build_handshake_message(
-    uint8_t type, uint32_t session_id) const
+    uint8_t type, uint32_t session_id,
+    const X25519KeyPair& ephemeral) const
 {
     std::vector<uint8_t> msg;
     msg.reserve(HANDSHAKE_PAYLOAD_SIZE);
@@ -77,8 +78,8 @@ std::vector<uint8_t> SessionManager::build_handshake_message(
     uint32_t sid_be = bswap32(session_id);
     msg.insert(msg.end(), (uint8_t*)&sid_be, (uint8_t*)&sid_be + 4);
 
-    msg.insert(msg.end(), ephemeral_.public_key.begin(),
-               ephemeral_.public_key.end());
+    msg.insert(msg.end(), ephemeral.public_key.begin(),
+               ephemeral.public_key.end());
 
     msg.insert(msg.end(), identity_.node_id.begin(),
                identity_.node_id.end());
@@ -152,13 +153,19 @@ std::optional<Session*> SessionManager::get_session_by_id(uint32_t session_id) {
 }
 
 std::vector<uint8_t> SessionManager::create_handshake_init(uint32_t session_id) {
-    ephemeral_ = x25519_generate_keypair();
-    return build_handshake_message(TYPE_HANDSHAKE_INIT, session_id);
+    X25519KeyPair ephemeral = x25519_generate_keypair();
+    {
+        std::lock_guard<std::mutex> lock(mtx_);
+        ephemerals_[session_id] = ephemeral;
+    }
+    return build_handshake_message(TYPE_HANDSHAKE_INIT, session_id, ephemeral);
 }
 
 std::optional<std::vector<uint8_t>> SessionManager::handle_handshake_init(
     const std::vector<uint8_t>& message, const NodeId& sender_id)
 {
+    std::lock_guard<std::mutex> lock(mtx_);
+
     if (message.size() < HANDSHAKE_PAYLOAD_SIZE) {
         fprintf(stderr, "[session] handle_handshake_init: short message (%zu)\n",
                 message.size());
@@ -180,9 +187,9 @@ std::optional<std::vector<uint8_t>> SessionManager::handle_handshake_init(
         return std::nullopt;
     }
 
-    ephemeral_ = x25519_generate_keypair();
+    X25519KeyPair ephemeral = x25519_generate_keypair();
 
-    X25519Key secret = derive_master_secret(ephemeral_.private_key, peer_eph);
+    X25519Key secret = derive_master_secret(ephemeral.private_key, peer_eph);
     if (std::all_of(secret.begin(), secret.end(), [](uint8_t b) { return b == 0; }))
         return std::nullopt;
 
@@ -195,12 +202,14 @@ std::optional<std::vector<uint8_t>> SessionManager::handle_handshake_init(
     for (auto b : sender_id) fprintf(stderr, "%02x", b);
     fprintf(stderr, "\n");
 
-    return build_handshake_message(TYPE_HANDSHAKE_RESP, session_id);
+    return build_handshake_message(TYPE_HANDSHAKE_RESP, session_id, ephemeral);
 }
 
 bool SessionManager::handle_handshake_resp(
     const std::vector<uint8_t>& message, uint32_t session_id)
 {
+    std::lock_guard<std::mutex> lock(mtx_);
+
     if (message.size() < HANDSHAKE_PAYLOAD_SIZE) {
         fprintf(stderr, "[session] handle_handshake_resp: short message (%zu)\n",
                 message.size());
@@ -223,7 +232,15 @@ bool SessionManager::handle_handshake_resp(
     NodeId peer_id{};
     std::memcpy(peer_id.data(), message.data() + 36, 32);
 
-    X25519Key secret = derive_master_secret(ephemeral_.private_key, peer_eph);
+    auto eit = ephemerals_.find(session_id);
+    if (eit == ephemerals_.end()) {
+        fprintf(stderr, "[session] handle_handshake_resp: no ephemeral for "
+                "session %08x\n", session_id);
+        return false;
+    }
+
+    X25519Key secret = derive_master_secret(eit->second.private_key, peer_eph);
+    ephemerals_.erase(eit);
     if (std::all_of(secret.begin(), secret.end(), [](uint8_t b) { return b == 0; }))
         return false;
 

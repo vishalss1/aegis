@@ -70,7 +70,7 @@ static void print_usage(const char* prog) {
     printf("  --peer-test        Peer Manager multi-peer table, states, endpoints, session lookup\n");
     printf("  --routing-test     Routing Engine prefix->next-hop->peer resolution and loop avoidance\n");
     printf("  --tunnel-test      self-test: two loopback tunnels, forced-route UDP round-trip both ways\n");
-    printf("  --tunnel <args>   point-to-point encrypted tunnel (see source for arg format)\n");
+    printf("  --tunnel <local_ip> <prefix> <listen_port> [--peer <nodeid> <pubkey> <ip> <port> <cidr...>]  multi-peer tunnel\n");
 }
 
 // RFC 8439 Section 2.8.2 AEAD_CHACHA20_POLY1305 test vector
@@ -776,10 +776,14 @@ static int run_routing_test() {
 
 // ---- tunnel -----------------------------------------------------------------
 static int run_tunnel(int argc, char* argv[]) {
-    // usage: --tunnel <local_ip> <prefix> <listen_port> <peer_ip> <peer_port>
-    if (argc < 7) {
-        fprintf(stderr, "usage: %s --tunnel <local_ip> <prefix> <listen_port> <peer_ip> <peer_port>\n", argv[0]);
-        fprintf(stderr, "  e.g.: aegis --tunnel 10.10.0.1 24 51820 10.10.0.2 51821\n");
+    // usage: --tunnel <local_ip> <prefix> <listen_port>
+    //          [--peer <nodeid_hex> <pubkey_hex> <peer_ip> <peer_port> <allowed_cidr> ...]
+    if (argc < 6) {
+        fprintf(stderr, "usage: %s --tunnel <local_ip> <prefix> <listen_port>\n"
+                        "                    [--peer <nodeid_hex> <pubkey_hex> <peer_ip> <peer_port> <allowed_cidr> ...]\n",
+                argv[0]);
+        fprintf(stderr, "  e.g.: aegis --tunnel 10.10.0.1 24 51820\n"
+                        "            --peer <64hex> <64hex> 203.0.113.2 51821 10.20.0.0/24\n");
         return 1;
     }
 
@@ -800,20 +804,71 @@ static int run_tunnel(int argc, char* argv[]) {
     uint8_t prefix = (uint8_t)std::atoi(argv[3]);
     uint16_t listen_port = (uint16_t)std::atoi(argv[4]);
 
-    // Parse peer IP
-    uint32_t peer_ip = 0;
-    {
-        uint8_t a, b, c, d;
-        if (sscanf_s(argv[5], "%hhu.%hhu.%hhu.%hhu", &a, &b, &c, &d) != 4) {
-            fprintf(stderr, "error: invalid peer_ip '%s'\n", argv[5]);
+    TunnelConfig cfg;
+    cfg.local_ip = local_ip;
+    cfg.local_prefix = prefix;
+    cfg.listen_port = listen_port;
+
+    int i = 5;
+    while (i < argc) {
+        if (std::strcmp(argv[i], "--peer") != 0) {
+            fprintf(stderr, "error: unexpected argument '%s' (expected --peer)\n", argv[i]);
             return 1;
         }
-        peer_ip = htonl((static_cast<uint32_t>(a) << 24) |
-                        (static_cast<uint32_t>(b) << 16) |
-                        (static_cast<uint32_t>(c) << 8)  |
-                        static_cast<uint32_t>(d));
+        if (i + 5 >= argc) {
+            fprintf(stderr, "error: --peer needs <nodeid_hex> <pubkey_hex> <peer_ip> <peer_port> <allowed_cidr>...\n");
+            return 1;
+        }
+
+        TunnelPeer peer;
+        std::vector<uint8_t> nid, pk;
+        if (!parse_hex(argv[i + 1], nid) || nid.size() != NODE_ID_SIZE) {
+            fprintf(stderr, "error: invalid nodeid_hex '%s' (expected 64 hex chars)\n", argv[i + 1]);
+            return 1;
+        }
+        if (!parse_hex(argv[i + 2], pk) || pk.size() != KEY_SIZE) {
+            fprintf(stderr, "error: invalid pubkey_hex '%s' (expected 64 hex chars)\n", argv[i + 2]);
+            return 1;
+        }
+        std::memcpy(peer.node_id.data(), nid.data(), NODE_ID_SIZE);
+        std::memcpy(peer.public_key.data(), pk.data(), KEY_SIZE);
+
+        uint8_t a, b, c, d;
+        if (sscanf_s(argv[i + 3], "%hhu.%hhu.%hhu.%hhu", &a, &b, &c, &d) != 4) {
+            fprintf(stderr, "error: invalid peer_ip '%s'\n", argv[i + 3]);
+            return 1;
+        }
+        peer.endpoint = Endpoint::from_parts(a, b, c, d, (uint16_t)std::atoi(argv[i + 4]));
+        i += 5;
+
+        while (i < argc && std::strcmp(argv[i], "--peer") != 0) {
+            char ip_part[32];
+            unsigned plen = 0;
+            if (sscanf_s(argv[i], "%31[^/]/%u", ip_part, (unsigned)sizeof(ip_part), &plen) != 2 || plen > 32) {
+                fprintf(stderr, "error: invalid allowed_cidr '%s'\n", argv[i]);
+                return 1;
+            }
+            uint8_t ia, ib, ic, id_;
+            if (sscanf_s(ip_part, "%hhu.%hhu.%hhu.%hhu", &ia, &ib, &ic, &id_) != 4) {
+                fprintf(stderr, "error: invalid allowed_cidr '%s'\n", argv[i]);
+                return 1;
+            }
+            AllowedIP aip;
+            aip.prefix = (static_cast<uint32_t>(ia) << 24) |
+                         (static_cast<uint32_t>(ib) << 16) |
+                         (static_cast<uint32_t>(ic) << 8)  |
+                         static_cast<uint32_t>(id_);
+            aip.prefix_length = (uint8_t)plen;
+            peer.allowed_ips.push_back(aip);
+            i++;
+        }
+        cfg.peers.push_back(peer);
     }
-    uint16_t peer_port = (uint16_t)std::atoi(argv[6]);
+
+    if (cfg.peers.empty()) {
+        fprintf(stderr, "error: at least one --peer block is required\n");
+        return 1;
+    }
 
     // Build adapter name from local IP (unique per instance)
     char adapter_name_buf[64];
@@ -822,17 +877,6 @@ static int run_tunnel(int argc, char* argv[]) {
              "Aegis %u.%u.%u.%u",
              (ip_host >> 24) & 0xFF, (ip_host >> 16) & 0xFF,
              (ip_host >>  8) & 0xFF,  ip_host        & 0xFF);
-
-    TunnelConfig cfg;
-    cfg.local_ip = local_ip;
-    cfg.local_prefix = prefix;
-    cfg.listen_port = listen_port;
-    cfg.peer_endpoint = Endpoint::from_parts(
-        (uint8_t)((ntohl(peer_ip) >> 24) & 0xFF),
-        (uint8_t)((ntohl(peer_ip) >> 16) & 0xFF),
-        (uint8_t)((ntohl(peer_ip) >> 8) & 0xFF),
-        (uint8_t)(ntohl(peer_ip) & 0xFF),
-        peer_port);
 
     Tunnel tunnel;
     if (!tunnel.start(cfg, adapter_name_buf)) {

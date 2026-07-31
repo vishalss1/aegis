@@ -6,6 +6,7 @@
 #include <array>
 #include <cstdint>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <vector>
 
@@ -53,10 +54,15 @@ private:
     std::map<NodeId, Session> sessions_;
     std::map<uint32_t, NodeId> session_to_peer_;
 
-    X25519KeyPair ephemeral_;
+    // Per-session ephemeral keypairs, kept only while the handshake for that
+    // session is in flight. A node can be initiator for one peer and responder
+    // for another concurrently, so a single shared ephemeral_ is wrong.
+    std::map<uint32_t, X25519KeyPair> ephemerals_;
+    std::mutex mtx_;
 
     std::vector<uint8_t> build_handshake_message(
-        uint8_t type, uint32_t session_id) const;
+        uint8_t type, uint32_t session_id,
+        const X25519KeyPair& ephemeral) const;
 
     Session& create_session(const NodeId& peer_id, uint32_t session_id);
     void derive_keys(Session& session, const X25519Key& shared_secret,
