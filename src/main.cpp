@@ -7,6 +7,7 @@
 #include "aegis/tunnel/tunnel.hpp"
 #include "aegis/tunnel/tunnel_test.hpp"
 #include "aegis/session/session.hpp"
+#include "aegis/peer/peer.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -65,6 +66,7 @@ static void print_usage(const char* prog) {
     printf("  --aead-test        ChaCha20-Poly1305 AEAD encrypt/decrypt with tamper rejection\n");
     printf("  --identity-test    Identity creation, NodeID determinism, NetworkID matching\n");
     printf("  --session-test     Session Manager handshake, key derivation, replay, encrypt/decrypt\n");
+    printf("  --peer-test        Peer Manager multi-peer table, states, endpoints, session lookup\n");
     printf("  --tunnel-test      self-test: two loopback tunnels, forced-route UDP round-trip both ways\n");
     printf("  --tunnel <args>   point-to-point encrypted tunnel (see source for arg format)\n");
 }
@@ -518,6 +520,136 @@ static int run_session_test() {
     return 0;
 }
 
+// ---- peer-test --------------------------------------------------------------
+static int run_peer_test() {
+    printf("[peer-test] starting\n");
+
+    NetworkId net{};
+    net[0] = 0x01;
+    Identity alice = Identity::create(net);
+    Identity bob   = Identity::create(net);
+    Identity charlie = Identity::create(net);
+
+    PeerManager pm;
+
+    Endpoint ep_alice = Endpoint::from_parts(127, 0, 0, 1, 51820);
+    Endpoint ep_bob   = Endpoint::from_parts(127, 0, 0, 1, 51821);
+
+    // ---- multi-peer table + endpoints --------------------------------------
+    pm.upsert(alice.node_id, alice.keypair.public_key, ep_alice, true);
+    pm.upsert(bob.node_id, bob.keypair.public_key, ep_bob);
+    pm.upsert(charlie.node_id, charlie.keypair.public_key);
+    printf("[peer-test] table size after 3 upserts: %zu\n", pm.size());
+    if (pm.size() != 3) {
+        fprintf(stderr, "[peer-test] FAIL: expected 3 peers\n");
+        return 1;
+    }
+
+    auto* a = pm.get_peer(alice.node_id);
+    if (!a || a->node_id != alice.node_id ||
+        a->public_key != alice.keypair.public_key ||
+        !a->endpoint.has_value() || !a->trusted) {
+        fprintf(stderr, "[peer-test] FAIL: alice peer entry wrong\n");
+        return 1;
+    }
+    printf("[peer-test] direct peer entry with endpoint + trusted: OK\n");
+
+    auto* c = pm.get_peer(charlie.node_id);
+    if (!c || c->endpoint.has_value()) {
+        fprintf(stderr, "[peer-test] FAIL: relay-only peer must have no endpoint\n");
+        return 1;
+    }
+    printf("[peer-test] relay-only peer (no endpoint): OK\n");
+
+    // ---- endpoint update ----------------------------------------------------
+    Endpoint ep_new = Endpoint::from_parts(192, 168, 1, 5, 51820);
+    pm.update_endpoint(alice.node_id, ep_new);
+    a = pm.get_peer(alice.node_id);
+    if (!a || !a->endpoint.has_value() ||
+        a->endpoint->ip != ep_new.ip || a->endpoint->port != ep_new.port) {
+        fprintf(stderr, "[peer-test] FAIL: endpoint update failed\n");
+        return 1;
+    }
+    printf("[peer-test] endpoint update: OK\n");
+
+    // ---- state transitions --------------------------------------------------
+    pm.mark_connecting(bob.node_id);
+    auto* b = pm.get_peer(bob.node_id);
+    if (!b || b->state != PeerState::Connecting || b->connect_attempts != 1) {
+        fprintf(stderr, "[peer-test] FAIL: mark_connecting\n");
+        return 1;
+    }
+    pm.mark_seen(bob.node_id);
+    b = pm.get_peer(bob.node_id);
+    if (!b || b->state != PeerState::Established) {
+        fprintf(stderr, "[peer-test] FAIL: mark_seen -> Established\n");
+        return 1;
+    }
+    printf("[peer-test] state transitions: OK\n");
+
+    // ---- session lookup (delegates to Session Manager) ----------------------
+    SessionManager sm_a(alice);
+    SessionManager sm_b(bob);
+    uint32_t session_id = 0xA0000001;
+    auto init_msg = sm_a.create_handshake_init(session_id);
+    auto resp_msg = sm_b.handle_handshake_init(init_msg, alice.node_id);
+    if (!resp_msg) {
+        fprintf(stderr, "[peer-test] FAIL: handshake init\n");
+        return 1;
+    }
+    if (!sm_a.handle_handshake_resp(*resp_msg, session_id)) {
+        fprintf(stderr, "[peer-test] FAIL: handshake resp\n");
+        return 1;
+    }
+
+    pm.set_session_manager(&sm_a);
+    auto sess = pm.get_session(bob.node_id);
+    if (!sess || !(*sess)->established || (*sess)->id != session_id) {
+        fprintf(stderr, "[peer-test] FAIL: session lookup via PeerManager\n");
+        return 1;
+    }
+    printf("[peer-test] session lookup via PeerManager: OK\n");
+
+    NodeId unknown{};
+    unknown[0] = 0xFF;
+    if (pm.get_session(unknown).has_value()) {
+        fprintf(stderr, "[peer-test] FAIL: unknown peer must not resolve to a session\n");
+        return 1;
+    }
+    printf("[peer-test] unknown peer has no session: OK\n");
+
+    // ---- stale / keepalive detection ---------------------------------------
+    pm.set_dead_timeout(std::chrono::seconds(1));
+    pm.set_keepalive_interval(std::chrono::seconds(1));
+    if (!pm.stale_peers().empty()) {
+        fprintf(stderr, "[peer-test] FAIL: nothing stale yet\n");
+        return 1;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+    if (pm.stale_peers().empty()) {
+        fprintf(stderr, "[peer-test] FAIL: expected stale peers after dead timeout\n");
+        return 1;
+    }
+    printf("[peer-test] stale peer detection after dead timeout: OK\n");
+
+    if (pm.peers_needing_keepalive().empty()) {
+        fprintf(stderr, "[peer-test] FAIL: expected keepalive-needed peers after interval\n");
+        return 1;
+    }
+    printf("[peer-test] keepalive-needed detection: OK\n");
+
+    // ---- removal ------------------------------------------------------------
+    pm.remove_peer(charlie.node_id);
+    if (pm.size() != 2 || pm.has_peer(charlie.node_id)) {
+        fprintf(stderr, "[peer-test] FAIL: remove_peer\n");
+        return 1;
+    }
+    printf("[peer-test] peer removal: OK\n");
+
+    printf("[peer-test] *** ALL PASS ***\n");
+    return 0;
+}
+
 // ---- tunnel -----------------------------------------------------------------
 static int run_tunnel(int argc, char* argv[]) {
     // usage: --tunnel <local_ip> <prefix> <listen_port> <peer_ip> <peer_port>
@@ -705,6 +837,7 @@ int main(int argc, char* argv[]) {
     bool mode_crypto_test  = false;
     bool mode_aead_test    = false;
     bool mode_identity_test = false;
+    bool mode_peer_test = false;
     std::vector<uint8_t> inject_data;
 
     if (argc < 2) {
@@ -725,6 +858,8 @@ int main(int argc, char* argv[]) {
         return ret;
     } else if (std::strcmp(argv[1], "--identity-test") == 0) {
         mode_identity_test = true;
+    } else if (std::strcmp(argv[1], "--peer-test") == 0) {
+        mode_peer_test = true;
     } else if (argc > 2 && std::strcmp(argv[1], "--inject") == 0) {
         if (!parse_hex(argv[2], inject_data)) {
             fprintf(stderr, "error: invalid hex string\n");
@@ -765,6 +900,11 @@ int main(int argc, char* argv[]) {
     }
     if (mode_identity_test) {
         return run_identity_test();
+    }
+    if (mode_peer_test) {
+        int ret = run_peer_test();
+        platform_cleanup_winsock();
+        return ret;
     }
 
     // ---- transport-test (no adapter needed) --------------------------------

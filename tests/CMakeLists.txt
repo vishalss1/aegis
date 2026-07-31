@@ -34,6 +34,11 @@ target_include_directories(test_session PRIVATE ../include)
 target_link_libraries(test_session OpenSSL::Crypto)
 add_test(NAME test_session COMMAND test_session)
 
+add_executable(test_peer test_peer.cpp ../src/peer/peer.cpp ../src/session/session.cpp ../src/identity/identity.cpp ../src/crypto/x25519.cpp ../src/crypto/chacha20poly1305.cpp)
+target_include_directories(test_peer PRIVATE ../include)
+target_link_libraries(test_peer OpenSSL::Crypto ws2_32)
+add_test(NAME test_peer COMMAND test_peer)
+
 add_custom_target(check
     COMMAND test_packet
     COMMAND test_transport
@@ -42,5 +47,6 @@ add_custom_target(check
     COMMAND test_identity
     COMMAND test_tunnel
     COMMAND test_session
+    COMMAND test_peer
     COMMENT "Running all unit tests"
 )
