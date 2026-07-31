@@ -1,0 +1,82 @@
+name: build
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  WINTUN_VERSION: "0.14.1"
+
+jobs:
+  build:
+    name: Build x64 Release
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache Wintun SDK
+        id: wintun-cache
+        uses: actions/cache@v4
+        with:
+          path: wintun-sdk
+          key: wintun-${{ env.WINTUN_VERSION }}
+
+      - name: Download Wintun SDK
+        if: steps.wintun-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $ver = $env:WINTUN_VERSION
+          Invoke-WebRequest -Uri "https://www.wintun.net/builds/wintun-$ver.zip" -OutFile wintun.zip
+          Expand-Archive wintun.zip -DestinationPath wintun-sdk
+          Remove-Item wintun.zip
+
+      - name: Setup OpenSSL
+        shell: pwsh
+        run: |
+          $candidates = @('C:\Program Files\OpenSSL', 'C:\Program Files\OpenSSL-Win64')
+          $found = $candidates | Where-Object { Test-Path "$_\include\openssl\evp.h" } | Select-Object -First 1
+          if (-not $found) {
+            Write-Host "OpenSSL SDK not preinstalled; installing via chocolatey..."
+            choco install openssl --yes --no-progress
+            $found = $candidates | Where-Object { Test-Path "$_\include\openssl\evp.h" } | Select-Object -First 1
+          }
+          if (-not $found) {
+            Write-Error "OpenSSL development files not found after setup"
+            exit 1
+          }
+          "OPENSSL_ROOT_DIR=$found" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Using OpenSSL at $found"
+
+      - name: Configure CMake
+        shell: pwsh
+        run: |
+          $wintunDir = Get-ChildItem wintun-sdk -Directory | Select-Object -First 1
+          if (-not $wintunDir) {
+            Write-Error "Wintun SDK not found under wintun-sdk"
+            exit 1
+          }
+          cmake -B build `
+            -DWINTUN_DIR="$($wintunDir.FullName)" `
+            -DAEGIS_USE_OPENSSL=ON `
+            -DAEGIS_USE_LIBSODIUM=OFF
+
+      - name: Build
+        shell: pwsh
+        run: cmake --build build --config Release
+
+      - name: Verify artifact
+        shell: pwsh
+        run: |
+          $exe = 'build\bin\Release\aegis.exe'
+          if (-not (Test-Path $exe)) {
+            Write-Error "$exe was not produced"
+            exit 1
+          }
+          Write-Host "Built: $((Get-Item $exe).FullName) ($((Get-Item $exe).Length) bytes)"
