@@ -82,6 +82,7 @@ bool Tunnel::start(const TunnelConfig& config, const std::string& adapter_name) 
     // entry point) — an unreachable peer must not block or fail the node.
     running_ = true;
     tx_thread_ = std::thread(&Tunnel::tx_loop, this);
+    gossip_thread_ = std::thread(&Tunnel::gossip_loop, this);
     for (const auto& p : config_.peers) {
         connect_threads_.emplace_back(&Tunnel::connect_loop, this, p);
     }
@@ -96,6 +97,7 @@ void Tunnel::stop() {
     hs_cv_.notify_all();  // wake responder connect loops blocked on the handshake
     transport_.stop_receive();
     if (tx_thread_.joinable()) tx_thread_.join();
+    if (gossip_thread_.joinable()) gossip_thread_.join();
     for (auto& t : connect_threads_)
         if (t.joinable()) t.join();
     connect_threads_.clear();
@@ -113,8 +115,12 @@ void Tunnel::connect_loop(const TunnelPeer& peer) {
     while (running_) {
         if (session_established(peer.node_id))
             return;
-        if (handshake_peer(peer))
+        if (handshake_peer(peer)) {
+            // Both roles reach here once the session is up. Announce our peer
+            // table to the new neighbor so the mesh converges on full knowledge.
+            send_peer_table(peer.node_id);
             return;
+        }
         if (!running_) return;
         // Availability-based join: wait before retrying an unreachable peer so
         // the node stays up for whoever is reachable. (Backoff policy is a
@@ -251,6 +257,21 @@ void Tunnel::tx_loop() {
     fprintf(stderr, "[tunnel] tx loop ended\n");
 }
 
+void Tunnel::gossip_loop() {
+    fprintf(stderr, "[tunnel] gossip loop started\n");
+    while (running_) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(GOSSIP_INTERVAL_MS));
+        if (!running_) break;
+        // Full-table announce to every established peer. Periodic re-announce
+        // is what carries far-end peers across a chain: the immediate
+        // learn-triggered fan-out only reaches the nodes adjacent to the peer
+        // we just learned from, so a node that never learns anything new
+        // (e.g. B in A-B-C) would otherwise never relay C/D onward to A.
+        announce_peer_table(std::nullopt);
+    }
+    fprintf(stderr, "[tunnel] gossip loop ended\n");
+}
+
 void Tunnel::rx_callback(const uint8_t* data, size_t len, Endpoint sender) {
     if (len < 16) return;
 
@@ -267,6 +288,17 @@ void Tunnel::rx_callback(const uint8_t* data, size_t len, Endpoint sender) {
         if (!adapter_.write_packet(*dec)) {
             fprintf(stderr, "[tunnel] write_packet failed\n");
         }
+        return;
+    }
+
+    if (type == TYPE_PEER_TABLE) {
+        if (!running_) return;
+        auto msg = session_manager_->decrypt_message(data, len);
+        if (!msg) return;
+        auto sess = session_manager_->get_session_by_id(sid);
+        if (!sess) return;
+        peers_.mark_seen((*sess)->peer_id, sender);
+        handle_peer_table((*sess)->peer_id, msg->payload.data(), msg->payload.size());
         return;
     }
 
@@ -326,4 +358,72 @@ void Tunnel::rx_callback(const uint8_t* data, size_t len, Endpoint sender) {
         pending_handshakes_[sender_id] = {sender_id, sid, true};
         hs_cv_.notify_all();
     }
+}
+
+std::vector<AdvertisedPeer> Tunnel::build_advertised_peers() const {
+    std::vector<AdvertisedPeer> out;
+
+    // Our own entry: we are always directly reachable by anyone who can reach
+    // us, and only our configured prefix is advertised (never an endpoint).
+    AdvertisedPeer self;
+    self.node_id = identity_.node_id;
+    self.public_key = identity_.keypair.public_key;
+    self.prefixes.emplace_back(config_.local_ip, config_.local_prefix);
+    out.push_back(std::move(self));
+
+    auto routes = routing_.routes();
+    for (const auto* peer : peers_.all_peers()) {
+        if (peer->node_id == identity_.node_id)
+            continue;
+        AdvertisedPeer ap;
+        ap.node_id = peer->node_id;
+        ap.public_key = peer->public_key;
+        for (const auto& r : routes) {
+            if (r.destination == peer->node_id)
+                ap.prefixes.emplace_back(r.prefix, r.prefix_length);
+        }
+        out.push_back(std::move(ap));
+    }
+    return out;
+}
+
+void Tunnel::send_peer_table(const NodeId& to_peer) {
+    auto advertised = build_advertised_peers();
+    auto payload = serialize_peer_table(advertised);
+    auto enc = session_manager_->encrypt_message(
+        to_peer, TYPE_PEER_TABLE, payload.data(), payload.size());
+    if (!enc) {
+        fprintf(stderr, "[tunnel] encrypt peer table failed\n");
+        return;
+    }
+    Peer* peer = peers_.get_peer(to_peer);
+    if (!peer || !peer->endpoint)
+        return;
+    fprintf(stderr, "[tunnel] sent peer table (%zu peer(s)) to %02x%02x...\n",
+            advertised.size(), to_peer[0], to_peer[1]);
+    transport_.send(enc->data(), enc->size(), *peer->endpoint);
+}
+
+void Tunnel::announce_peer_table(const std::optional<NodeId>& exclude) {
+    for (auto* peer : peers_.all_peers()) {
+        if (exclude && peer->node_id == *exclude)
+            continue;
+        if (session_established(peer->node_id))
+            send_peer_table(peer->node_id);
+    }
+}
+
+void Tunnel::handle_peer_table(const NodeId& sender, const uint8_t* data, size_t len) {
+    auto advertised = deserialize_peer_table(data, len);
+    if (!advertised) {
+        fprintf(stderr, "[tunnel] peer table parse failed from %02x%02x...\n",
+                sender[0], sender[1]);
+        return;
+    }
+    size_t learned = merge_peer_table(peers_, routing_, *advertised, sender,
+                                      identity_.node_id);
+    fprintf(stderr, "[tunnel] peer table from %02x%02x...: %zu peer(s), %zu new\n",
+            sender[0], sender[1], advertised->size(), learned);
+    if (learned > 0)
+        announce_peer_table(sender);  // fan out knowledge to the rest of the mesh
 }

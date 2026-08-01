@@ -71,6 +71,8 @@ static void print_usage(const char* prog) {
     printf("  --routing-test     Routing Engine prefix->next-hop->peer resolution and loop avoidance\n");
     printf("  --tunnel-test      self-test: staggered 3-node mesh, join-any-available bootstrap,\n");
     printf("                     forced-route UDP round-trips (multi-peer routing + reconnect)\n");
+    printf("  --gossip-test      self-test: 4-node A-B-C-D chain where each node knows only its\n");
+    printf("                     direct neighbors — peer table gossip must converge the full mesh\n");
     printf("  --tunnel <local_ip> <prefix> <listen_port> [--peer <nodeid> <pubkey> <ip> <port> <cidr...>]  mesh node\n");
 }
 
@@ -1048,6 +1050,15 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         int ret = run_tunnel_test();
+        platform_cleanup_winsock();
+        return ret;
+    } else if (std::strcmp(argv[1], "--gossip-test") == 0) {
+        if (!platform_is_admin()) {
+            fprintf(stderr, "error: gossip-test mode requires administrator privileges\n");
+            platform_cleanup_winsock();
+            return 1;
+        }
+        int ret = run_gossip_test();
         platform_cleanup_winsock();
         return ret;
     } else if (std::strcmp(argv[1], "--tunnel") == 0) {

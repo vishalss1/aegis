@@ -2,6 +2,7 @@
 
 #include "aegis/session/session.hpp"
 #include "aegis/peer/peer.hpp"
+#include "aegis/peer/peer_table.hpp"
 #include "aegis/routing/routing.hpp"
 #include "aegis/transport/transport.hpp"
 #include "aegis/adapter/adapter.hpp"
@@ -75,9 +76,11 @@ private:
     RoutingEngine routing_;
 
     std::thread tx_thread_;
+    std::thread gossip_thread_;
     std::vector<std::thread> connect_threads_;
     std::atomic<bool> running_{false};
     uint32_t unrouted_count_ = 0;
+    static constexpr int GOSSIP_INTERVAL_MS = 3000;
 
     // Per-peer handshake state. `session_id` is ours (initiator picks it, the
     // responder adopts it from the received INIT).
@@ -93,5 +96,14 @@ private:
     bool handshake_peer(const TunnelPeer& peer);
     void connect_loop(const TunnelPeer& peer);
     void tx_loop();
+    void gossip_loop();
     void rx_callback(const uint8_t* data, size_t len, Endpoint sender);
+
+    // Peer table propagation (step 12): after a session is established the
+    // current table is sent to the new peer; on learning new peers the table
+    // is re-announced to all other established peers so knowledge fans out.
+    std::vector<AdvertisedPeer> build_advertised_peers() const;
+    void send_peer_table(const NodeId& to_peer);
+    void announce_peer_table(const std::optional<NodeId>& exclude);
+    void handle_peer_table(const NodeId& sender, const uint8_t* data, size_t len);
 };

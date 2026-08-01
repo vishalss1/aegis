@@ -288,8 +288,9 @@ void SessionManager::update_replay(Session& session, uint64_t seq) {
     session.recv_window |= bit;
 }
 
-std::optional<std::vector<uint8_t>> SessionManager::encrypt_data(
-    const NodeId& peer_id, const uint8_t* plaintext, size_t pt_len)
+std::optional<std::vector<uint8_t>> SessionManager::encrypt_message(
+    const NodeId& peer_id, uint8_t packet_type,
+    const uint8_t* plaintext, size_t pt_len)
 {
     auto sess_opt = get_session(peer_id);
     if (!sess_opt)
@@ -313,7 +314,7 @@ std::optional<std::vector<uint8_t>> SessionManager::encrypt_data(
 
     PacketHeader hdr{};
     hdr.version = PACKET_VERSION;
-    hdr.packet_type = TYPE_DATA;
+    hdr.packet_type = packet_type;
     hdr.flags = 0;
     hdr.reserved = 0;
     hdr.session_id = sess.id;
@@ -340,7 +341,7 @@ std::optional<std::vector<uint8_t>> SessionManager::encrypt_data(
     return out;
 }
 
-std::optional<std::vector<uint8_t>> SessionManager::decrypt_data(
+std::optional<SessionManager::DecryptedMessage> SessionManager::decrypt_message(
     const uint8_t* data, size_t len)
 {
     if (len < 16 + 12 + CHACHA20_POLY1305_TAG_SIZE) {
@@ -360,7 +361,7 @@ std::optional<std::vector<uint8_t>> SessionManager::decrypt_data(
     hdr.payload_length = ((uint32_t)data[12] << 24) | ((uint32_t)data[13] << 16) |
                          ((uint32_t)data[14] << 8) | (uint32_t)data[15];
 
-    if (hdr.version != PACKET_VERSION || hdr.packet_type != TYPE_DATA) {
+    if (hdr.version != PACKET_VERSION) {
         fprintf(stderr, "[session] decrypt: bad header\n");
         return std::nullopt;
     }
@@ -407,5 +408,17 @@ std::optional<std::vector<uint8_t>> SessionManager::decrypt_data(
 
     update_replay(sess, wire_seq);
 
-    return std::vector<uint8_t>(pt_buf, pt_buf + ct_len);
+    DecryptedMessage out;
+    out.packet_type = hdr.packet_type;
+    out.payload.assign(pt_buf, pt_buf + ct_len);
+    return out;
+}
+
+std::optional<std::vector<uint8_t>> SessionManager::decrypt_data(
+    const uint8_t* data, size_t len)
+{
+    auto msg = decrypt_message(data, len);
+    if (!msg || msg->packet_type != TYPE_DATA)
+        return std::nullopt;
+    return std::move(msg->payload);
 }

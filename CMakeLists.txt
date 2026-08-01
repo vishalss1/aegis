@@ -42,6 +42,7 @@ set(AEGIS_SOURCES
     src/transport/transport.cpp
     src/routing/routing.cpp
     src/peer/peer.cpp
+    src/peer/peer_table.cpp
     src/packet/packet.cpp
     src/config/config.cpp
     src/platform/platform.cpp

@@ -5,6 +5,7 @@
 RoutingEngine::RoutingEngine() = default;
 
 bool RoutingEngine::add_route(const Route& route) {
+    std::lock_guard<std::mutex> lock(mtx_);
     // A relay must not forward to itself; that route could never be resolved.
     if (route.type == NextHopType::Relay && route.next_hop == route.destination)
         return false;
@@ -17,12 +18,14 @@ bool RoutingEngine::add_route(const Route& route) {
 }
 
 void RoutingEngine::remove_route(const NodeId& peer_id) {
+    std::lock_guard<std::mutex> lock(mtx_);
     std::erase_if(routes_, [&](const Route& r) {
         return r.destination == peer_id || r.next_hop == peer_id;
     });
 }
 
 void RoutingEngine::clear() {
+    std::lock_guard<std::mutex> lock(mtx_);
     routes_.clear();
 }
 
@@ -31,6 +34,7 @@ static uint32_t prefix_mask(uint32_t prefix_length) {
 }
 
 std::optional<Route> RoutingEngine::find_route(uint32_t dest_ip) const {
+    std::lock_guard<std::mutex> lock(mtx_);
     const Route* best = nullptr;
     uint32_t best_prefix_len = 0;
 
@@ -77,4 +81,19 @@ std::optional<NodeId> RoutingEngine::find_next_hop(uint32_t dest_ip) const {
     auto route = find_route(dest_ip);
     if (!route) return std::nullopt;
     return route->next_hop;
+}
+
+size_t RoutingEngine::size() const {
+    std::lock_guard<std::mutex> lock(mtx_);
+    return routes_.size();
+}
+
+bool RoutingEngine::empty() const {
+    std::lock_guard<std::mutex> lock(mtx_);
+    return routes_.empty();
+}
+
+std::vector<Route> RoutingEngine::routes() const {
+    std::lock_guard<std::mutex> lock(mtx_);
+    return routes_;
 }

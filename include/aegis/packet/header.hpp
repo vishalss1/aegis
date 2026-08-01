@@ -21,6 +21,7 @@ static constexpr uint8_t TYPE_HANDSHAKE_RESP = 0x01;
 static constexpr uint8_t TYPE_DATA = 0x02;
 static constexpr uint8_t TYPE_KEEPALIVE = 0x03;
 static constexpr uint8_t TYPE_DISCOVERY = 0x04;
+static constexpr uint8_t TYPE_PEER_TABLE = 0x05;
 
 static constexpr uint8_t FLAG_RELAY = 0x01;
 static constexpr uint8_t FLAG_FRAGMENTED = 0x02;

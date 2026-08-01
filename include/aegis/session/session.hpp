@@ -38,8 +38,26 @@ public:
     bool handle_handshake_resp(
         const std::vector<uint8_t>& message, uint32_t session_id);
 
+    // Encrypt a payload under the session's keys and return the wire frame
+    // (16-byte header + 12-byte nonce + ciphertext + 16-byte tag). `packet_type`
+    // is stamped into the plaintext header and becomes authenticated data.
+    std::optional<std::vector<uint8_t>> encrypt_message(
+        const NodeId& peer_id, uint8_t packet_type,
+        const uint8_t* plaintext, size_t pt_len);
+
     std::optional<std::vector<uint8_t>> encrypt_data(
-        const NodeId& peer_id, const uint8_t* plaintext, size_t pt_len);
+        const NodeId& peer_id, const uint8_t* plaintext, size_t pt_len) {
+        return encrypt_message(peer_id, TYPE_DATA, plaintext, pt_len);
+    }
+
+    struct DecryptedMessage {
+        uint8_t packet_type;
+        std::vector<uint8_t> payload;
+    };
+
+    // Verify and decrypt any session message (TYPE_DATA, TYPE_PEER_TABLE, ...).
+    std::optional<DecryptedMessage> decrypt_message(
+        const uint8_t* data, size_t len);
 
     std::optional<std::vector<uint8_t>> decrypt_data(
         const uint8_t* data, size_t len);

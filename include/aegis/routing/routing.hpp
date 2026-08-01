@@ -2,6 +2,7 @@
 
 #include "aegis/identity/identity.hpp"
 #include <cstdint>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <vector>
@@ -32,10 +33,11 @@ public:
     std::optional<NodeId> find_peer(uint32_t dest_ip) const;
     std::optional<NodeId> find_next_hop(uint32_t dest_ip) const;
 
-    size_t size() const { return routes_.size(); }
-    bool empty() const { return routes_.empty(); }
-    std::vector<Route> routes() const { return routes_; }
+    size_t size() const;
+    bool empty() const;
+    std::vector<Route> routes() const;
 
 private:
+    mutable std::mutex mtx_;
     std::vector<Route> routes_;
 };

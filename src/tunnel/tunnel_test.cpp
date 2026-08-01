@@ -11,6 +11,7 @@ namespace {
 const uint32_t IP_A = htonl((10u << 24) | (10u << 16) | (0u << 8) | 1u);  // 10.10.0.1
 const uint32_t IP_B = htonl((10u << 24) | (20u << 16) | (0u << 8) | 1u);  // 10.20.0.1
 const uint32_t IP_C = htonl((10u << 24) | (30u << 16) | (0u << 8) | 1u);  // 10.30.0.1
+const uint32_t IP_D = htonl((10u << 24) | (40u << 16) | (0u << 8) | 1u);  // 10.40.0.1
 // Ports sit below Windows' ephemeral/excluded range (49k+). The original
 // 51820-51822 land inside the dynamic "Administered port exclusions" band
 // (Windows reserves ranges there on the fly), which intermittently failed
@@ -18,6 +19,7 @@ const uint32_t IP_C = htonl((10u << 24) | (30u << 16) | (0u << 8) | 1u);  // 10.
 const uint16_t PORT_A = 45120;
 const uint16_t PORT_B = 45121;
 const uint16_t PORT_C = 45122;
+const uint16_t PORT_D = 45123;
 
 // A phantom bootstrap candidate: this endpoint never listens. C is configured
 // with it to prove that an unreachable candidate does not block joining the
@@ -353,5 +355,210 @@ int run_tunnel_test() {
         return 0;
     }
     fprintf(stderr, "[tunnel-test] *** FAIL ***\n");
+    return 1;
+}
+
+// Step 12: peer table propagation. A-B-C-D chain where every node is
+// configured with ONLY its direct neighbors. Full-mesh knowledge must emerge
+// from gossip alone — no node is ever told about a non-adjacent peer.
+int run_gossip_test() {
+    printf("[gossip-test] starting\n");
+    printf("[gossip-test] chain A-B-C-D, each node configured with only its direct neighbors\n");
+    printf("[gossip-test] A (10.10.0.1:%u) -- B (10.20.0.1:%u) -- C (10.30.0.1:%u) -- D (10.40.0.1:%u)\n",
+           PORT_A, PORT_B, PORT_C, PORT_D);
+    printf("[gossip-test] convergence = every node's peer table reaches size 3 (all other nodes)\n");
+    printf("[gossip-test] learned peers must be untrusted and endpoint-less (real IPs never propagate)\n");
+
+    NetworkId net{};
+    net[0] = 0x01;
+    Identity id_a = Identity::create(net);
+    Identity id_b = Identity::create(net);
+    Identity id_c = Identity::create(net);
+    Identity id_d = Identity::create(net);
+
+    TunnelConfig cfg_a;
+    cfg_a.identity = id_a;
+    cfg_a.local_ip = IP_A;
+    cfg_a.local_prefix = 24;
+    cfg_a.listen_port = PORT_A;
+    cfg_a.peers = {
+        { id_b.node_id, id_b.keypair.public_key,
+          Endpoint::from_parts(127, 0, 0, 1, PORT_B),
+          { allow(10, 20, 0, 0, 24) } },
+    };
+
+    TunnelConfig cfg_b;
+    cfg_b.identity = id_b;
+    cfg_b.local_ip = IP_B;
+    cfg_b.local_prefix = 24;
+    cfg_b.listen_port = PORT_B;
+    cfg_b.peers = {
+        { id_a.node_id, id_a.keypair.public_key,
+          Endpoint::from_parts(127, 0, 0, 1, PORT_A),
+          { allow(10, 10, 0, 0, 24) } },
+        { id_c.node_id, id_c.keypair.public_key,
+          Endpoint::from_parts(127, 0, 0, 1, PORT_C),
+          { allow(10, 30, 0, 0, 24) } },
+    };
+
+    TunnelConfig cfg_c;
+    cfg_c.identity = id_c;
+    cfg_c.local_ip = IP_C;
+    cfg_c.local_prefix = 24;
+    cfg_c.listen_port = PORT_C;
+    cfg_c.peers = {
+        { id_b.node_id, id_b.keypair.public_key,
+          Endpoint::from_parts(127, 0, 0, 1, PORT_B),
+          { allow(10, 20, 0, 0, 24) } },
+        { id_d.node_id, id_d.keypair.public_key,
+          Endpoint::from_parts(127, 0, 0, 1, PORT_D),
+          { allow(10, 40, 0, 0, 24) } },
+    };
+
+    TunnelConfig cfg_d;
+    cfg_d.identity = id_d;
+    cfg_d.local_ip = IP_D;
+    cfg_d.local_prefix = 24;
+    cfg_d.listen_port = PORT_D;
+    cfg_d.peers = {
+        { id_c.node_id, id_c.keypair.public_key,
+          Endpoint::from_parts(127, 0, 0, 1, PORT_C),
+          { allow(10, 30, 0, 0, 24) } },
+    };
+
+    Tunnel tunnel_a;
+    Tunnel tunnel_b;
+    Tunnel tunnel_c;
+    Tunnel tunnel_d;
+
+    if (!tunnel_a.start(cfg_a, "Aegis 10.10.0.1") ||
+        !tunnel_b.start(cfg_b, "Aegis 10.20.0.1") ||
+        !tunnel_c.start(cfg_c, "Aegis 10.30.0.1") ||
+        !tunnel_d.start(cfg_d, "Aegis 10.40.0.1")) {
+        fprintf(stderr, "[gossip-test] FAIL: a tunnel failed to start\n");
+        tunnel_a.stop();
+        tunnel_b.stop();
+        tunnel_c.stop();
+        tunnel_d.stop();
+        return 1;
+    }
+    printf("[gossip-test] all four nodes up; waiting for sessions + gossip convergence\n");
+
+    // Every node must learn the full mesh: peer table size 3 (all others).
+    auto converged = [&]() {
+        return tunnel_a.peers().size() == 3 &&
+               tunnel_b.peers().size() == 3 &&
+               tunnel_c.peers().size() == 3 &&
+               tunnel_d.peers().size() == 3;
+    };
+    bool ok = false;
+    for (int i = 0; i < 80 && !ok; i++) {   // up to 80s (5x gossip interval + slack)
+        if (converged()) { ok = true; break; }
+        Sleep(1000);
+    }
+
+    printf("[gossip-test] peer tables:\n");
+    const Tunnel* nodes[4] = { &tunnel_a, &tunnel_b, &tunnel_c, &tunnel_d };
+    const char* names[4] = { "A", "B", "C", "D" };
+    for (int n = 0; n < 4; n++) {
+        printf("[gossip-test]   %s (%zu peer(s)):", names[n], nodes[n]->peers().size());
+        for (const auto* p : nodes[n]->peers().all_peers()) {
+            printf(" %c%c%c%c", (p->node_id == id_a.node_id ? 'A' :
+                                 p->node_id == id_b.node_id ? 'B' :
+                                 p->node_id == id_c.node_id ? 'C' :
+                                 p->node_id == id_d.node_id ? 'D' : '?'),
+                   p->trusted ? 't' : 'l', p->endpoint ? 'e' : '-', ' ');
+        }
+        printf("\n");
+    }
+
+    if (!ok) {
+        fprintf(stderr, "[gossip-test] FAIL: peer tables did not converge to size 3\n");
+        tunnel_a.stop();
+        tunnel_b.stop();
+        tunnel_c.stop();
+        tunnel_d.stop();
+        return 1;
+    }
+    printf("[gossip-test] convergence: all nodes know the full mesh: OK\n");
+
+    // Cross-checks on specific knowledge + route installation.
+    bool pass = true;
+    const auto& pa = tunnel_a.peers();
+    const auto& pd = tunnel_d.peers();
+    const auto& pb = tunnel_b.peers();
+
+    auto has_peer = [](const PeerManager& pm, const NodeId& id) {
+        const Peer* p = pm.get_peer(id);
+        return p != nullptr;
+    };
+
+    // A must know C and D; D must know A and B; B must know D.
+    pass = has_peer(pa, id_c.node_id) && pass;
+    pass = has_peer(pa, id_d.node_id) && pass;
+    pass = has_peer(pd, id_a.node_id) && pass;
+    pass = has_peer(pd, id_b.node_id) && pass;
+    pass = has_peer(pb, id_d.node_id) && pass;
+    if (!pass) {
+        fprintf(stderr, "[gossip-test] FAIL: cross-mesh knowledge incomplete\n");
+        tunnel_a.stop();
+        tunnel_b.stop();
+        tunnel_c.stop();
+        tunnel_d.stop();
+        return 1;
+    }
+    printf("[gossip-test] A knows C,D / D knows A,B / B knows D: OK\n");
+
+    // Learned peers are untrusted and carry no endpoint (identity hiding).
+    auto untrusted_no_endpoint = [](const PeerManager& pm, const NodeId& id) {
+        const Peer* p = pm.get_peer(id);
+        return p && !p->trusted && !p->endpoint.has_value();
+    };
+    pass = untrusted_no_endpoint(pa, id_d.node_id) && pass;   // A learned D via B
+    pass = untrusted_no_endpoint(pd, id_a.node_id) && pass;   // D learned A via C
+    if (!pass) {
+        fprintf(stderr, "[gossip-test] FAIL: learned peer must be untrusted with no endpoint\n");
+        tunnel_a.stop();
+        tunnel_b.stop();
+        tunnel_c.stop();
+        tunnel_d.stop();
+        return 1;
+    }
+    printf("[gossip-test] learned peers are untrusted, endpoint-less: OK\n");
+
+    // Relay routes: A -> 10.40.0.0/24 next-hop B dest D; D -> 10.10.0.0/24 next-hop C dest A.
+    auto check_relay_route = [](const RoutingEngine& re, uint32_t prefix, uint8_t plen,
+                                const NodeId& next_hop, const NodeId& dest) {
+        for (const auto& r : re.routes())
+            if (r.prefix == prefix && r.prefix_length == plen &&
+                r.next_hop == next_hop && r.destination == dest &&
+                r.type == NextHopType::Relay)
+                return true;
+        return false;
+    };
+    pass = check_relay_route(tunnel_a.routing(), allow(10, 40, 0, 0, 24).prefix, 24,
+                             id_b.node_id, id_d.node_id) && pass;
+    pass = check_relay_route(tunnel_d.routing(), allow(10, 10, 0, 0, 24).prefix, 24,
+                             id_c.node_id, id_a.node_id) && pass;
+    if (!pass) {
+        fprintf(stderr, "[gossip-test] FAIL: relay routes not installed via the direct neighbor\n");
+        tunnel_a.stop();
+        tunnel_b.stop();
+        tunnel_c.stop();
+        tunnel_d.stop();
+        return 1;
+    }
+    printf("[gossip-test] relay routes installed via direct neighbor: OK\n");
+
+    tunnel_a.stop();
+    tunnel_b.stop();
+    tunnel_c.stop();
+    tunnel_d.stop();
+
+    if (pass) {
+        printf("[gossip-test] *** ALL PASS ***\n");
+        return 0;
+    }
+    fprintf(stderr, "[gossip-test] *** FAIL ***\n");
     return 1;
 }

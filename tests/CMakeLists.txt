@@ -43,6 +43,11 @@ add_executable(test_routing test_routing.cpp ../src/routing/routing.cpp)
 target_include_directories(test_routing PRIVATE ../include)
 add_test(NAME test_routing COMMAND test_routing)
 
+add_executable(test_peer_table test_peer_table.cpp ../src/peer/peer_table.cpp ../src/peer/peer.cpp ../src/session/session.cpp ../src/identity/identity.cpp ../src/crypto/x25519.cpp ../src/crypto/chacha20poly1305.cpp ../src/routing/routing.cpp)
+target_include_directories(test_peer_table PRIVATE ../include)
+target_link_libraries(test_peer_table OpenSSL::Crypto ws2_32)
+add_test(NAME test_peer_table COMMAND test_peer_table)
+
 add_custom_target(check
     COMMAND test_packet
     COMMAND test_transport
@@ -53,5 +58,6 @@ add_custom_target(check
     COMMAND test_session
     COMMAND test_peer
     COMMAND test_routing
+    COMMAND test_peer_table
     COMMENT "Running all unit tests"
 )
