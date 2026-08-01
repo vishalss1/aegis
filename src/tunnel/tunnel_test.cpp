@@ -1,18 +1,29 @@
 #include "aegis/tunnel/tunnel_test.hpp"
 #include "aegis/tunnel/tunnel.hpp"
+#include "aegis/peer/peer.hpp"
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
-#include <thread>
+#include <chrono>
 
 namespace {
 
 const uint32_t IP_A = htonl((10u << 24) | (10u << 16) | (0u << 8) | 1u);  // 10.10.0.1
 const uint32_t IP_B = htonl((10u << 24) | (20u << 16) | (0u << 8) | 1u);  // 10.20.0.1
 const uint32_t IP_C = htonl((10u << 24) | (30u << 16) | (0u << 8) | 1u);  // 10.30.0.1
-const uint16_t PORT_A = 51820;
-const uint16_t PORT_B = 51821;
-const uint16_t PORT_C = 51822;
+// Ports sit below Windows' ephemeral/excluded range (49k+). The original
+// 51820-51822 land inside the dynamic "Administered port exclusions" band
+// (Windows reserves ranges there on the fly), which intermittently failed
+// bind with WSAEACCES.
+const uint16_t PORT_A = 45120;
+const uint16_t PORT_B = 45121;
+const uint16_t PORT_C = 45122;
+
+// A phantom bootstrap candidate: this endpoint never listens. C is configured
+// with it to prove that an unreachable candidate does not block joining the
+// mesh via the candidates that ARE reachable (availability-based join).
+const uint16_t PORT_X = 45999;
+const char* PHANTOM_CIDR = "10.90.0.0/24";
 
 // Routing prefixes use the same big-endian-value representation as
 // IPPacket::dest_ip, so `allow(10,20,0,0,24)` matches 10.20.0.x packets.
@@ -42,6 +53,20 @@ void delete_route(const char* dst, const char* mask, const char* gw) {
     char cmd[256];
     snprintf(cmd, sizeof(cmd), "route delete %s mask %s %s >nul 2>&1", dst, mask, gw);
     std::system(cmd);
+}
+
+// Poll the peer table until the session with `node_id` is established. start()
+// is non-blocking (mesh bootstrap), so sessions appear in the background.
+bool wait_for_established(const PeerManager& pm, const NodeId& node_id, int timeout_sec) {
+    auto deadline = std::chrono::steady_clock::now() +
+                    std::chrono::seconds(timeout_sec);
+    while (std::chrono::steady_clock::now() < deadline) {
+        const Peer* p = pm.get_peer(node_id);
+        if (p && p->state == PeerState::Established)
+            return true;
+        Sleep(100);
+    }
+    return false;
 }
 
 // One UDP round trip between two adapter IPs. Proves tunnel `sender_ip` routes
@@ -163,19 +188,25 @@ bool udp_round_trip(uint32_t sender_ip, uint32_t listener_ip, const char* tag) {
 
 int run_tunnel_test() {
     printf("[tunnel-test] starting\n");
-    printf("[tunnel-test] mesh: A (10.10.0.1:%u) <-> B (10.20.0.1:%u) <-> C (10.30.0.1:%u)\n",
+    printf("[tunnel-test] mesh bootstrap: A (10.10.0.1:%u), B (10.20.0.1:%u), C (10.30.0.1:%u)\n",
            PORT_A, PORT_B, PORT_C);
-    printf("[tunnel-test] every node holds both peers; per-destination routing picks the right session\n");
-    printf("[tunnel-test] /32 host routes suppress local loopback delivery so UDP must transit the encrypted tunnels\n");
+    printf("[tunnel-test] staged join (availability-based, not fixed topology):\n");
+    printf("[tunnel-test]   1. A starts alone (B and C down) -> A stays up, retries in background\n");
+    printf("[tunnel-test]   2. B starts -> A and B reconnect via background retry\n");
+    printf("[tunnel-test]   3. C starts with A, B, AND a phantom peer (%s) that never listens\n",
+           PHANTOM_CIDR);
+    printf("[tunnel-test]      C must still join A and B despite the unreachable candidate\n");
+    printf("[tunnel-test] /32 host routes suppress local loopback delivery so UDP must transit the tunnels\n");
     printf("[tunnel-test] note: UDP only - ICMP cannot be verified on a single host (Windows drops looped-back echo replies)\n");
 
     // Fixed identities so each node can be pre-configured with the others'
-    // NodeIDs and public keys (mesh bootstrap learns these later).
+    // NodeIDs and public keys (peer table propagation learns these later).
     NetworkId net{};
     net[0] = 0x01;
     Identity id_a = Identity::create(net);
     Identity id_b = Identity::create(net);
     Identity id_c = Identity::create(net);
+    Identity id_x = Identity::create(net);  // phantom, never runs
 
     TunnelConfig cfg_a;
     cfg_a.identity = id_a;
@@ -217,30 +248,69 @@ int run_tunnel_test() {
         { id_b.node_id, id_b.keypair.public_key,
           Endpoint::from_parts(127, 0, 0, 1, PORT_B),
           { allow(10, 20, 0, 0, 24) } },
+        { id_x.node_id, id_x.keypair.public_key,
+          Endpoint::from_parts(127, 0, 0, 1, PORT_X),
+          { allow(10, 90, 0, 0, 24) } },
     };
 
     Tunnel tunnel_a;
     Tunnel tunnel_b;
     Tunnel tunnel_c;
 
-    // Tunnel::start() blocks on the handshake, so all must start concurrently.
-    bool ok_a = false, ok_b = false, ok_c = false;
-    std::thread ta([&] { ok_a = tunnel_a.start(cfg_a, "Aegis 10.10.0.1"); });
-    std::thread tb([&] { ok_b = tunnel_b.start(cfg_b, "Aegis 10.20.0.1"); });
-    std::thread tc([&] { ok_c = tunnel_c.start(cfg_c, "Aegis 10.30.0.1"); });
-    ta.join();
-    tb.join();
-    tc.join();
+    bool pass = true;
 
-    if (!ok_a || !ok_b || !ok_c) {
-        fprintf(stderr, "[tunnel-test] FAIL: tunnel start (A=%d, B=%d, C=%d)\n",
-                ok_a, ok_b, ok_c);
+    // ---- phase 1: A alone, B and C down ------------------------------------
+    printf("[tunnel-test] phase 1: starting A alone (peers B, C down)\n");
+    if (!tunnel_a.start(cfg_a, "Aegis 10.10.0.1")) {
+        fprintf(stderr, "[tunnel-test] FAIL: A failed to start\n");
+        return 1;
+    }
+    printf("[tunnel-test] A is up with zero reachable peers (join-any policy)\n");
+    Sleep(2000);  // give A's connect loops a chance to fail once on B and C
+
+    // ---- phase 2: B starts, A reconnects via background retry ---------------
+    printf("[tunnel-test] phase 2: starting B\n");
+    if (!tunnel_b.start(cfg_b, "Aegis 10.20.0.1")) {
+        fprintf(stderr, "[tunnel-test] FAIL: B failed to start\n");
+        pass = false;
+    }
+    if (pass) {
+        bool ab_ok = wait_for_established(tunnel_a.peers(), id_b.node_id, 40);
+        ab_ok = wait_for_established(tunnel_b.peers(), id_a.node_id, 40) && ab_ok;
+        if (ab_ok) {
+            printf("[tunnel-test] A<->B established via background retry: OK\n");
+        } else {
+            fprintf(stderr, "[tunnel-test] FAIL: A<->B never established\n");
+            pass = false;
+        }
+    }
+
+    // ---- phase 3: C joins with a phantom candidate down ---------------------
+    printf("[tunnel-test] phase 3: starting C (candidates A, B, phantom X)\n");
+    if (pass && !tunnel_c.start(cfg_c, "Aegis 10.30.0.1")) {
+        fprintf(stderr, "[tunnel-test] FAIL: C failed to start\n");
+        pass = false;
+    }
+    if (pass) {
+        bool c_ok = wait_for_established(tunnel_c.peers(), id_a.node_id, 40);
+        c_ok = wait_for_established(tunnel_c.peers(), id_b.node_id, 40) && c_ok;
+        c_ok = wait_for_established(tunnel_a.peers(), id_c.node_id, 40) && c_ok;
+        c_ok = wait_for_established(tunnel_b.peers(), id_c.node_id, 40) && c_ok;
+        if (c_ok) {
+            printf("[tunnel-test] C joined A and B despite phantom X being down: OK\n");
+        } else {
+            fprintf(stderr, "[tunnel-test] FAIL: C did not join the mesh (phantom block?)\n");
+            pass = false;
+        }
+    }
+
+    if (!pass) {
         tunnel_a.stop();
         tunnel_b.stop();
         tunnel_c.stop();
         return 1;
     }
-    printf("[tunnel-test] sessions established on all three nodes\n");
+    printf("[tunnel-test] full mesh established: A<->B, A<->C, B<->C\n");
 
     // Mesh-wide routes: traffic to another subnet leaves through the local
     // adapter; /32 entries keep Windows from short-circuiting over loopback.
@@ -257,9 +327,6 @@ int run_tunnel_test() {
     add_route("10.10.0.1", "255.255.255.255", "10.30.0.1");
     add_route("10.20.0.1", "255.255.255.255", "10.30.0.1");
 
-    // A must route 10.20.0.1 -> B and 10.30.0.1 -> C through two different
-    // sessions on the same tunnel, proving multi-peer routing.
-    bool pass = true;
     pass = udp_round_trip(IP_A, IP_B, "A->B") && pass;
     pass = udp_round_trip(IP_A, IP_C, "A->C") && pass;
     pass = udp_round_trip(IP_B, IP_C, "B->C") && pass;

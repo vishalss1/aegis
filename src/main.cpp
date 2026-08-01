@@ -69,8 +69,9 @@ static void print_usage(const char* prog) {
     printf("  --session-test     Session Manager handshake, key derivation, replay, encrypt/decrypt\n");
     printf("  --peer-test        Peer Manager multi-peer table, states, endpoints, session lookup\n");
     printf("  --routing-test     Routing Engine prefix->next-hop->peer resolution and loop avoidance\n");
-    printf("  --tunnel-test      self-test: two loopback tunnels, forced-route UDP round-trip both ways\n");
-    printf("  --tunnel <local_ip> <prefix> <listen_port> [--peer <nodeid> <pubkey> <ip> <port> <cidr...>]  multi-peer tunnel\n");
+    printf("  --tunnel-test      self-test: staggered 3-node mesh, join-any-available bootstrap,\n");
+    printf("                     forced-route UDP round-trips (multi-peer routing + reconnect)\n");
+    printf("  --tunnel <local_ip> <prefix> <listen_port> [--peer <nodeid> <pubkey> <ip> <port> <cidr...>]  mesh node\n");
 }
 
 // RFC 8439 Section 2.8.2 AEAD_CHACHA20_POLY1305 test vector
@@ -778,6 +779,8 @@ static int run_routing_test() {
 static int run_tunnel(int argc, char* argv[]) {
     // usage: --tunnel <local_ip> <prefix> <listen_port>
     //          [--peer <nodeid_hex> <pubkey_hex> <peer_ip> <peer_port> <allowed_cidr> ...]
+    // Each --peer block is a mesh bootstrap candidate. The node joins any that
+    // are reachable and keeps retrying the rest in the background.
     if (argc < 6) {
         fprintf(stderr, "usage: %s --tunnel <local_ip> <prefix> <listen_port>\n"
                         "                    [--peer <nodeid_hex> <pubkey_hex> <peer_ip> <peer_port> <allowed_cidr> ...]\n",

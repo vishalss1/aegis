@@ -38,8 +38,8 @@ bool Tunnel::start(const TunnelConfig& config, const std::string& adapter_name) 
     session_manager_ = std::make_unique<SessionManager>(identity_);
     peers_.set_session_manager(session_manager_.get());
 
-    // Static peer table + routing table. Routes are Direct; relay next-hops
-    // arrive with mesh bootstrap (step 11+).
+    // Bootstrap candidates -> static peer table + direct routes. Routes are
+    // Direct; relay next-hops arrive with peer propagation (step 12+).
     for (const auto& p : config_.peers) {
         peers_.upsert(p.node_id, p.public_key, p.endpoint, true);
         for (const auto& aip : p.allowed_ips) {
@@ -76,37 +76,57 @@ bool Tunnel::start(const TunnelConfig& config, const std::string& adapter_name) 
     transport_.start_receive(
         [this](const uint8_t* d, size_t l, Endpoint s) { rx_callback(d, l, s); });
 
-    // Handshake with every configured peer. Handshakes are sequential but
-    // role-symmetric: for each pair both sides compute the same initiator.
-    int ok = 0;
-    for (const auto& p : config_.peers) {
-        if (handshake_peer(p)) ok++;
-    }
-
-    if (ok == 0) {
-        fprintf(stderr, "[tunnel] all handshakes failed, aborting\n");
-        transport_.stop_receive();
-        transport_.close();
-        adapter_.close();
-        return false;
-    }
-
-    fprintf(stderr, "[tunnel] %d/%zu sessions established\n",
-            ok, config_.peers.size());
+    // Mesh bootstrap: start the data path immediately, then establish sessions
+    // with every bootstrap candidate in background threads. Each candidate is
+    // retried until it becomes available (availability-based join, no fixed
+    // entry point) — an unreachable peer must not block or fail the node.
     running_ = true;
     tx_thread_ = std::thread(&Tunnel::tx_loop, this);
+    for (const auto& p : config_.peers) {
+        connect_threads_.emplace_back(&Tunnel::connect_loop, this, p);
+    }
+
+    fprintf(stderr, "[tunnel] up, %zu bootstrap candidate(s), joining in background\n",
+            config_.peers.size());
     return true;
 }
 
 void Tunnel::stop() {
     running_ = false;
+    hs_cv_.notify_all();  // wake responder connect loops blocked on the handshake
     transport_.stop_receive();
     if (tx_thread_.joinable()) tx_thread_.join();
+    for (auto& t : connect_threads_)
+        if (t.joinable()) t.join();
+    connect_threads_.clear();
     transport_.close();
     adapter_.close();
 }
 
+bool Tunnel::session_established(const NodeId& node_id) const {
+    return session_manager_->get_session(node_id).has_value();
+}
+
+void Tunnel::connect_loop(const TunnelPeer& peer) {
+    fprintf(stderr, "[tunnel] connect loop for peer %02x%02x...\n",
+            peer.node_id[0], peer.node_id[1]);
+    while (running_) {
+        if (session_established(peer.node_id))
+            return;
+        if (handshake_peer(peer))
+            return;
+        if (!running_) return;
+        // Availability-based join: wait before retrying an unreachable peer so
+        // the node stays up for whoever is reachable. (Backoff policy is a
+        // later failure-detection concern.)
+        std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+    }
+}
+
 bool Tunnel::handshake_peer(const TunnelPeer& peer) {
+    if (session_established(peer.node_id))
+        return true;
+
     peers_.mark_connecting(peer.node_id);
 
     // Deterministic role: the lower NodeID initiates. Both sides of a pair
@@ -140,12 +160,15 @@ bool Tunnel::handshake_peer(const TunnelPeer& peer) {
         for (int attempt = 0; attempt < 10; attempt++) {
             transport_.send(wire.data(), wire.size(), peer.endpoint);
             if (hs_cv_.wait_for(lock, std::chrono::seconds(1),
-                    [&] { return pending_handshakes_[peer.node_id].done; }))
+                    [&] { return !running_ ||
+                             pending_handshakes_[peer.node_id].done; }))
                 break;
             fprintf(stderr, "[tunnel] handshake retry %d for peer %02x%02x...\n",
                     attempt + 1, peer.node_id[0], peer.node_id[1]);
         }
-        if (!pending_handshakes_[peer.node_id].done) {
+        if (!running_) return false;
+        if (!pending_handshakes_[peer.node_id].done &&
+            !session_established(peer.node_id)) {
             fprintf(stderr, "[tunnel] handshake failed for peer %02x%02x...\n",
                     peer.node_id[0], peer.node_id[1]);
             return false;
@@ -158,8 +181,21 @@ bool Tunnel::handshake_peer(const TunnelPeer& peer) {
     std::unique_lock<std::mutex> lock(hs_mtx_);
     if (!pending_handshakes_.contains(peer.node_id))
         pending_handshakes_[peer.node_id] = {peer.node_id, 0, false};
+    // The INIT may already have been answered by rx before we registered, so
+    // never wait on a stale flag — re-check the session right away.
+    if (pending_handshakes_[peer.node_id].done ||
+        session_established(peer.node_id)) {
+        peers_.mark_seen(peer.node_id);
+        return true;
+    }
     if (!hs_cv_.wait_for(lock, std::chrono::seconds(10),
-            [&] { return pending_handshakes_[peer.node_id].done; })) {
+            [&] { return !running_ ||
+                     pending_handshakes_[peer.node_id].done; })) {
+        if (!running_) return false;
+        if (session_established(peer.node_id)) {
+            peers_.mark_seen(peer.node_id);
+            return true;
+        }
         fprintf(stderr, "[tunnel] handshake timed out for peer %02x%02x...\n",
                 peer.node_id[0], peer.node_id[1]);
         return false;
