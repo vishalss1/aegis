@@ -44,6 +44,10 @@ std::optional<std::vector<AdvertisedPeer>> deserialize_peer_table(
 // always the next hop toward everything it advertises, so every advertised
 // prefix becomes a Relay route via `sender`. Returns the number of newly
 // learned peers (existing peers are refreshed in place, not re-counted).
+// `routes_installed` (optional out param) is incremented for every prefix that
+// produced a new route, so the caller can re-announce and push new knowledge
+// into the mesh without waiting for the next periodic gossip cycle.
 size_t merge_peer_table(PeerManager& pm, RoutingEngine& re,
                         const std::vector<AdvertisedPeer>& advertised,
-                        const NodeId& sender, const NodeId& self);
+                        const NodeId& sender, const NodeId& self,
+                        size_t* routes_installed = nullptr);

@@ -10,7 +10,11 @@
 #include <optional>
 #include <vector>
 
-static constexpr size_t HANDSHAKE_PAYLOAD_SIZE = 68;
+// Handshake payload = session_id (4) + ephemeral pubkey (32) + NodeID (32) +
+// NetworkID (32). The NetworkID rides on the wire so the responder can gate the
+// handshake (step 14): mismatch -> no session, no route, before any keys are
+// derived. The same check runs on the initiator side against the response.
+static constexpr size_t HANDSHAKE_PAYLOAD_SIZE = 100;
 
 struct Session {
     uint32_t id;

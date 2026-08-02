@@ -8,13 +8,22 @@ Transport::Transport() = default;
 
 Transport::~Transport() { close(); }
 
-bool Transport::bind(uint16_t port) {
+bool Transport::bind(uint16_t port, const SocketOptions& opts) {
     if (sock_ != INVALID_SOCKET) close();
 
     sock_ = socket(AF_INET, SOCK_DGRAM, 0);
     if (sock_ == INVALID_SOCKET) {
         fprintf(stderr, "[transport] socket: error %d\n", platform_last_error());
         return false;
+    }
+
+    if (opts.broadcast) {
+        BOOL bcast = TRUE;
+        setsockopt(sock_, SOL_SOCKET, SO_BROADCAST, (const char*)&bcast, sizeof(bcast));
+    }
+    if (opts.reuseaddr) {
+        BOOL reuse = TRUE;
+        setsockopt(sock_, SOL_SOCKET, SO_REUSEADDR, (const char*)&reuse, sizeof(reuse));
     }
 
     sockaddr_in addr{};

@@ -28,6 +28,15 @@ struct Endpoint {
 
 using OnReceiveCallback = std::function<void(const uint8_t* data, size_t len, Endpoint sender)>;
 
+// Socket options for bind(). `broadcast` enables sending to the network
+// broadcast address; `reuseaddr` allows multiple sockets (e.g. every Aegis
+// node on a LAN) to bind the same discovery port — broadcast datagrams are
+// then delivered to all of them (standard Windows SO_REUSEADDR semantics).
+struct SocketOptions {
+    bool broadcast = false;
+    bool reuseaddr = false;
+};
+
 class Transport {
 public:
     Transport();
@@ -36,7 +45,7 @@ public:
     Transport(const Transport&) = delete;
     Transport& operator=(const Transport&) = delete;
 
-    bool bind(uint16_t local_port);
+    bool bind(uint16_t local_port, const SocketOptions& opts = {});
     void close();
 
     bool send(const uint8_t* data, size_t len, const Endpoint& dest);

@@ -565,6 +565,14 @@ int run_gossip_test() {
                              { id_c.node_id, id_b.node_id, id_a.node_id }) && pass;
     if (!pass) {
         fprintf(stderr, "[gossip-test] FAIL: relay routes not installed with full hop paths\n");
+        for (int n = 0; n < 4; n++) {
+            fprintf(stderr, "[gossip-test]   %s routes:\n", names[n]);
+            for (const auto& r : nodes[n]->routing().routes())
+                fprintf(stderr, "[gossip-test]     %08x/%u type=%d next=%02x dest=%02x path=",
+                        r.prefix, r.prefix_length, (int)r.type,
+                        r.next_hop[0], r.destination[0]);
+            fprintf(stderr, "[gossip-test]   %s routes end\n", names[n]);
+        }
         tunnel_a.stop();
         tunnel_b.stop();
         tunnel_c.stop();
@@ -612,5 +620,177 @@ int run_gossip_test() {
         return 0;
     }
     fprintf(stderr, "[gossip-test] *** FAIL ***\n");
+    return 1;
+}
+
+// Step 14: NetworkID gating — multi-mesh segmentation on a shared LAN.
+// net1 = {A, B} on 10.10/10.20, net2 = {C} on 10.30. All three nodes live on
+// the same host and broadcast presence on the shared discovery port. They must
+// SEE each other (presence is deliberately network-agnostic) but a session
+// across networks must never form — C is even configured as a bootstrap
+// candidate for A, and A's handshake with C must be refused at the NetworkID
+// gate. A<->B must keep working normally.
+int run_segmentation_test() {
+    printf("[segmentation-test] starting\n");
+    printf("[segmentation-test] net1 = {A 10.10.0.1:%u, B 10.20.0.1:%u}, net2 = {C 10.30.0.1:%u}\n",
+           PORT_A, PORT_B, PORT_C);
+    printf("[segmentation-test] same host, shared discovery port %u\n", DISCOVERY_PORT);
+    printf("[segmentation-test] expected: presence visible across networks, sessions never\n");
+    printf("[segmentation-test] A is configured with C as a bootstrap candidate — the join must be refused\n");
+
+    NetworkId net1{};
+    net1[0] = 0x01;
+    NetworkId net2{};
+    net2[0] = 0x02;
+
+    Identity id_a = Identity::create(net1);
+    Identity id_b = Identity::create(net1);
+    Identity id_c = Identity::create(net2);
+
+    TunnelConfig cfg_a;
+    cfg_a.identity = id_a;
+    cfg_a.local_ip = IP_A;
+    cfg_a.local_prefix = 24;
+    cfg_a.listen_port = PORT_A;
+    cfg_a.peers = {
+        { id_b.node_id, id_b.keypair.public_key,
+          Endpoint::from_parts(127, 0, 0, 1, PORT_B),
+          { allow(10, 20, 0, 0, 24) } },
+        // Cross-network bootstrap candidate: C is on net2. The connect loop
+        // will keep trying, but C's Session Manager must refuse the handshake.
+        { id_c.node_id, id_c.keypair.public_key,
+          Endpoint::from_parts(127, 0, 0, 1, PORT_C),
+          { allow(10, 30, 0, 0, 24) } },
+    };
+
+    TunnelConfig cfg_b;
+    cfg_b.identity = id_b;
+    cfg_b.local_ip = IP_B;
+    cfg_b.local_prefix = 24;
+    cfg_b.listen_port = PORT_B;
+    cfg_b.peers = {
+        { id_a.node_id, id_a.keypair.public_key,
+          Endpoint::from_parts(127, 0, 0, 1, PORT_A),
+          { allow(10, 10, 0, 0, 24) } },
+    };
+
+    TunnelConfig cfg_c;
+    cfg_c.identity = id_c;
+    cfg_c.local_ip = IP_C;
+    cfg_c.local_prefix = 24;
+    cfg_c.listen_port = PORT_C;
+    cfg_c.peers = {
+        { id_a.node_id, id_a.keypair.public_key,
+          Endpoint::from_parts(127, 0, 0, 1, PORT_A),
+          { allow(10, 10, 0, 0, 24) } },
+    };
+
+    Tunnel tunnel_a;
+    Tunnel tunnel_b;
+    Tunnel tunnel_c;
+
+    if (!tunnel_a.start(cfg_a, "Aegis 10.10.0.1") ||
+        !tunnel_b.start(cfg_b, "Aegis 10.20.0.1") ||
+        !tunnel_c.start(cfg_c, "Aegis 10.30.0.1")) {
+        fprintf(stderr, "[segmentation-test] FAIL: a tunnel failed to start\n");
+        tunnel_a.stop();
+        tunnel_b.stop();
+        tunnel_c.stop();
+        return 1;
+    }
+    printf("[segmentation-test] all three nodes up\n");
+
+    bool pass = true;
+
+    // ---- phase 1: presence must cross networks ------------------------------
+    // C (net2) must be visible to A and B (net1), and A/B visible to C.
+    printf("[segmentation-test] phase 1: presence crosses networks (visible, unreachable)\n");
+    auto presence_ok = [&]() {
+        auto pa = tunnel_a.presences();
+        auto pb = tunnel_b.presences();
+        auto pc = tunnel_c.presences();
+        return pa.count(id_c.node_id) && pb.count(id_c.node_id) &&
+               pc.count(id_a.node_id) && pc.count(id_b.node_id);
+    };
+    bool seen = false;
+    for (int i = 0; i < 40 && !seen; i++) {  // up to 8s (announce every 2s)
+        if (presence_ok()) { seen = true; break; }
+        Sleep(200);
+    }
+    if (!seen) {
+        fprintf(stderr, "[segmentation-test] FAIL: cross-network presence not seen\n");
+        pass = false;
+    } else {
+        auto pc = tunnel_c.presences();
+        auto pa = tunnel_a.presences();
+        printf("[segmentation-test] A sees net2 node C (net %02x): YES\n",
+               pa[id_c.node_id].network_id[0]);
+        printf("[segmentation-test] C sees net1 nodes A,B: YES\n");
+        printf("[segmentation-test] presence crossing networks: OK\n");
+    }
+
+    // ---- phase 2: same-network session forms, cross-network never ------------
+    printf("[segmentation-test] phase 2: A<->B session forms, A<->C must not\n");
+    bool ab = wait_for_established(tunnel_a.peers(), id_b.node_id, 40) &&
+              wait_for_established(tunnel_b.peers(), id_a.node_id, 40);
+    if (!ab) {
+        fprintf(stderr, "[segmentation-test] FAIL: net1 session A<->B never established\n");
+        pass = false;
+    } else {
+        printf("[segmentation-test] A<->B established (same network): OK\n");
+    }
+
+    // Give A's connect loop a real chance to try C (and C's to try A), then
+    // verify neither side ever established a cross-network session.
+    Sleep(6000);
+    bool cross_a = tunnel_a.session_established(id_c.node_id);
+    bool cross_c = tunnel_c.session_established(id_a.node_id);
+    if (cross_a || cross_c) {
+        fprintf(stderr, "[segmentation-test] FAIL: cross-network session formed "
+                        "(A<->C) — the gate did not hold\n");
+        pass = false;
+    } else {
+        printf("[segmentation-test] no A<->C session despite configured candidate: OK\n");
+    }
+
+    // No route toward net2's prefix may exist on net1 nodes.
+    auto has_route = [](const RoutingEngine& re, uint32_t prefix, uint8_t plen) {
+        for (const auto& r : re.routes())
+            if (r.prefix == prefix && r.prefix_length == plen)
+                return true;
+        return false;
+    };
+    if (has_route(tunnel_a.routing(), allow(10, 30, 0, 0, 24).prefix, 24)) {
+        fprintf(stderr, "[segmentation-test] FAIL: net1 node A has a route toward net2 prefix\n");
+        pass = false;
+    } else {
+        printf("[segmentation-test] no route toward net2 prefix on net1 node A: OK\n");
+    }
+
+    // ---- phase 3: net1 traffic still flows -----------------------------------
+    if (pass) {
+        printf("[segmentation-test] phase 3: net1 A<->B UDP round-trip\n");
+        add_route_if("10.20.0.0", "255.255.255.0", "10.10.0.1", tunnel_a.interface_index());
+        add_route_if("10.20.0.1", "255.255.255.255", "10.10.0.1", tunnel_a.interface_index());
+        add_route_if("10.10.0.0", "255.255.255.0", "10.20.0.1", tunnel_b.interface_index());
+        add_route_if("10.10.0.1", "255.255.255.255", "10.20.0.1", tunnel_b.interface_index());
+
+        pass = udp_round_trip(IP_A, IP_B, "net1 A->B") && pass;
+
+        delete_route("10.20.0.0", "255.255.255.0", "10.10.0.1");
+        delete_route("10.20.0.1", "255.255.255.255", "10.10.0.1");
+        delete_route("10.10.0.0", "255.255.255.0", "10.20.0.1");
+        delete_route("10.10.0.1", "255.255.255.255", "10.20.0.1");
+    }
+
+    tunnel_a.stop();
+    tunnel_b.stop();
+    tunnel_c.stop();
+
+    if (pass) {
+        printf("[segmentation-test] *** ALL PASS ***\n");
+        return 0;
+    }
+    fprintf(stderr, "[segmentation-test] *** FAIL ***\n");
     return 1;
 }

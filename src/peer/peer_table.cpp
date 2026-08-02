@@ -89,8 +89,11 @@ std::optional<std::vector<AdvertisedPeer>> deserialize_peer_table(
 
 size_t merge_peer_table(PeerManager& pm, RoutingEngine& re,
                         const std::vector<AdvertisedPeer>& advertised,
-                        const NodeId& sender, const NodeId& self) {
+                        const NodeId& sender, const NodeId& self,
+                        size_t* routes_installed) {
     size_t learned = 0;
+    if (routes_installed)
+        *routes_installed = 0;
     for (const auto& p : advertised) {
         if (p.node_id == self || p.node_id == sender)
             continue;
@@ -138,6 +141,8 @@ size_t merge_peer_table(PeerManager& pm, RoutingEngine& re,
             route.destination = p.node_id;
             route.path = path;
             re.add_route(route);
+            if (routes_installed)
+                ++*routes_installed;
         }
 
         if (is_new)

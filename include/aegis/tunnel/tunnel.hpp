@@ -6,6 +6,7 @@
 #include "aegis/routing/routing.hpp"
 #include "aegis/transport/transport.hpp"
 #include "aegis/adapter/adapter.hpp"
+#include "aegis/discovery/discovery.hpp"
 #include <array>
 #include <cstdint>
 #include <string>
@@ -61,6 +62,11 @@ public:
     const RoutingEngine& routing() const { return routing_; }
     uint32_t interface_index() const { return adapter_.interface_index(); }
 
+    // Step 14: presences seen via LAN-wide discovery. Deliberately
+    // network-agnostic — every node on the LAN is visible regardless of
+    // NetworkID; session/data stays isolated by the handshake gate.
+    std::map<NodeId, Presence> presences() const { return discovery_.presences(); }
+
     // True once the encrypted session with `node_id` is established. start()
     // returns before any session exists; background connect loops establish
     // them as the peers become available.
@@ -69,6 +75,7 @@ public:
 private:
     Adapter adapter_;
     Transport transport_;
+    Discovery discovery_;
     TunnelConfig config_;
 
     Identity identity_;
@@ -96,6 +103,7 @@ private:
 
     bool handshake_peer(const TunnelPeer& peer);
     void connect_loop(const TunnelPeer& peer);
+    void install_configured_routes(const TunnelPeer& peer);
     void tx_loop();
     void gossip_loop();
     void rx_callback(const uint8_t* data, size_t len, Endpoint sender);

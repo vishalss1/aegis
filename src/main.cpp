@@ -73,7 +73,9 @@ static void print_usage(const char* prog) {
     printf("                     forced-route UDP round-trips (multi-peer routing + reconnect)\n");
     printf("  --gossip-test      self-test: 4-node A-B-C-D chain where each node knows only its\n");
     printf("                     direct neighbors — peer table gossip must converge the full mesh\n");
-    printf("  --tunnel <local_ip> <prefix> <listen_port> [--peer <nodeid> <pubkey> <ip> <port> <cidr...>]  mesh node\n");
+    printf("  --segmentation-test self-test: two meshes on one host (net1={A,B}, net2={C}) —\n");
+    printf("                     presence crosses networks, sessions must not (step 14)\n");
+    printf("  --tunnel <local_ip> <prefix> <listen_port> [--network <hex64>] [--peer <nodeid> <pubkey> <ip> <port> <cidr...>]  mesh node\n");
 }
 
 // RFC 8439 Section 2.8.2 AEAD_CHACHA20_POLY1305 test vector
@@ -780,14 +782,18 @@ static int run_routing_test() {
 // ---- tunnel -----------------------------------------------------------------
 static int run_tunnel(int argc, char* argv[]) {
     // usage: --tunnel <local_ip> <prefix> <listen_port>
+    //          [--network <hex64>]
     //          [--peer <nodeid_hex> <pubkey_hex> <peer_ip> <peer_port> <allowed_cidr> ...]
     // Each --peer block is a mesh bootstrap candidate. The node joins any that
-    // are reachable and keeps retrying the rest in the background.
+    // are reachable and keeps retrying the rest in the background. `--network`
+    // sets the NetworkID (64 hex chars); without it the node uses the all-zero
+    // network, so it can only peer with other all-zero-network nodes (step 14).
     if (argc < 6) {
         fprintf(stderr, "usage: %s --tunnel <local_ip> <prefix> <listen_port>\n"
+                        "                    [--network <hex64>]\n"
                         "                    [--peer <nodeid_hex> <pubkey_hex> <peer_ip> <peer_port> <allowed_cidr> ...]\n",
                 argv[0]);
-        fprintf(stderr, "  e.g.: aegis --tunnel 10.10.0.1 24 51820\n"
+        fprintf(stderr, "  e.g.: aegis --tunnel 10.10.0.1 24 51820 --network <64hex>\n"
                         "            --peer <64hex> <64hex> 203.0.113.2 51821 10.20.0.0/24\n");
         return 1;
     }
@@ -815,6 +821,23 @@ static int run_tunnel(int argc, char* argv[]) {
     cfg.listen_port = listen_port;
 
     int i = 5;
+    // Optional --network <hex64> before the --peer blocks.
+    if (i < argc && std::strcmp(argv[i], "--network") == 0) {
+        if (i + 1 >= argc) {
+            fprintf(stderr, "error: --network needs 64 hex chars\n");
+            return 1;
+        }
+        std::vector<uint8_t> nid;
+        if (!parse_hex(argv[i + 1], nid) || nid.size() != NETWORK_ID_SIZE) {
+            fprintf(stderr, "error: invalid --network '%s' (expected 64 hex chars)\n", argv[i + 1]);
+            return 1;
+        }
+        NetworkId network{};
+        std::memcpy(network.data(), nid.data(), NETWORK_ID_SIZE);
+        cfg.identity = Identity::create(network);
+        i += 2;
+    }
+
     while (i < argc) {
         if (std::strcmp(argv[i], "--peer") != 0) {
             fprintf(stderr, "error: unexpected argument '%s' (expected --peer)\n", argv[i]);
@@ -1059,6 +1082,15 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         int ret = run_gossip_test();
+        platform_cleanup_winsock();
+        return ret;
+    } else if (std::strcmp(argv[1], "--segmentation-test") == 0) {
+        if (!platform_is_admin()) {
+            fprintf(stderr, "error: segmentation-test mode requires administrator privileges\n");
+            platform_cleanup_winsock();
+            return 1;
+        }
+        int ret = run_segmentation_test();
         platform_cleanup_winsock();
         return ret;
     } else if (std::strcmp(argv[1], "--tunnel") == 0) {

@@ -39,23 +39,14 @@ bool Tunnel::start(const TunnelConfig& config, const std::string& adapter_name) 
     session_manager_ = std::make_unique<SessionManager>(identity_);
     peers_.set_session_manager(session_manager_.get());
 
-    // Bootstrap candidates -> static peer table + direct routes. Routes are
-    // Direct (path = the peer itself); relay next-hops arrive with peer
-    // propagation (step 12+) and carry their full hop path.
+    // Bootstrap candidates -> static peer table entries. Direct routes are NOT
+    // installed here: a candidate may be on a different network (step 14), in
+    // which case the handshake is refused and no route toward its prefixes may
+    // ever exist. Routes are installed only once the peer's session actually
+    // establishes (see connect_loop), which only happens after the NetworkID
+    // gate passes.
     for (const auto& p : config_.peers) {
         peers_.upsert(p.node_id, p.public_key, p.endpoint, true);
-        for (const auto& aip : p.allowed_ips) {
-            Route r;
-            r.prefix = aip.prefix;
-            r.prefix_length = aip.prefix_length;
-            r.type = NextHopType::Direct;
-            r.next_hop = p.node_id;
-            r.destination = p.node_id;
-            r.path = {p.node_id};
-            if (!routing_.add_route(r))
-                fprintf(stderr, "[tunnel] warning: route %08x/%u rejected\n",
-                        aip.prefix, aip.prefix_length);
-        }
     }
 
     wchar_t wname[64];
@@ -71,6 +62,17 @@ bool Tunnel::start(const TunnelConfig& config, const std::string& adapter_name) 
         fprintf(stderr, "[tunnel] bind port %u failed\n", config.listen_port);
         adapter_.close();
         return false;
+    }
+
+    // Step 14: LAN-wide presence. Announce on the shared discovery port and
+    // listen for every other node's presence — same network or not (visible
+    // presence, unreachable across networks). The announced endpoint is the
+    // overlay address + listen port.
+    Endpoint announced{};
+    announced.ip = config.local_ip;
+    announced.port = htons(config.listen_port);
+    if (!discovery_.start(identity_, announced)) {
+        fprintf(stderr, "[tunnel] warning: discovery failed to start\n");
     }
 
     fprintf(stderr, "[tunnel] listening on %u, %zu configured peer(s)\n",
@@ -99,6 +101,7 @@ void Tunnel::stop() {
     running_ = false;
     hs_cv_.notify_all();  // wake responder connect loops blocked on the handshake
     transport_.stop_receive();
+    discovery_.stop();
     if (tx_thread_.joinable()) tx_thread_.join();
     if (gossip_thread_.joinable()) gossip_thread_.join();
     for (auto& t : connect_threads_)
@@ -116,12 +119,27 @@ void Tunnel::connect_loop(const TunnelPeer& peer) {
     fprintf(stderr, "[tunnel] connect loop for peer %02x%02x...\n",
             peer.node_id[0], peer.node_id[1]);
     while (running_) {
-        if (session_established(peer.node_id))
+        if (session_established(peer.node_id)) {
+            install_configured_routes(peer);
+            // Push the newly-installed direct route to the rest of the mesh
+            // (the loop-top path is the responder side: the initiator already
+            // sent us its table, so there is nothing new to send back to it).
+            announce_peer_table(peer.node_id);
             return;
+        }
         if (handshake_peer(peer)) {
-            // Both roles reach here once the session is up. Announce our peer
-            // table to the new neighbor so the mesh converges on full knowledge.
+            // Both roles reach here once the session is up. A session only
+            // establishes after the NetworkID gate (step 14) passes, so this is
+            // the only point where routes toward the peer may be installed.
+            install_configured_routes(peer);
+            // Announce our peer table to the new neighbor so the mesh converges
+            // on full knowledge...
             send_peer_table(peer.node_id);
+            // ...and push the freshly-installed direct route to the rest of the
+            // mesh immediately, instead of waiting for the periodic gossip.
+            // A relayed route learned from this announce is itself fanned out
+            // by handle_peer_table, so the whole mesh converges in one wave.
+            announce_peer_table(peer.node_id);
             return;
         }
         if (!running_) return;
@@ -129,6 +147,21 @@ void Tunnel::connect_loop(const TunnelPeer& peer) {
         // the node stays up for whoever is reachable. (Backoff policy is a
         // later failure-detection concern.)
         std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+    }
+}
+
+void Tunnel::install_configured_routes(const TunnelPeer& peer) {
+    for (const auto& aip : peer.allowed_ips) {
+        Route r;
+        r.prefix = aip.prefix;
+        r.prefix_length = aip.prefix_length;
+        r.type = NextHopType::Direct;
+        r.next_hop = peer.node_id;
+        r.destination = peer.node_id;
+        r.path = {peer.node_id};
+        if (!routing_.add_route(r))
+            fprintf(stderr, "[tunnel] warning: route %08x/%u rejected\n",
+                    aip.prefix, aip.prefix_length);
     }
 }
 
@@ -562,10 +595,13 @@ void Tunnel::handle_peer_table(const NodeId& sender, const uint8_t* data, size_t
                 sender[0], sender[1]);
         return;
     }
+    size_t routes_installed = 0;
     size_t learned = merge_peer_table(peers_, routing_, *advertised, sender,
-                                      identity_.node_id);
+                                      identity_.node_id, &routes_installed);
     fprintf(stderr, "[tunnel] peer table from %02x%02x...: %zu peer(s), %zu new\n",
             sender[0], sender[1], advertised->size(), learned);
-    if (learned > 0)
-        announce_peer_table(sender);  // fan out knowledge to the rest of the mesh
+    // Fan out any new knowledge (peers or routes) so the mesh converges without
+    // waiting for the next periodic gossip cycle.
+    if (learned > 0 || routes_installed > 0)
+        announce_peer_table(sender);
 }

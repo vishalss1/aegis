@@ -45,6 +45,7 @@ set(AEGIS_SOURCES
     src/peer/peer_table.cpp
     src/packet/packet.cpp
     src/packet/relay.cpp
+    src/discovery/discovery.cpp
     src/config/config.cpp
     src/platform/platform.cpp
 )

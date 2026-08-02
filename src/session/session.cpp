@@ -84,6 +84,9 @@ std::vector<uint8_t> SessionManager::build_handshake_message(
     msg.insert(msg.end(), identity_.node_id.begin(),
                identity_.node_id.end());
 
+    msg.insert(msg.end(), identity_.network_id.begin(),
+               identity_.network_id.end());
+
     return msg;
 }
 
@@ -187,6 +190,19 @@ std::optional<std::vector<uint8_t>> SessionManager::handle_handshake_init(
         return std::nullopt;
     }
 
+    // Step 14: NetworkID gating. The responder refuses the handshake before
+    // any keys are derived or a session is created — a cross-network peer is
+    // visible (discovery) but unreachable. This is what makes independent
+    // meshes on a shared LAN stay isolated.
+    NetworkId peer_network{};
+    std::memcpy(peer_network.data(), message.data() + 68, NETWORK_ID_SIZE);
+    if (peer_network != identity_.network_id) {
+        fprintf(stderr, "[session] reject handshake init: network mismatch "
+                        "(peer %02x%02x..., expected net %02x...)\n",
+                received_id[0], received_id[1], identity_.network_id[0]);
+        return std::nullopt;
+    }
+
     X25519KeyPair ephemeral = x25519_generate_keypair();
 
     X25519Key secret = derive_master_secret(ephemeral.private_key, peer_eph);
@@ -231,6 +247,18 @@ bool SessionManager::handle_handshake_resp(
 
     NodeId peer_id{};
     std::memcpy(peer_id.data(), message.data() + 36, 32);
+
+    // Step 14: initiator-side gate. The responder gates first, so this should
+    // never fire; kept as defense in depth so a forged/misconfigured response
+    // from a different network can never establish a session.
+    NetworkId peer_network{};
+    std::memcpy(peer_network.data(), message.data() + 68, NETWORK_ID_SIZE);
+    if (peer_network != identity_.network_id) {
+        fprintf(stderr, "[session] reject handshake resp: network mismatch "
+                        "(peer %02x%02x...)\n",
+                peer_id[0], peer_id[1]);
+        return false;
+    }
 
     auto eit = ephemerals_.find(session_id);
     if (eit == ephemerals_.end()) {

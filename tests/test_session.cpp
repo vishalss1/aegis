@@ -181,6 +181,51 @@ int main() {
         CHECK(!resp_msg.has_value());
     }
 
+    // ---- 6. Step 14: NetworkID gating ---------------------------------------
+    {
+        // Two networks on a shared LAN: net1 = {alice, bob}, net2 = {mallory}.
+        NetworkId net2{};
+        net2[0] = 0x02;
+        Identity mallory = Identity::create(net2);
+
+        // Same-network handshake still works (init carries net1, responder agrees).
+        {
+            SessionManager sm_a(alice);
+            SessionManager sm_b(bob);
+            uint32_t session_id = 0xABCD0010;
+            auto init_msg = sm_a.create_handshake_init(session_id);
+            auto resp_msg = sm_b.handle_handshake_init(init_msg, alice.node_id);
+            CHECK(resp_msg.has_value());
+            CHECK(sm_a.handle_handshake_resp(*resp_msg, session_id));
+            CHECK(sm_a.get_session(bob.node_id).has_value());
+            CHECK(sm_b.get_session(alice.node_id).has_value());
+        }
+
+        // Responder gate: alice (net1) initiates toward mallory (net2) — the
+        // handshake must be refused BEFORE any session is created.
+        {
+            SessionManager sm_a(alice);
+            SessionManager sm_m(mallory);
+            uint32_t session_id = 0xABCD0011;
+            auto init_msg = sm_a.create_handshake_init(session_id);
+            auto resp_msg = sm_m.handle_handshake_init(init_msg, alice.node_id);
+            CHECK(!resp_msg.has_value());
+            CHECK(!sm_m.get_session(alice.node_id).has_value());
+        }
+
+        // Initiator gate (defense in depth): mallory initiates toward alice —
+        // same refusal path.
+        {
+            SessionManager sm_a(alice);
+            SessionManager sm_m(mallory);
+            uint32_t session_id = 0xABCD0012;
+            auto init_msg = sm_m.create_handshake_init(session_id);
+            auto resp_msg = sm_a.handle_handshake_init(init_msg, mallory.node_id);
+            CHECK(!resp_msg.has_value());
+            CHECK(!sm_a.get_session(mallory.node_id).has_value());
+        }
+    }
+
     printf("\n%d / %d passed\n", passed, tests);
     return (passed == tests) ? 0 : 1;
 }
