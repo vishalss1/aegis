@@ -75,6 +75,8 @@ static void print_usage(const char* prog) {
     printf("                     direct neighbors — peer table gossip must converge the full mesh\n");
     printf("  --segmentation-test self-test: two meshes on one host (net1={A,B}, net2={C}) —\n");
     printf("                     presence crosses networks, sessions must not (step 14)\n");
+    printf("  --lifecycle-test   self-test: keep-alive liveness, dead detection + route teardown,\n");
+    printf("                     automatic rejoin after restart, and rekey while traffic flows (step 15)\n");
     printf("  --tunnel <local_ip> <prefix> <listen_port> [--network <hex64>] [--peer <nodeid> <pubkey> <ip> <port> <cidr...>]  mesh node\n");
 }
 
@@ -626,8 +628,8 @@ static int run_peer_test() {
     printf("[peer-test] unknown peer has no session: OK\n");
 
     // ---- stale / keepalive detection ---------------------------------------
-    pm.set_dead_timeout(std::chrono::seconds(1));
-    pm.set_keepalive_interval(std::chrono::seconds(1));
+    pm.set_dead_timeout(std::chrono::milliseconds(1000));
+    pm.set_keepalive_interval(std::chrono::milliseconds(1000));
     if (!pm.stale_peers().empty()) {
         fprintf(stderr, "[peer-test] FAIL: nothing stale yet\n");
         return 1;
@@ -1091,6 +1093,15 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         int ret = run_segmentation_test();
+        platform_cleanup_winsock();
+        return ret;
+    } else if (std::strcmp(argv[1], "--lifecycle-test") == 0) {
+        if (!platform_is_admin()) {
+            fprintf(stderr, "error: lifecycle-test mode requires administrator privileges\n");
+            platform_cleanup_winsock();
+            return 1;
+        }
+        int ret = run_lifecycle_test();
         platform_cleanup_winsock();
         return ret;
     } else if (std::strcmp(argv[1], "--tunnel") == 0) {

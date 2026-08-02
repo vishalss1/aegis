@@ -44,6 +44,13 @@ struct TunnelConfig {
     uint8_t  local_prefix;              // e.g. 24
     uint16_t listen_port;               // host byte order
     std::vector<TunnelPeer> peers;      // bootstrap candidates
+
+    // Step 15 lifecycle tuning (ms). Zero values fall back to the defaults.
+    // Tests set short values to exercise keep-alive / dead-detection / rekey
+    // quickly; the CLI uses the defaults.
+    uint32_t keepalive_interval_ms = 0;
+    uint32_t dead_timeout_ms = 0;
+    uint32_t rekey_interval_ms = 0;
 };
 
 class Tunnel {
@@ -61,6 +68,9 @@ public:
     const PeerManager& peers() const { return peers_; }
     const RoutingEngine& routing() const { return routing_; }
     uint32_t interface_index() const { return adapter_.interface_index(); }
+    // Observability: the current session (and its id / established_at) for a
+    // peer, so tests can prove a rekey replaced the keys.
+    SessionManager* session_manager() const { return session_manager_.get(); }
 
     // Step 14: presences seen via LAN-wide discovery. Deliberately
     // network-agnostic — every node on the LAN is visible regardless of
@@ -85,10 +95,19 @@ private:
 
     std::thread tx_thread_;
     std::thread gossip_thread_;
+    std::thread maintenance_thread_;
     std::vector<std::thread> connect_threads_;
     std::atomic<bool> running_{false};
     uint32_t unrouted_count_ = 0;
     static constexpr int GOSSIP_INTERVAL_MS = 3000;
+
+    // Step 15 lifecycle defaults (used when TunnelConfig leaves them at 0).
+    static constexpr int KEEPALIVE_INTERVAL_MS = 25000;
+    static constexpr int DEAD_TIMEOUT_MS = 180000;
+    static constexpr int REKEY_INTERVAL_MS = 120000;
+    static constexpr int MAINTENANCE_TICK_MS = 1000;
+    static constexpr int CONNECT_BACKOFF_BASE_MS = 1000;
+    static constexpr int CONNECT_BACKOFF_CAP_MS = 30000;
 
     // Per-peer handshake state. `session_id` is ours (initiator picks it, the
     // responder adopts it from the received INIT).
@@ -101,11 +120,21 @@ private:
     std::mutex hs_mtx_;
     std::condition_variable hs_cv_;
 
-    bool handshake_peer(const TunnelPeer& peer);
+    // Step 15: last rekey attempt per peer, so a failed rekey is throttled to
+    // one attempt per rekey interval instead of spamming handshakes. Guarded by
+    // hs_mtx_.
+    std::map<NodeId, std::chrono::steady_clock::time_point> rekey_attempts_;
+
+    bool handshake_peer(const TunnelPeer& peer, bool force = false);
     void connect_loop(const TunnelPeer& peer);
     void install_configured_routes(const TunnelPeer& peer);
     void tx_loop();
     void gossip_loop();
+    // Step 15: keep-alive + dead detection + rekey on a 1 s tick.
+    void maintenance_loop();
+    void send_keepalive(const Peer& peer);
+    void rekey_peer(const NodeId& node_id);
+    void rekey_due();
     void rx_callback(const uint8_t* data, size_t len, Endpoint sender);
     // Step 13: peel one onion layer off a relayed frame and either deliver the
     // final packet or forward the inner layer to the revealed next hop.

@@ -91,8 +91,12 @@ void PeerManager::mark_seen(const NodeId& node_id, std::optional<Endpoint> endpo
     if (endpoint) peer.endpoint = endpoint;
     if (peer.state != PeerState::Established) {
         peer.connected_since = now;
-        peer.last_keepalive = now;
     }
+    // Any valid packet from the peer counts as liveness for keep-alive/dead
+    // detection. last_keepalive is the timestamp the maintenance loop compares
+    // against keepalive_interval_, so receiving traffic must advance it too —
+    // otherwise a busy peer would keep getting unsolicited keep-alives.
+    peer.last_keepalive = now;
     peer.last_seen = now;
     peer.state = PeerState::Established;
 }
@@ -127,12 +131,12 @@ std::optional<Session*> PeerManager::get_session(const NodeId& node_id) const {
     return session_manager_->get_session(node_id);
 }
 
-void PeerManager::set_keepalive_interval(std::chrono::seconds interval) {
+void PeerManager::set_keepalive_interval(std::chrono::milliseconds interval) {
     std::lock_guard<std::mutex> lock(mtx_);
     keepalive_interval_ = interval;
 }
 
-void PeerManager::set_dead_timeout(std::chrono::seconds timeout) {
+void PeerManager::set_dead_timeout(std::chrono::milliseconds timeout) {
     std::lock_guard<std::mutex> lock(mtx_);
     dead_timeout_ = timeout;
 }
@@ -145,7 +149,7 @@ std::vector<Peer*> PeerManager::stale_peers() {
         if (peer.state == PeerState::Dead) continue;
         auto reference = (peer.last_seen != decltype(peer.last_seen){})
             ? peer.last_seen : peer.created_at;
-        auto age = std::chrono::duration_cast<std::chrono::seconds>(now - reference);
+        auto age = std::chrono::duration_cast<std::chrono::milliseconds>(now - reference);
         if (age >= dead_timeout_)
             stale.push_back(&peer);
     }
@@ -158,7 +162,7 @@ std::vector<Peer*> PeerManager::peers_needing_keepalive() {
     auto now = std::chrono::steady_clock::now();
     for (auto& [_, peer] : peers_) {
         if (peer.state != PeerState::Established) continue;
-        auto age = std::chrono::duration_cast<std::chrono::seconds>(now - peer.last_keepalive);
+        auto age = std::chrono::duration_cast<std::chrono::milliseconds>(now - peer.last_keepalive);
         if (age >= keepalive_interval_)
             result.push_back(&peer);
     }

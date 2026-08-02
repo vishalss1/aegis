@@ -39,6 +39,15 @@ bool Tunnel::start(const TunnelConfig& config, const std::string& adapter_name) 
     session_manager_ = std::make_unique<SessionManager>(identity_);
     peers_.set_session_manager(session_manager_.get());
 
+    // Step 15 lifecycle: keep-alive and dead-detection intervals feed the
+    // maintenance loop. Tests override them; 0 means "use the default".
+    peers_.set_keepalive_interval(std::chrono::milliseconds(
+        config_.keepalive_interval_ms > 0 ? config_.keepalive_interval_ms
+                                          : KEEPALIVE_INTERVAL_MS));
+    peers_.set_dead_timeout(std::chrono::milliseconds(
+        config_.dead_timeout_ms > 0 ? config_.dead_timeout_ms
+                                    : DEAD_TIMEOUT_MS));
+
     // Bootstrap candidates -> static peer table entries. Direct routes are NOT
     // installed here: a candidate may be on a different network (step 14), in
     // which case the handshake is refused and no route toward its prefixes may
@@ -88,6 +97,7 @@ bool Tunnel::start(const TunnelConfig& config, const std::string& adapter_name) 
     running_ = true;
     tx_thread_ = std::thread(&Tunnel::tx_loop, this);
     gossip_thread_ = std::thread(&Tunnel::gossip_loop, this);
+    maintenance_thread_ = std::thread(&Tunnel::maintenance_loop, this);
     for (const auto& p : config_.peers) {
         connect_threads_.emplace_back(&Tunnel::connect_loop, this, p);
     }
@@ -104,6 +114,7 @@ void Tunnel::stop() {
     discovery_.stop();
     if (tx_thread_.joinable()) tx_thread_.join();
     if (gossip_thread_.joinable()) gossip_thread_.join();
+    if (maintenance_thread_.joinable()) maintenance_thread_.join();
     for (auto& t : connect_threads_)
         if (t.joinable()) t.join();
     connect_threads_.clear();
@@ -118,35 +129,37 @@ bool Tunnel::session_established(const NodeId& node_id) const {
 void Tunnel::connect_loop(const TunnelPeer& peer) {
     fprintf(stderr, "[tunnel] connect loop for peer %02x%02x...\n",
             peer.node_id[0], peer.node_id[1]);
+    uint32_t backoff_ms = CONNECT_BACKOFF_BASE_MS;
     while (running_) {
         if (session_established(peer.node_id)) {
+            // Session is up: keep the routes installed and the mesh informed,
+            // then wait quietly until the session drops (dead peer, rekey
+            // teardown, stop). Re-install only on (re)establishment.
             install_configured_routes(peer);
-            // Push the newly-installed direct route to the rest of the mesh
-            // (the loop-top path is the responder side: the initiator already
-            // sent us its table, so there is nothing new to send back to it).
-            announce_peer_table(peer.node_id);
-            return;
-        }
-        if (handshake_peer(peer)) {
-            // Both roles reach here once the session is up. A session only
-            // establishes after the NetworkID gate (step 14) passes, so this is
-            // the only point where routes toward the peer may be installed.
-            install_configured_routes(peer);
-            // Announce our peer table to the new neighbor so the mesh converges
-            // on full knowledge...
             send_peer_table(peer.node_id);
-            // ...and push the freshly-installed direct route to the rest of the
-            // mesh immediately, instead of waiting for the periodic gossip.
-            // A relayed route learned from this announce is itself fanned out
-            // by handle_peer_table, so the whole mesh converges in one wave.
             announce_peer_table(peer.node_id);
-            return;
+            backoff_ms = CONNECT_BACKOFF_BASE_MS;
+
+            std::unique_lock<std::mutex> lock(hs_mtx_);
+            hs_cv_.wait_for(lock, std::chrono::milliseconds(500),
+                [&] { return !running_ || !session_established(peer.node_id); });
+            continue;
+        }
+
+        // Session is down. The maintenance loop may have marked the peer dead
+        // (removing its session and routes); this thread re-establishes it.
+        if (handshake_peer(peer)) {
+            install_configured_routes(peer);
+            backoff_ms = CONNECT_BACKOFF_BASE_MS;
+            continue;
         }
         if (!running_) return;
         // Availability-based join: wait before retrying an unreachable peer so
-        // the node stays up for whoever is reachable. (Backoff policy is a
-        // later failure-detection concern.)
-        std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+        // the node stays up for whoever is reachable. Exponential backoff caps
+        // so a long-unreachable peer does not spin hot on its probe thread.
+        std::this_thread::sleep_for(std::chrono::milliseconds(backoff_ms));
+        if (backoff_ms < (uint32_t)CONNECT_BACKOFF_CAP_MS)
+            backoff_ms = (std::min)(backoff_ms * 2, (uint32_t)CONNECT_BACKOFF_CAP_MS);
     }
 }
 
@@ -165,8 +178,8 @@ void Tunnel::install_configured_routes(const TunnelPeer& peer) {
     }
 }
 
-bool Tunnel::handshake_peer(const TunnelPeer& peer) {
-    if (session_established(peer.node_id))
+bool Tunnel::handshake_peer(const TunnelPeer& peer, bool force) {
+    if (!force && session_established(peer.node_id))
         return true;
 
     peers_.mark_connecting(peer.node_id);
@@ -360,6 +373,96 @@ void Tunnel::gossip_loop() {
     fprintf(stderr, "[tunnel] gossip loop ended\n");
 }
 
+void Tunnel::send_keepalive(const Peer& peer) {
+    auto frame = session_manager_->encrypt_message(
+        peer.node_id, TYPE_KEEPALIVE, nullptr, 0);
+    if (!frame) {
+        fprintf(stderr, "[tunnel] keepalive encrypt failed for %02x%02x...\n",
+                peer.node_id[0], peer.node_id[1]);
+        return;
+    }
+    if (peer.endpoint)
+        transport_.send(frame->data(), frame->size(), *peer.endpoint);
+}
+
+void Tunnel::rekey_peer(const NodeId& node_id) {
+    Peer* p = peers_.get_peer(node_id);
+    if (!p || !p->endpoint)
+        return;
+    TunnelPeer tp;
+    tp.node_id = node_id;
+    tp.public_key = p->public_key;
+    tp.endpoint = *p->endpoint;
+    if (handshake_peer(tp, /*force=*/true))
+        fprintf(stderr, "[tunnel] rekey complete for %02x%02x...\n",
+                node_id[0], node_id[1]);
+    else
+        fprintf(stderr, "[tunnel] rekey failed for %02x%02x...\n",
+                node_id[0], node_id[1]);
+}
+
+void Tunnel::rekey_due() {
+    auto interval = std::chrono::milliseconds(
+        config_.rekey_interval_ms > 0 ? config_.rekey_interval_ms
+                                      : REKEY_INTERVAL_MS);
+    auto now = std::chrono::steady_clock::now();
+    for (auto* peer : peers_.all_peers()) {
+        if (peer->node_id == identity_.node_id)
+            continue;
+        if (peer->state != PeerState::Established)
+            continue;
+        // Deterministic roles: only the lower NodeID rekeys. The other side
+        // auto-answers the re-INIT from its rx path, so exactly one side
+        // drives each pair's rekey and the two never race.
+        if (!(identity_.node_id < peer->node_id))
+            continue;
+        auto sess = session_manager_->get_session(peer->node_id);
+        if (!sess)
+            continue;
+        if (now - (*sess)->established_at < interval)
+            continue;
+        auto attempt = rekey_attempts_.find(peer->node_id);
+        if (attempt != rekey_attempts_.end() &&
+            now - attempt->second < interval)
+            continue;  // failed rekey already this interval; retry later
+        rekey_attempts_[peer->node_id] = now;
+        rekey_peer(peer->node_id);
+    }
+}
+
+void Tunnel::maintenance_loop() {
+    fprintf(stderr, "[tunnel] maintenance loop started\n");
+    while (running_) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(MAINTENANCE_TICK_MS));
+        if (!running_) break;
+
+        // 1) Keep-alives: established peers silent past the interval get an
+        //    empty-payload frame, so liveness is measured end-to-end (their
+        //    response is any decrypted packet, which advances last_keepalive).
+        for (auto* peer : peers_.peers_needing_keepalive())
+            send_keepalive(*peer);
+
+        // 2) Dead detection: a peer silent past the dead timeout loses its
+        //    session and its routes. Learned peers stay listed but unroutable
+        //    (step 15 policy); the connect loop re-establishes configured
+        //    peers, re-installing routes only after the handshake succeeds.
+        for (auto* peer : peers_.stale_peers()) {
+            peers_.mark_dead(peer->node_id);
+            session_manager_->remove_session(peer->node_id);
+            routing_.remove_route(peer->node_id);
+            fprintf(stderr, "[tunnel] peer %02x%02x... marked dead\n",
+                    peer->node_id[0], peer->node_id[1]);
+        }
+
+        // 3) Garbage-collect sessions retired by a rekey.
+        session_manager_->purge_retired();
+
+        // 4) Rekey established sessions older than the interval.
+        rekey_due();
+    }
+    fprintf(stderr, "[tunnel] maintenance loop ended\n");
+}
+
 void Tunnel::rx_callback(const uint8_t* data, size_t len, Endpoint sender) {
     if (len < 16) return;
 
@@ -382,6 +485,18 @@ void Tunnel::rx_callback(const uint8_t* data, size_t len, Endpoint sender) {
     if (type == TYPE_RELAY) {
         if (!running_) return;
         handle_relay(data, len, sid);
+        return;
+    }
+
+    if (type == TYPE_KEEPALIVE) {
+        if (!running_) return;
+        auto msg = session_manager_->decrypt_message(data, len);
+        if (!msg) return;
+        auto sess = session_manager_->get_session_by_id(sid);
+        if (!sess) return;
+        // Any decrypted packet proves liveness; mark_seen advances
+        // last_keepalive so the peer drops off peers_needing_keepalive.
+        peers_.mark_seen((*sess)->peer_id, sender);
         return;
     }
 

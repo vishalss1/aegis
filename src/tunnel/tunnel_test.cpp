@@ -5,6 +5,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <chrono>
+#include <functional>
 
 namespace {
 
@@ -792,5 +793,190 @@ int run_segmentation_test() {
         return 0;
     }
     fprintf(stderr, "[segmentation-test] *** FAIL ***\n");
+    return 1;
+}
+
+// Step 15: session lifecycle on a single A<->B pair with shortened intervals.
+//   1. establish normally
+//   2. keep-alives keep both sides alive through a data-silent window LONGER
+//      than the dead timeout — gossip alone cannot (it fires every 3s, the
+//      dead timeout here is 2.5s)
+//   3. a rekey replaces the session keys (session id changes) with traffic
+//      still flowing
+//   4. stopping B makes A detect dead: session and routes are torn down
+//   5. restarting B makes A's persistent connect loop rejoin, reinstalling
+//      routes; traffic flows again
+int run_lifecycle_test() {
+    printf("[lifecycle-test] starting\n");
+    printf("[lifecycle-test] A (10.10.0.1:%u) <-> B (10.20.0.1:%u)\n", PORT_A, PORT_B);
+    printf("[lifecycle-test] keepalive=900ms dead=2500ms rekey=12000ms (maintenance tick 1s)\n");
+
+    NetworkId net{};
+    net[0] = 0x01;
+    Identity id_a = Identity::create(net);
+    Identity id_b = Identity::create(net);
+
+    TunnelConfig cfg_a;
+    cfg_a.identity = id_a;
+    cfg_a.local_ip = IP_A;
+    cfg_a.local_prefix = 24;
+    cfg_a.listen_port = PORT_A;
+    cfg_a.keepalive_interval_ms = 900;
+    cfg_a.dead_timeout_ms = 2500;
+    cfg_a.rekey_interval_ms = 12000;
+    cfg_a.peers = {
+        { id_b.node_id, id_b.keypair.public_key,
+          Endpoint::from_parts(127, 0, 0, 1, PORT_B),
+          { allow(10, 20, 0, 0, 24) } },
+    };
+
+    TunnelConfig cfg_b;
+    cfg_b.identity = id_b;
+    cfg_b.local_ip = IP_B;
+    cfg_b.local_prefix = 24;
+    cfg_b.listen_port = PORT_B;
+    cfg_b.keepalive_interval_ms = 900;
+    cfg_b.dead_timeout_ms = 2500;
+    cfg_b.rekey_interval_ms = 12000;
+    cfg_b.peers = {
+        { id_a.node_id, id_a.keypair.public_key,
+          Endpoint::from_parts(127, 0, 0, 1, PORT_A),
+          { allow(10, 10, 0, 0, 24) } },
+    };
+
+    Tunnel tunnel_a;
+    Tunnel tunnel_b;
+
+    auto session_id = [](Tunnel& t, const NodeId& peer) -> uint32_t {
+        auto sess = t.session_manager()->get_session(peer);
+        if (!sess) return 0;
+        return (*sess)->id;
+    };
+    auto peer_state = [](const Tunnel& t, const NodeId& peer) -> PeerState {
+        const Peer* p = t.peers().get_peer(peer);
+        return p ? p->state : PeerState::Unknown;
+    };
+    auto has_prefix_route = [](const RoutingEngine& re, uint32_t prefix, uint8_t plen) {
+        for (const auto& r : re.routes())
+            if (r.prefix == prefix && r.prefix_length == plen)
+                return true;
+        return false;
+    };
+    auto wait_true = [](int timeout_ms, const char* what,
+                        const std::function<bool()>& pred) {
+        int waited = 0;
+        while (waited < timeout_ms) {
+            if (pred()) {
+                printf("[lifecycle-test] %s: OK\n", what);
+                return true;
+            }
+            Sleep(200);
+            waited += 200;
+        }
+        fprintf(stderr, "[lifecycle-test] FAIL: %s (timeout %dms)\n", what, timeout_ms);
+        return false;
+    };
+
+    if (!tunnel_a.start(cfg_a, "Aegis 10.10.0.1") ||
+        !tunnel_b.start(cfg_b, "Aegis 10.20.0.1")) {
+        fprintf(stderr, "[lifecycle-test] FAIL: a tunnel failed to start\n");
+        tunnel_a.stop();
+        tunnel_b.stop();
+        return 1;
+    }
+
+    bool pass = true;
+
+    // ---- phase 1: establish + traffic -------------------------------------
+    printf("[lifecycle-test] phase 1: establish A<->B\n");
+    pass = wait_true(40000, "A<->B established",
+        [&] {
+            return tunnel_a.session_established(id_b.node_id) &&
+                   tunnel_b.session_established(id_a.node_id);
+        }) && pass;
+
+    add_route_if("10.20.0.0", "255.255.255.0", "10.10.0.1", tunnel_a.interface_index());
+    add_route_if("10.20.0.1", "255.255.255.255", "10.10.0.1", tunnel_a.interface_index());
+    add_route_if("10.10.0.0", "255.255.255.0", "10.20.0.1", tunnel_b.interface_index());
+    add_route_if("10.10.0.1", "255.255.255.255", "10.20.0.1", tunnel_b.interface_index());
+
+    uint32_t sid_before = session_id(tunnel_a, id_b.node_id);
+    if (pass)
+        pass = udp_round_trip(IP_A, IP_B, "A->B initial") && pass;
+
+    // ---- phase 2: keep-alives keep a silent peer alive ---------------------
+    printf("[lifecycle-test] phase 2: no data for 8s — keep-alives only\n");
+    Sleep(8000);
+    pass = wait_true(2000, "both peers still established after silence",
+        [&] {
+            return tunnel_a.session_established(id_b.node_id) &&
+                   tunnel_b.session_established(id_a.node_id);
+        }) && pass;
+    if (pass)
+        pass = udp_round_trip(IP_A, IP_B, "A->B after silence") && pass;
+
+    // ---- phase 3: rekey replaces session keys ------------------------------
+    printf("[lifecycle-test] phase 3: waiting for the 12s rekey\n");
+    pass = wait_true(30000, "rekey replaced session keys (session id changed)",
+        [&] {
+            uint32_t s = session_id(tunnel_a, id_b.node_id);
+            return s != 0 && s != sid_before;
+        }) && pass;
+    if (pass)
+        pass = udp_round_trip(IP_A, IP_B, "A->B after rekey") && pass;
+
+    // ---- phase 4: dead detection -------------------------------------------
+    printf("[lifecycle-test] phase 4: stopping B; A must detect dead\n");
+    tunnel_b.stop();
+    // Both must hold at once: the session is gone AND no route toward B's
+    // prefix remains. Polling the conjunction makes this robust to a spurious
+    // re-establish during B's teardown (it would get re-marked dead and the
+    // poll would keep going until the routes are gone again).
+    pass = wait_true(15000, "A dropped B's session and routes",
+        [&] {
+            return !tunnel_a.session_established(id_b.node_id) &&
+                   !has_prefix_route(tunnel_a.routing(),
+                                     allow(10, 20, 0, 0, 24).prefix, 24);
+        }) && pass;
+    printf("[lifecycle-test] A's view of B after death: %s\n",
+           peer_state(tunnel_a, id_b.node_id) == PeerState::Dead ? "Dead" :
+           peer_state(tunnel_a, id_b.node_id) == PeerState::Connecting ? "Connecting (rejoin)" : "other");
+
+    // ---- phase 5: restart B, A re-joins automatically -----------------------
+    printf("[lifecycle-test] phase 5: restarting B; A must rejoin on its own\n");
+    Tunnel tunnel_b2;
+    if (!tunnel_b2.start(cfg_b, "Aegis 10.20.0.1")) {
+        fprintf(stderr, "[lifecycle-test] FAIL: B restart failed to start\n");
+        pass = false;
+    }
+    if (pass) {
+        // The /32 host routes for the return path were pinned to the OLD B
+        // adapter's interface index, which no longer exists — rebind them to
+        // the restarted adapter before round-tripping.
+        add_route_if("10.10.0.0", "255.255.255.0", "10.20.0.1", tunnel_b2.interface_index());
+        add_route_if("10.10.0.1", "255.255.255.255", "10.20.0.1", tunnel_b2.interface_index());
+
+        pass = wait_true(40000, "A<->B re-established after restart",
+            [&] {
+                return tunnel_a.session_established(id_b.node_id) &&
+                       tunnel_b2.session_established(id_a.node_id);
+            }) && pass;
+        if (pass)
+            pass = udp_round_trip(IP_A, IP_B, "A->B after rejoin") && pass;
+    }
+
+    delete_route("10.20.0.0", "255.255.255.0", "10.10.0.1");
+    delete_route("10.20.0.1", "255.255.255.255", "10.10.0.1");
+    delete_route("10.10.0.0", "255.255.255.0", "10.20.0.1");
+    delete_route("10.10.0.1", "255.255.255.255", "10.20.0.1");
+
+    tunnel_a.stop();
+    tunnel_b2.stop();
+
+    if (pass) {
+        printf("[lifecycle-test] *** ALL PASS ***\n");
+        return 0;
+    }
+    fprintf(stderr, "[lifecycle-test] *** FAIL ***\n");
     return 1;
 }

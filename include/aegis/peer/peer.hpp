@@ -60,10 +60,10 @@ public:
 
     std::optional<Session*> get_session(const NodeId& node_id) const;
 
-    void set_keepalive_interval(std::chrono::seconds interval);
-    void set_dead_timeout(std::chrono::seconds timeout);
-    std::chrono::seconds keepalive_interval() const { return keepalive_interval_; }
-    std::chrono::seconds dead_timeout() const { return dead_timeout_; }
+    void set_keepalive_interval(std::chrono::milliseconds interval);
+    void set_dead_timeout(std::chrono::milliseconds timeout);
+    std::chrono::milliseconds keepalive_interval() const { return keepalive_interval_; }
+    std::chrono::milliseconds dead_timeout() const { return dead_timeout_; }
 
     std::vector<Peer*> stale_peers();
     std::vector<Peer*> peers_needing_keepalive();
@@ -71,7 +71,7 @@ public:
 private:
     std::map<NodeId, Peer> peers_;
     SessionManager* session_manager_ = nullptr;
-    std::chrono::seconds keepalive_interval_{25};
-    std::chrono::seconds dead_timeout_{180};
+    std::chrono::milliseconds keepalive_interval_{25000};
+    std::chrono::milliseconds dead_timeout_{180000};
     mutable std::mutex mtx_;
 };

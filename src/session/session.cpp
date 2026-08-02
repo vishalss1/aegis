@@ -126,19 +126,41 @@ void SessionManager::derive_keys(
     if (!initiator) {
         std::swap(session.send_key, session.recv_key);
     }
+
+    // The session becomes active (and its rekey timer starts) only once both
+    // sides have the derived keys. Time is captured here rather than at
+    // create_session so a failed handshake never leaves a "fresh" timestamp.
+    session.established_at = std::chrono::steady_clock::now();
+}
+
+void SessionManager::set_retired_grace(std::chrono::milliseconds grace) {
+    std::lock_guard<std::mutex> lock(mtx_);
+    retired_grace_ = grace;
 }
 
 Session& SessionManager::create_session(
     const NodeId& peer_id, uint32_t session_id)
 {
-    auto [it, _] = sessions_.try_emplace(peer_id);
-    it->second.peer_id = peer_id;
-    it->second.id = session_id;
-    it->second.send_seq = 0;
-    it->second.recv_last = 0;
-    it->second.recv_window = 0;
+    // A rekey (or a fresh handshake replacing a dead session) supersedes the
+    // prior established session. Keep the old one in the retired buffer for a
+    // short grace window so packets already in flight under its keys still
+    // decrypt; it is dropped by purge_retired once the window expires.
+    auto it = sessions_.find(peer_id);
+    if (it != sessions_.end() && it->second.established) {
+        retired_[it->second.id] = { it->second,
+            std::chrono::steady_clock::now() + retired_grace_ };
+        session_to_peer_.erase(it->second.id);
+    }
+
+    auto [n, _] = sessions_.try_emplace(peer_id);
+    n->second.peer_id = peer_id;
+    n->second.id = session_id;
+    n->second.send_seq = 0;
+    n->second.recv_last = 0;
+    n->second.recv_window = 0;
+    n->second.established = false;
     session_to_peer_[session_id] = peer_id;
-    return it->second;
+    return n->second;
 }
 
 std::optional<Session*> SessionManager::get_session(const NodeId& peer_id) {
@@ -149,10 +171,57 @@ std::optional<Session*> SessionManager::get_session(const NodeId& peer_id) {
 }
 
 std::optional<Session*> SessionManager::get_session_by_id(uint32_t session_id) {
+    // Active session first...
     auto it = session_to_peer_.find(session_id);
-    if (it == session_to_peer_.end())
-        return std::nullopt;
-    return get_session(it->second);
+    if (it != session_to_peer_.end())
+        return get_session(it->second);
+    // ...then sessions superseded by a rekey, still inside the grace window.
+    // This lets in-flight packets that were encrypted under the old keys
+    // decrypt until purge_retired drops them.
+    auto rit = retired_.find(session_id);
+    if (rit != retired_.end() && rit->second.session.established)
+        return &rit->second.session;
+    return std::nullopt;
+}
+
+void SessionManager::remove_session(const NodeId& peer_id) {
+    std::lock_guard<std::mutex> lock(mtx_);
+    auto it = sessions_.find(peer_id);
+    if (it != sessions_.end()) {
+        session_to_peer_.erase(it->second.id);
+        retired_.erase(it->second.id);
+        sessions_.erase(it);
+    }
+    // Any retired sessions for this peer go too (only one session id per peer
+    // is ever active, so the active removal above already covers it; kept for
+    // symmetry in case a stale entry lingers).
+    for (auto r = retired_.begin(); r != retired_.end();) {
+        if (r->second.session.peer_id == peer_id)
+            r = retired_.erase(r);
+        else
+            ++r;
+    }
+    // Drop any in-flight handshake ephemeral keyed by a session we just killed.
+    for (auto e = ephemerals_.begin(); e != ephemerals_.end();) {
+        auto s2p = session_to_peer_.find(e->first);
+        if (s2p == session_to_peer_.end() ||
+            sessions_.find(s2p->second) == sessions_.end()) {
+            e = ephemerals_.erase(e);
+        } else {
+            ++e;
+        }
+    }
+}
+
+void SessionManager::purge_retired() {
+    std::lock_guard<std::mutex> lock(mtx_);
+    auto now = std::chrono::steady_clock::now();
+    for (auto it = retired_.begin(); it != retired_.end();) {
+        if (it->second.expires <= now)
+            it = retired_.erase(it);
+        else
+            ++it;
+    }
 }
 
 std::vector<uint8_t> SessionManager::create_handshake_init(uint32_t session_id) {
@@ -257,6 +326,7 @@ bool SessionManager::handle_handshake_resp(
         fprintf(stderr, "[session] reject handshake resp: network mismatch "
                         "(peer %02x%02x...)\n",
                 peer_id[0], peer_id[1]);
+        ephemerals_.erase(session_id);
         return false;
     }
 

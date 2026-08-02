@@ -4,6 +4,7 @@
 #include "aegis/crypto/chacha20poly1305.hpp"
 #include "aegis/packet/header.hpp"
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <map>
 #include <mutex>
@@ -25,6 +26,10 @@ struct Session {
     uint64_t recv_window = 0;
     NodeId peer_id{};
     bool established = false;
+    // When the session's keys were established. Rekey (step 15) replaces a
+    // session once it has lived past the rekey interval, so the age lives on
+    // the session itself (a peer's connected_since is not reset by rekey).
+    std::chrono::steady_clock::time_point established_at{};
 };
 
 class SessionManager {
@@ -71,12 +76,38 @@ public:
     std::optional<Session*> get_session(const NodeId& peer_id);
     std::optional<Session*> get_session_by_id(uint32_t session_id);
 
+    // Step 15: tear down every session with `peer_id` (active and retired) and
+    // drop any in-flight handshake ephemeral for it. Used when a peer is judged
+    // dead so stale keys can never be used again.
+    void remove_session(const NodeId& peer_id);
+
+    // Step 15: drop retired sessions whose grace window has expired. Called by
+    // the tunnel's maintenance loop; safe to call from anywhere.
+    void purge_retired();
+
+    // Step 15: how long a rekeyed-away session keeps decrypting in-flight
+    // packets (default 10 s). Tests shorten this so the purge path is
+    // exercisable without sleeping through the production grace window.
+    void set_retired_grace(std::chrono::milliseconds grace);
+    std::chrono::milliseconds retired_grace() const { return retired_grace_; }
+
     static std::array<uint8_t, 16> serialize_header(const PacketHeader& hdr);
 
 private:
     const Identity& identity_;
     std::map<NodeId, Session> sessions_;
     std::map<uint32_t, NodeId> session_to_peer_;
+
+    // Sessions superseded by a rekey, kept briefly so packets that were in
+    // flight under the old keys still decrypt. Keyed by session_id so
+    // get_session_by_id finds them. Expired entries are purged by purge_retired.
+    struct RetiredSession {
+        Session session;
+        std::chrono::steady_clock::time_point expires;
+    };
+    static constexpr std::chrono::seconds RETIRED_GRACE = std::chrono::seconds(10);
+    std::chrono::milliseconds retired_grace_{RETIRED_GRACE};
+    std::map<uint32_t, RetiredSession> retired_;
 
     // Per-session ephemeral keypairs, kept only while the handshake for that
     // session is in flight. A node can be initiator for one peer and responder

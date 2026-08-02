@@ -3,6 +3,8 @@
 #include <cstdio>
 #include <cstring>
 #include <vector>
+#include <chrono>
+#include <thread>
 
 static int tests  = 0;
 static int passed = 0;
@@ -224,6 +226,94 @@ int main() {
             CHECK(!resp_msg.has_value());
             CHECK(!sm_a.get_session(mallory.node_id).has_value());
         }
+    }
+
+    // ---- 7. Step 15: rekey via a fresh handshake -----------------------------
+    {
+        SessionManager sm_a(alice);
+        SessionManager sm_b(bob);
+        sm_a.set_retired_grace(std::chrono::milliseconds(60));
+        sm_b.set_retired_grace(std::chrono::milliseconds(60));
+
+        // Establish the first session (sid1).
+        uint32_t sid1 = 0xABCD0100;
+        auto init1 = sm_a.create_handshake_init(sid1);
+        auto resp1 = sm_b.handle_handshake_init(init1, alice.node_id);
+        CHECK(sm_a.handle_handshake_resp(*resp1, sid1));
+        auto sess_a1 = sm_a.get_session(bob.node_id);
+        CHECK(sess_a1.has_value());
+        CHECK((*sess_a1)->id == sid1);
+
+        // A packet sent under sid1 but still in flight when the rekey happens.
+        const uint8_t pt[] = {0x45, 0x00, 0x00, 0x14, 0x00, 0x00,
+                              0x00, 0x00, 0x40, 0x11, 0x00, 0x00,
+                              0x0a, 0x0a, 0x00, 0x01, 0x0a, 0x0a, 0x00, 0x02};
+        auto in_flight = sm_a.encrypt_data(bob.node_id, pt, sizeof(pt));
+        CHECK(in_flight.has_value());
+
+        // Rekey: fresh handshake with a new session_id. Same deterministic role
+        // rules apply; here A drives it on both sides for the round-trip.
+        uint32_t sid2 = 0xABCD0200;
+        auto init2 = sm_a.create_handshake_init(sid2);
+        auto resp2 = sm_b.handle_handshake_init(init2, alice.node_id);
+        CHECK(sm_a.handle_handshake_resp(*resp2, sid2));
+
+        // Both sides now hold sid2 as the active session...
+        auto sess_a2 = sm_a.get_session(bob.node_id);
+        auto sess_b2 = sm_b.get_session(alice.node_id);
+        CHECK(sess_a2.has_value());
+        CHECK(sess_b2.has_value());
+        CHECK((*sess_a2)->id == sid2);
+        CHECK((*sess_b2)->id == sid2);
+
+        // ...while sid1 is retired but still resolving for in-flight packets.
+        // The in-flight packet from before the rekey must still decrypt on B.
+        auto dec_inflight = sm_b.decrypt_data(in_flight->data(), in_flight->size());
+        CHECK(dec_inflight.has_value());
+        CHECK(std::memcmp(dec_inflight->data(), pt, sizeof(pt)) == 0);
+
+        // Fresh traffic under the new keys works in both directions.
+        auto enc_new = sm_a.encrypt_data(bob.node_id, pt, sizeof(pt));
+        CHECK(enc_new.has_value());
+        auto dec_new = sm_b.decrypt_data(enc_new->data(), enc_new->size());
+        CHECK(dec_new.has_value());
+        auto enc_back = sm_b.encrypt_data(alice.node_id, pt, sizeof(pt));
+        auto dec_back = sm_a.decrypt_data(enc_back->data(), enc_back->size());
+        CHECK(dec_back.has_value());
+
+        // After the grace window, purge drops the retired session: the old
+        // in-flight frame must no longer decrypt (keys gone).
+        std::this_thread::sleep_for(std::chrono::milliseconds(120));
+        sm_b.purge_retired();
+        auto dec_stale = sm_b.decrypt_data(in_flight->data(), in_flight->size());
+        CHECK(!dec_stale.has_value());
+        // New session is untouched by the purge.
+        CHECK(sm_b.get_session(alice.node_id).has_value());
+    }
+
+    // ---- 8. Step 15: remove_session tears down active + retired keys ---------
+    {
+        SessionManager sm_a(alice);
+        SessionManager sm_b(bob);
+
+        uint32_t sid1 = 0xABCD0300;
+        auto init1 = sm_a.create_handshake_init(sid1);
+        auto resp1 = sm_b.handle_handshake_init(init1, alice.node_id);
+        sm_a.handle_handshake_resp(*resp1, sid1);
+
+        // Rekey once so B has a retired sid1 plus an active sid2.
+        uint32_t sid2 = 0xABCD0400;
+        auto init2 = sm_a.create_handshake_init(sid2);
+        auto resp2 = sm_b.handle_handshake_init(init2, alice.node_id);
+        sm_a.handle_handshake_resp(*resp2, sid2);
+
+        // A removes its session with B.
+        sm_a.remove_session(bob.node_id);
+        CHECK(!sm_a.get_session(bob.node_id).has_value());
+        // Encryption toward the removed peer fails on A (active keys gone).
+        const uint8_t pt[] = {0x45, 0x00, 0x00, 0x14};
+        auto enc = sm_a.encrypt_data(bob.node_id, pt, sizeof(pt));
+        CHECK(!enc.has_value());
     }
 
     printf("\n%d / %d passed\n", passed, tests);

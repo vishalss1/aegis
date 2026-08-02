@@ -133,7 +133,7 @@ int main() {
     // ---- 4. Stale peer detection with dead timeout --------------------------
     {
         PeerManager pm;
-        pm.set_dead_timeout(std::chrono::seconds(1));
+        pm.set_dead_timeout(std::chrono::milliseconds(1000));
         pm.upsert(bob.node_id, bob.keypair.public_key, ep_bob);
         pm.mark_seen(bob.node_id);
 
@@ -153,7 +153,7 @@ int main() {
     // ---- 5. Keepalive-needed detection --------------------------------------
     {
         PeerManager pm;
-        pm.set_keepalive_interval(std::chrono::seconds(1));
+        pm.set_keepalive_interval(std::chrono::milliseconds(1000));
         pm.upsert(bob.node_id, bob.keypair.public_key, ep_bob);
         pm.mark_seen(bob.node_id);
 
@@ -169,6 +169,32 @@ int main() {
         Peer* b = pm.get_peer(bob.node_id);
         b->last_keepalive = std::chrono::steady_clock::now();
         CHECK(pm.peers_needing_keepalive().empty());
+    }
+
+    // ---- 6. Step 15: mark_seen on an established peer advances keepalive -----
+    // The keep-alive sender relies on last_keepalive being advanced on EVERY
+    // received packet, not just on the transition into Established — otherwise
+    // a busy peer would keep receiving keep-alives forever. (Regression for
+    // the mark_seen fix.)
+    {
+        PeerManager pm;
+        pm.set_keepalive_interval(std::chrono::milliseconds(1000));
+        pm.upsert(bob.node_id, bob.keypair.public_key, ep_bob);
+
+        // Transition into Established advances last_keepalive once...
+        pm.mark_seen(bob.node_id);
+        CHECK(pm.peers_needing_keepalive().empty());
+
+        // ...then it must be advanced again by subsequent traffic even though
+        // the peer was already Established.
+        std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+        CHECK(pm.peers_needing_keepalive().size() == 1);
+
+        pm.mark_seen(bob.node_id);  // already-established peer sends traffic
+        CHECK(pm.peers_needing_keepalive().empty());
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+        CHECK(pm.peers_needing_keepalive().size() == 1);
     }
 
     printf("\n%d / %d passed\n", passed, tests);
