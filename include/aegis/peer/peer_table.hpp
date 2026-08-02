@@ -15,17 +15,24 @@
 struct AdvertisedPeer {
     NodeId node_id{};
     Key public_key{};
+    // The advertiser's FULL hop list to this peer, first hop through the peer
+    // itself (its relay path; `{peer}` when directly reachable). The receiver
+    // reconstructs its own path as [sender] + path and rejects any path that
+    // would loop back through it. Real endpoints are never advertised.
+    std::vector<NodeId> path;
     // (prefix, prefix_length) pairs in the same representation as
     // IPPacket::dest_ip / AllowedIP.prefix (big-endian value).
     std::vector<std::pair<uint32_t, uint8_t>> prefixes;
 };
 
 // Wire format:
-//   [0]      version (1)
+//   [0]      version (2)
 //   [1..2]   uint16 peer_count (big-endian)
 //   per peer:
 //     [32]  NodeID
 //     [32]  public key
+//     [1]   path_count
+//     per path hop: [32] NodeID
 //     [1]   flags (reserved)
 //     [1]   prefix_count
 //     per prefix: [4] prefix (big-endian value) + [1] prefix_length

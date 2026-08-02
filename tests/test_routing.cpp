@@ -32,17 +32,22 @@ static Route make_direct(uint32_t prefix, uint8_t plen, const NodeId& peer) {
     r.type = NextHopType::Direct;
     r.next_hop = peer;
     r.destination = peer;
+    r.path = { peer };
     return r;
 }
 
 static Route make_relay(uint32_t prefix, uint8_t plen,
-                        const NodeId& next_hop, const NodeId& destination) {
+                        const NodeId& next_hop, const NodeId& destination,
+                        std::vector<NodeId> path = {}) {
     Route r;
     r.prefix = prefix;
     r.prefix_length = plen;
     r.type = NextHopType::Relay;
     r.next_hop = next_hop;
     r.destination = destination;
+    if (path.empty())
+        path = { next_hop, destination };
+    r.path = std::move(path);
     return r;
 }
 
@@ -111,28 +116,56 @@ int main() {
         CHECK(*f == p2);
     }
 
-    // ---- 4. Loop avoidance --------------------------------------------------
+    // ---- 4. Loop avoidance is enforced on the hop path ----------------------
     {
         NodeId A = make_id(10);
         NodeId D = make_id(12);
 
-        // D via A, A via D -> forwarding would loop
         RoutingEngine re;
-        re.add_route(make_relay(make_ip(10,50,0,1), 32, A, D));
-        re.add_route(make_relay(make_ip(10,50,0,2), 32, D, A));
-        CHECK(!re.find_peer(make_ip(10,50,0,1)).has_value());
-        CHECK(!re.find_peer(make_ip(10,50,0,2)).has_value());
 
-        // Multi-hop chain that terminates at a direct route is fine
-        RoutingEngine ok;
-        ok.add_route(make_direct(make_ip(10,0,0,10), 32, A));
-        ok.add_route(make_relay(make_ip(10,0,0,12), 32, A, D));      // D via A
-        ok.add_route(make_relay(make_ip(10,60,0,0), 24, A, make_id(13))); // net via A
-        auto peer = ok.find_peer(make_ip(10,60,0,5));
+        // A path that revisits a node would loop the onion forever.
+        CHECK(!re.add_route(make_relay(make_ip(10,50,0,1), 32, A, D,
+                                       { A, D, A })));
+
+        // next_hop must be the first hop of the path.
+        CHECK(!re.add_route(make_relay(make_ip(10,50,0,2), 32, A, D,
+                                       { D, A, D })));
+
+        // The path must end at the destination.
+        CHECK(!re.add_route(make_relay(make_ip(10,50,0,3), 32, A, D,
+                                       { A, A })));
+
+        // A relay with next_hop == destination is rejected outright.
+        CHECK(!re.add_route(make_relay(make_ip(10,50,0,4), 32, A, A)));
+
+        // A direct route must name its destination.
+        Route no_path;
+        no_path.prefix = make_ip(10,50,0,5);
+        no_path.prefix_length = 32;
+        no_path.type = NextHopType::Direct;
+        no_path.next_hop = A;
+        no_path.destination = A;
+        CHECK(!re.add_route(no_path));
+
+        CHECK(re.empty());
+
+        // A valid multi-hop path resolves: forward to A, final dest D.
+        re.add_route(make_direct(make_ip(10,0,0,10), 32, A));
+        re.add_route(make_relay(make_ip(10,60,0,0), 24, A, D,
+                                { A, D }));
+        auto peer = re.find_peer(make_ip(10,60,0,5));
         CHECK(peer.has_value());
-        auto nh = ok.find_next_hop(make_ip(10,60,0,5));
+        CHECK(*peer == D);
+        auto nh = re.find_next_hop(make_ip(10,60,0,5));
         CHECK(nh.has_value());
         CHECK(*nh == A);
+        auto r4 = re.find_route(make_ip(10,60,0,5));
+        CHECK(r4.has_value());
+        if (r4) {
+            CHECK(r4->path.size() == 2);
+            CHECK(r4->path[0] == A);
+            CHECK(r4->path[1] == D);
+        }
     }
 
     // ---- 5. Self-relay rejected at insert -----------------------------------

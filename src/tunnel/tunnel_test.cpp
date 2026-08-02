@@ -57,6 +57,22 @@ void delete_route(const char* dst, const char* mask, const char* gw) {
     std::system(cmd);
 }
 
+// Same as add_route but pins the route to a specific interface index. On a
+// single host with several Wintun adapters, gateway-based interface resolution
+// can cross-wire reciprocal /32 routes (an explicit route to the gateway
+// shadows the on-link route), so the relay test binds its routes explicitly.
+void add_route_if(const char* dst, const char* mask, const char* gw, uint32_t ifidx) {
+    char cmd[256];
+    snprintf(cmd, sizeof(cmd), "route delete %s mask %s %s >nul 2>&1", dst, mask, gw);
+    std::system(cmd);
+    snprintf(cmd, sizeof(cmd), "route add %s mask %s %s IF %lu metric 6",
+            dst, mask, gw, (unsigned long)ifidx);
+    int rc = std::system(cmd);
+    if (rc != 0)
+        fprintf(stderr, "[tunnel-test] warning: route add %s/%s via %s IF %lu returned %d\n",
+                dst, mask, gw, (unsigned long)ifidx, rc);
+}
+
 // Poll the peer table until the session with `node_id` is established. start()
 // is non-blocking (mesh bootstrap), so sessions appear in the background.
 bool wait_for_established(const PeerManager& pm, const NodeId& node_id, int timeout_sec) {
@@ -162,6 +178,8 @@ bool udp_round_trip(uint32_t sender_ip, uint32_t listener_ip, const char* tag) {
     if (sendto(listener, pong, (int)std::strlen(pong), 0,
                (struct sockaddr*)&from, fromlen) == SOCKET_ERROR) {
         fprintf(stderr, "[tunnel-test] %s: FAIL: return sendto: %d\n", tag, WSAGetLastError());
+        std::system("route print 10.10.0.1");
+        std::system("route print 10.40.0.1");
         closesocket(listener);
         closesocket(sender);
         return false;
@@ -180,7 +198,6 @@ bool udp_round_trip(uint32_t sender_ip, uint32_t listener_ip, const char* tag) {
         closesocket(sender);
         return false;
     }
-
     closesocket(listener);
     closesocket(sender);
     return true;
@@ -358,9 +375,10 @@ int run_tunnel_test() {
     return 1;
 }
 
-// Step 12: peer table propagation. A-B-C-D chain where every node is
-// configured with ONLY its direct neighbors. Full-mesh knowledge must emerge
-// from gossip alone — no node is ever told about a non-adjacent peer.
+// Step 12/13: peer table propagation + relayed data. A-B-C-D chain where every
+// node is configured with ONLY its direct neighbors. Full-mesh knowledge must
+// emerge from gossip alone — no node is ever told about a non-adjacent peer —
+// and then A<->D traffic must actually transit the chain onion-wrapped.
 int run_gossip_test() {
     printf("[gossip-test] starting\n");
     printf("[gossip-test] chain A-B-C-D, each node configured with only its direct neighbors\n");
@@ -368,6 +386,7 @@ int run_gossip_test() {
            PORT_A, PORT_B, PORT_C, PORT_D);
     printf("[gossip-test] convergence = every node's peer table reaches size 3 (all other nodes)\n");
     printf("[gossip-test] learned peers must be untrusted and endpoint-less (real IPs never propagate)\n");
+    printf("[gossip-test] then: relayed A<->D UDP round-trip through B and C (step 13)\n");
 
     NetworkId net{};
     net[0] = 0x01;
@@ -526,29 +545,62 @@ int run_gossip_test() {
     }
     printf("[gossip-test] learned peers are untrusted, endpoint-less: OK\n");
 
-    // Relay routes: A -> 10.40.0.0/24 next-hop B dest D; D -> 10.10.0.0/24 next-hop C dest A.
+    // Relay routes: A -> 10.40.0.0/24 next-hop B dest D via [B, C, D];
+    // D -> 10.10.0.0/24 next-hop C dest A via [C, B, A].
     auto check_relay_route = [](const RoutingEngine& re, uint32_t prefix, uint8_t plen,
-                                const NodeId& next_hop, const NodeId& dest) {
+                                const NodeId& next_hop, const NodeId& dest,
+                                const std::vector<NodeId>& path) {
         for (const auto& r : re.routes())
             if (r.prefix == prefix && r.prefix_length == plen &&
                 r.next_hop == next_hop && r.destination == dest &&
-                r.type == NextHopType::Relay)
+                r.type == NextHopType::Relay && r.path == path)
                 return true;
         return false;
     };
     pass = check_relay_route(tunnel_a.routing(), allow(10, 40, 0, 0, 24).prefix, 24,
-                             id_b.node_id, id_d.node_id) && pass;
+                             id_b.node_id, id_d.node_id,
+                             { id_b.node_id, id_c.node_id, id_d.node_id }) && pass;
     pass = check_relay_route(tunnel_d.routing(), allow(10, 10, 0, 0, 24).prefix, 24,
-                             id_c.node_id, id_a.node_id) && pass;
+                             id_c.node_id, id_a.node_id,
+                             { id_c.node_id, id_b.node_id, id_a.node_id }) && pass;
     if (!pass) {
-        fprintf(stderr, "[gossip-test] FAIL: relay routes not installed via the direct neighbor\n");
+        fprintf(stderr, "[gossip-test] FAIL: relay routes not installed with full hop paths\n");
         tunnel_a.stop();
         tunnel_b.stop();
         tunnel_c.stop();
         tunnel_d.stop();
         return 1;
     }
-    printf("[gossip-test] relay routes installed via direct neighbor: OK\n");
+    printf("[gossip-test] relay routes installed with full hop paths via direct neighbor: OK\n");
+
+    // Step 13: an actual relayed UDP round-trip. A and D are NOT adjacent —
+    // every packet must be onion-wrapped, bounced through B and C (2 relay
+    // hops), and only unwrapped by the far end. /32 routes force the packet
+    // off the local adapters and into the tunnels.
+    printf("[gossip-test] relay round-trip A<->D through B and C (2 relay hops each way)\n");
+    // Routes are bound to the owning adapter's interface index so the /32 host
+    // routes force the packet off the local adapters and through the tunnels.
+    add_route_if("10.40.0.0", "255.255.255.0", "10.10.0.1", tunnel_a.interface_index());
+    add_route_if("10.40.0.1", "255.255.255.255", "10.10.0.1", tunnel_a.interface_index());
+    add_route_if("10.10.0.0", "255.255.255.0", "10.40.0.1", tunnel_d.interface_index());
+    add_route_if("10.10.0.1", "255.255.255.255", "10.40.0.1", tunnel_d.interface_index());
+
+    pass = udp_round_trip(IP_A, IP_D, "A->D relay via B,C") && pass;
+
+    delete_route("10.40.0.0", "255.255.255.0", "10.10.0.1");
+    delete_route("10.40.0.1", "255.255.255.255", "10.10.0.1");
+    delete_route("10.10.0.0", "255.255.255.0", "10.40.0.1");
+    delete_route("10.10.0.1", "255.255.255.255", "10.40.0.1");
+
+    if (!pass) {
+        fprintf(stderr, "[gossip-test] FAIL: relayed A<->D round-trip\n");
+        tunnel_a.stop();
+        tunnel_b.stop();
+        tunnel_c.stop();
+        tunnel_d.stop();
+        return 1;
+    }
+    printf("[gossip-test] relayed A<->D round-trip through B and C: OK\n");
 
     tunnel_a.stop();
     tunnel_b.stop();

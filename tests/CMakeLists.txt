@@ -48,6 +48,11 @@ target_include_directories(test_peer_table PRIVATE ../include)
 target_link_libraries(test_peer_table OpenSSL::Crypto ws2_32)
 add_test(NAME test_peer_table COMMAND test_peer_table)
 
+add_executable(test_relay test_relay.cpp ../src/packet/relay.cpp ../src/identity/identity.cpp ../src/crypto/x25519.cpp ../src/crypto/chacha20poly1305.cpp)
+target_include_directories(test_relay PRIVATE ../include)
+target_link_libraries(test_relay OpenSSL::Crypto)
+add_test(NAME test_relay COMMAND test_relay)
+
 add_custom_target(check
     COMMAND test_packet
     COMMAND test_transport
@@ -59,5 +64,6 @@ add_custom_target(check
     COMMAND test_peer
     COMMAND test_routing
     COMMAND test_peer_table
+    COMMAND test_relay
     COMMENT "Running all unit tests"
 )

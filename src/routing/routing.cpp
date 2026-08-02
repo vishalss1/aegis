@@ -6,9 +6,22 @@ RoutingEngine::RoutingEngine() = default;
 
 bool RoutingEngine::add_route(const Route& route) {
     std::lock_guard<std::mutex> lock(mtx_);
-    // A relay must not forward to itself; that route could never be resolved.
-    if (route.type == NextHopType::Relay && route.next_hop == route.destination)
-        return false;
+    if (route.type == NextHopType::Relay) {
+        // A relay must not forward to itself; that route could never be resolved.
+        if (route.next_hop == route.destination)
+            return false;
+        // The path must be a complete, loop-free hop list from next_hop to the
+        // destination — it is what the onion wrapping walks.
+        if (route.path.size() < 2 || route.path.front() != route.next_hop ||
+            route.path.back() != route.destination)
+            return false;
+        std::set<NodeId> seen;
+        for (const auto& hop : route.path)
+            if (!seen.insert(hop).second)
+                return false;  // repeated hop => the path would loop forever
+    } else if (route.path.empty()) {
+        return false;  // Direct routes must at least name their destination
+    }
     // One route per prefix — relearning a peer's path replaces the old entry.
     std::erase_if(routes_, [&](const Route& r) {
         return r.prefix == route.prefix && r.prefix_length == route.prefix_length;
@@ -49,23 +62,19 @@ std::optional<Route> RoutingEngine::find_route(uint32_t dest_ip) const {
 
     if (!best) return std::nullopt;
 
-    // Loop avoidance: a relay route must resolve to a forwardable path. Walk
-    // the next-hop chain; revisiting any node means the path cycles and the
-    // route is unusable (the packet would loop forever in a mesh).
+    // Loop avoidance: a relay route must resolve to a forwardable, loop-free
+    // path. The path was validated when the route was added; re-check cheaply
+    // here so a route can never be used if its next_hop/destination/path ever
+    // drift out of sync.
     if (best->type == NextHopType::Relay) {
-        std::set<NodeId> visited;
-        NodeId node = best->next_hop;
-        while (true) {
-            if (visited.contains(node)) return std::nullopt;
-            visited.insert(node);
-            const Route* hop = nullptr;
-            for (const auto& r : routes_) {
-                if (r.destination == node) { hop = &r; break; }
-            }
-            if (!hop) break;
-            if (hop->type == NextHopType::Direct) break;
-            node = hop->next_hop;
-        }
+        const auto& path = best->path;
+        if (path.empty() || path.front() != best->next_hop ||
+            path.back() != best->destination)
+            return std::nullopt;
+        std::set<NodeId> seen;
+        for (const auto& hop : path)
+            if (!seen.insert(hop).second)
+                return std::nullopt;  // cycle in the path
     }
 
     return *best;

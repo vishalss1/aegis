@@ -1,5 +1,6 @@
 #include "aegis/tunnel/tunnel.hpp"
 #include "aegis/packet/packet.hpp"
+#include "aegis/packet/relay.hpp"
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -39,7 +40,8 @@ bool Tunnel::start(const TunnelConfig& config, const std::string& adapter_name) 
     peers_.set_session_manager(session_manager_.get());
 
     // Bootstrap candidates -> static peer table + direct routes. Routes are
-    // Direct; relay next-hops arrive with peer propagation (step 12+).
+    // Direct (path = the peer itself); relay next-hops arrive with peer
+    // propagation (step 12+) and carry their full hop path.
     for (const auto& p : config_.peers) {
         peers_.upsert(p.node_id, p.public_key, p.endpoint, true);
         for (const auto& aip : p.allowed_ips) {
@@ -49,6 +51,7 @@ bool Tunnel::start(const TunnelConfig& config, const std::string& adapter_name) 
             r.type = NextHopType::Direct;
             r.next_hop = p.node_id;
             r.destination = p.node_id;
+            r.path = {p.node_id};
             if (!routing_.add_route(r))
                 fprintf(stderr, "[tunnel] warning: route %08x/%u rejected\n",
                         aip.prefix, aip.prefix_length);
@@ -228,8 +231,8 @@ void Tunnel::tx_loop() {
         if (dest == 0xFFFFFFFFu) continue;                  // broadcast
 
         // Route by destination prefix -> peer -> endpoint/session.
-        auto peer_id = routing_.find_peer(dest);
-        if (!peer_id) {
+        auto route = routing_.find_route(dest);
+        if (!route) {
             if (unrouted_count_ == 0 || (unrouted_count_ % 100) == 0)
                 fprintf(stderr, "[tunnel] no route for %08x, dropping (%u so far)\n",
                         dest, unrouted_count_ + 1);
@@ -237,22 +240,74 @@ void Tunnel::tx_loop() {
             continue;
         }
 
-        Peer* peer = peers_.get_peer(*peer_id);
-        if (!peer || !peer->endpoint) {
-            fprintf(stderr, "[tunnel] peer %02x%02x... has no endpoint, dropping\n",
-                    (*peer_id)[0], (*peer_id)[1]);
+        if (route->type == NextHopType::Direct) {
+            Peer* peer = peers_.get_peer(route->destination);
+            if (!peer || !peer->endpoint) {
+                fprintf(stderr, "[tunnel] peer %02x%02x... has no endpoint, dropping\n",
+                        (*route).destination[0], (*route).destination[1]);
+                continue;
+            }
+
+            auto enc = session_manager_->encrypt_data(route->destination,
+                                                      raw.data(), raw.size());
+            if (!enc) {
+                fprintf(stderr, "[tunnel] encrypt failed, dropping packet\n");
+                continue;
+            }
+
+            if (!transport_.send(enc->data(), enc->size(), *peer->endpoint)) {
+                fprintf(stderr, "[tunnel] send failed, dropping packet\n");
+            }
             continue;
         }
 
-        auto enc = session_manager_->encrypt_data(*peer_id, raw.data(), raw.size());
-        if (!enc) {
-            fprintf(stderr, "[tunnel] encrypt failed, dropping packet\n");
+        // Relay (step 13): wrap the packet in one onion layer per hop of the
+        // route's path, then send the envelope to the first hop. Only the
+        // source can build the onion (it owns the key to every hop); relays
+        // see one layer and forward the rest, so intermediate nodes never
+        // learn the full path or the payload.
+        const auto& path = route->path;
+        std::vector<Key> path_keys;
+        path_keys.reserve(path.size());
+        for (const auto& hop : path) {
+            const Peer* hp = peers_.get_peer(hop);
+            if (!hp) break;
+            path_keys.push_back(hp->public_key);
+        }
+        if (path_keys.size() != path.size()) {
+            fprintf(stderr, "[tunnel] relay hop unknown, dropping packet\n");
             continue;
         }
 
-        if (!transport_.send(enc->data(), enc->size(), *peer->endpoint)) {
-            fprintf(stderr, "[tunnel] send failed, dropping packet\n");
+        auto onion = build_onion(identity_.keypair, path, path_keys,
+                                 raw.data(), raw.size());
+        if (!onion) {
+            fprintf(stderr, "[tunnel] onion build failed, dropping packet\n");
+            continue;
         }
+
+        std::vector<uint8_t> payload;
+        payload.reserve(NODE_ID_SIZE + onion->size());
+        payload.insert(payload.end(), identity_.node_id.begin(),
+                       identity_.node_id.end());
+        payload.insert(payload.end(), onion->begin(), onion->end());
+
+        auto frame = session_manager_->encrypt_message(
+            route->next_hop, TYPE_RELAY, payload.data(), payload.size(),
+            FLAG_RELAY);
+        if (!frame) {
+            fprintf(stderr, "[tunnel] relay encrypt failed, dropping packet\n");
+            continue;
+        }
+
+        Peer* first = peers_.get_peer(route->next_hop);
+        if (!first || !first->endpoint) {
+            fprintf(stderr, "[tunnel] first hop %02x%02x... has no endpoint, dropping\n",
+                    route->next_hop[0], route->next_hop[1]);
+            continue;
+        }
+        if (!transport_.send(frame->data(), frame->size(), *first->endpoint))
+            fprintf(stderr, "[tunnel] relay send failed, dropping packet\n");
     }
     fprintf(stderr, "[tunnel] tx loop ended\n");
 }
@@ -288,6 +343,12 @@ void Tunnel::rx_callback(const uint8_t* data, size_t len, Endpoint sender) {
         if (!adapter_.write_packet(*dec)) {
             fprintf(stderr, "[tunnel] write_packet failed\n");
         }
+        return;
+    }
+
+    if (type == TYPE_RELAY) {
+        if (!running_) return;
+        handle_relay(data, len, sid);
         return;
     }
 
@@ -360,6 +421,79 @@ void Tunnel::rx_callback(const uint8_t* data, size_t len, Endpoint sender) {
     }
 }
 
+void Tunnel::handle_relay(const uint8_t* data, size_t len, uint32_t session_id) {
+    auto msg = session_manager_->decrypt_message(data, len);
+    if (!msg || msg->packet_type != TYPE_RELAY) return;
+    auto sess = session_manager_->get_session_by_id(session_id);
+    if (!sess) return;
+    peers_.mark_seen((*sess)->peer_id);
+
+    // Payload = [32] source NodeID || onion blob. The source is who we peel
+    // with — every layer was keyed to the source's static key, and a relay is
+    // only ever a hop between the source and the destination.
+    if (msg->payload.size() < NODE_ID_SIZE + ONION_OVERHEAD) {
+        fprintf(stderr, "[tunnel] relay frame too small, dropping\n");
+        return;
+    }
+    NodeId source{};
+    std::memcpy(source.data(), msg->payload.data(), NODE_ID_SIZE);
+    const uint8_t* blob = msg->payload.data() + NODE_ID_SIZE;
+    size_t blob_len = msg->payload.size() - NODE_ID_SIZE;
+
+    const Peer* sp = peers_.get_peer(source);
+    if (!sp) {
+        fprintf(stderr, "[tunnel] relay from unknown source %02x%02x..., dropping\n",
+                source[0], source[1]);
+        return;
+    }
+
+    auto peeled = peel_onion(identity_.keypair, sp->public_key, blob, blob_len);
+    if (!peeled) {
+        fprintf(stderr, "[tunnel] relay layer open failed (source %02x%02x...), dropping\n",
+                source[0], source[1]);
+        return;
+    }
+
+    // All-zero next hop => we are the final destination: deliver the packet.
+    bool final = true;
+    for (auto b : peeled->next_hop)
+        if (b != 0) { final = false; break; }
+    if (final) {
+        if (!adapter_.write_packet(peeled->inner))
+            fprintf(stderr, "[tunnel] relay final write_packet failed\n");
+        return;
+    }
+
+    // A relay must never peel to itself — that can only come from a broken or
+    // malicious path, and forwarding it would spin forever.
+    if (peeled->next_hop == identity_.node_id) {
+        fprintf(stderr, "[tunnel] relay loop (next hop is us), dropping\n");
+        return;
+    }
+
+    const Peer* nh = peers_.get_peer(peeled->next_hop);
+    if (!nh || !nh->endpoint) {
+        fprintf(stderr, "[tunnel] relay next hop %02x%02x... unreachable, dropping\n",
+                peeled->next_hop[0], peeled->next_hop[1]);
+        return;
+    }
+
+    // Forward the inner layer to the next hop, still addressed from the
+    // original source so each hop keeps peeling with the source's key.
+    std::vector<uint8_t> fwd;
+    fwd.reserve(NODE_ID_SIZE + peeled->inner.size());
+    fwd.insert(fwd.end(), source.begin(), source.end());
+    fwd.insert(fwd.end(), peeled->inner.begin(), peeled->inner.end());
+    auto frame = session_manager_->encrypt_message(
+        peeled->next_hop, TYPE_RELAY, fwd.data(), fwd.size(), FLAG_RELAY);
+    if (!frame) {
+        fprintf(stderr, "[tunnel] relay forward encrypt failed, dropping\n");
+        return;
+    }
+    if (!transport_.send(frame->data(), frame->size(), *nh->endpoint))
+        fprintf(stderr, "[tunnel] relay forward send failed, dropping\n");
+}
+
 std::vector<AdvertisedPeer> Tunnel::build_advertised_peers() const {
     std::vector<AdvertisedPeer> out;
 
@@ -379,8 +513,16 @@ std::vector<AdvertisedPeer> Tunnel::build_advertised_peers() const {
         ap.node_id = peer->node_id;
         ap.public_key = peer->public_key;
         for (const auto& r : routes) {
-            if (r.destination == peer->node_id)
-                ap.prefixes.emplace_back(r.prefix, r.prefix_length);
+            if (r.destination != peer->node_id)
+                continue;
+            ap.prefixes.emplace_back(r.prefix, r.prefix_length);
+            // Advertise our FULL hop list to this peer (first hop through the
+            // destination; {peer} for direct routes). The receiver prepends
+            // itself and gets a complete path without knowing anything beyond
+            // the immediate sender; paths that would loop back through the
+            // receiver are rejected during the merge.
+            if (ap.path.empty())
+                ap.path = r.path;
         }
         out.push_back(std::move(ap));
     }

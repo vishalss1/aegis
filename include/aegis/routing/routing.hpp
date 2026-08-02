@@ -19,6 +19,10 @@ struct Route {
     NextHopType type = NextHopType::Unknown;
     NodeId next_hop{};      // peer to forward to (== destination for Direct)
     NodeId destination{};   // final destination peer (== next_hop for Direct)
+    // Full ordered hop list [first_hop .. destination] for Relay routes. Used
+    // to build the onion: one AEAD layer per hop, innermost = destination.
+    // Direct routes carry { destination }.
+    std::vector<NodeId> path;
 };
 
 class RoutingEngine {

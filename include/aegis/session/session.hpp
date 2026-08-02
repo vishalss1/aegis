@@ -41,9 +41,11 @@ public:
     // Encrypt a payload under the session's keys and return the wire frame
     // (16-byte header + 12-byte nonce + ciphertext + 16-byte tag). `packet_type`
     // is stamped into the plaintext header and becomes authenticated data.
+    // `flags` is copied into the wire header (e.g. FLAG_RELAY on relayed frames).
     std::optional<std::vector<uint8_t>> encrypt_message(
         const NodeId& peer_id, uint8_t packet_type,
-        const uint8_t* plaintext, size_t pt_len);
+        const uint8_t* plaintext, size_t pt_len,
+        uint8_t flags = 0);
 
     std::optional<std::vector<uint8_t>> encrypt_data(
         const NodeId& peer_id, const uint8_t* plaintext, size_t pt_len) {

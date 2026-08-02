@@ -59,6 +59,7 @@ public:
     const Identity& identity() const { return identity_; }
     const PeerManager& peers() const { return peers_; }
     const RoutingEngine& routing() const { return routing_; }
+    uint32_t interface_index() const { return adapter_.interface_index(); }
 
     // True once the encrypted session with `node_id` is established. start()
     // returns before any session exists; background connect loops establish
@@ -98,6 +99,9 @@ private:
     void tx_loop();
     void gossip_loop();
     void rx_callback(const uint8_t* data, size_t len, Endpoint sender);
+    // Step 13: peel one onion layer off a relayed frame and either deliver the
+    // final packet or forward the inner layer to the revealed next hop.
+    void handle_relay(const uint8_t* data, size_t len, uint32_t session_id);
 
     // Peer table propagation (step 12): after a session is established the
     // current table is sent to the new peer; on learning new peers the table

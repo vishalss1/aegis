@@ -45,6 +45,7 @@ int main() {
         AdvertisedPeer b;
         b.node_id = dave.node_id;
         b.public_key = dave.keypair.public_key;
+        b.path = { bob.node_id, charlie.node_id, dave.node_id };
         in.push_back(b);
 
         auto wire = serialize_peer_table(in);
@@ -59,6 +60,10 @@ int main() {
             CHECK((*out)[0].prefixes[0] == std::make_pair(pt_ip(10, 30, 0, 0), (uint8_t)24));
             CHECK((*out)[0].prefixes[1] == std::make_pair(pt_ip(10, 30, 0, 2), (uint8_t)32));
             CHECK((*out)[1].prefixes.empty());
+            CHECK((*out)[1].path.size() == 3);
+            CHECK((*out)[1].path[0] == bob.node_id);
+            CHECK((*out)[1].path[1] == charlie.node_id);
+            CHECK((*out)[1].path[2] == dave.node_id);
         }
     }
 
@@ -66,8 +71,10 @@ int main() {
     {
         std::vector<uint8_t> bad = {0x00, 0x00, 0x01};
         CHECK(!deserialize_peer_table(bad.data(), bad.size()).has_value());
-        std::vector<uint8_t> truncated = {0x01, 0x00, 0x02, 0xAA};
+        std::vector<uint8_t> truncated = {0x02, 0x00, 0x02, 0xAA};
         CHECK(!deserialize_peer_table(truncated.data(), truncated.size()).has_value());
+        std::vector<uint8_t> bad_version = {0x01, 0x00, 0x00};
+        CHECK(!deserialize_peer_table(bad_version.data(), bad_version.size()).has_value());
         CHECK(!deserialize_peer_table(nullptr, 0).has_value());
     }
 
@@ -85,6 +92,8 @@ int main() {
         AdvertisedPeer d;
         d.node_id = dave.node_id;
         d.public_key = dave.keypair.public_key;
+        d.path = { charlie.node_id, dave.node_id };  // bob -> charlie -> dave
+        d.prefixes.emplace_back(pt_ip(10, 40, 0, 0), 24);
         advertised.push_back(d);
 
         size_t learned = merge_peer_table(pm, re, advertised, bob.node_id, alice.node_id);
@@ -99,14 +108,52 @@ int main() {
             CHECK(pc->public_key == charlie.keypair.public_key);
         }
 
-        // Routes: prefix 10.30.0.0/24 -> next_hop bob -> destination charlie.
+        // Routes: prefix 10.30.0.0/24 -> next_hop bob -> destination charlie,
+        // with a full hop path [bob, charlie] from the advertised list.
         auto nh = re.find_next_hop(pt_ip(10, 30, 0, 5));
         auto dst = re.find_peer(pt_ip(10, 30, 0, 5));
         CHECK(nh.has_value() && *nh == bob.node_id);
         CHECK(dst.has_value() && *dst == charlie.node_id);
+        auto rc = re.find_route(pt_ip(10, 30, 0, 5));
+        CHECK(rc.has_value());
+        if (rc) {
+            CHECK(rc->path.size() == 2);
+            CHECK(rc->path[0] == bob.node_id);
+            CHECK(rc->path[1] == charlie.node_id);
+        }
+
+        // A multi-hop advertised path reconstructs to [bob, charlie, dave].
+        auto rd = re.find_route(pt_ip(10, 40, 0, 7));
+        CHECK(rd.has_value());
+        if (rd) {
+            CHECK(rd->path.size() == 3);
+            CHECK(rd->path[0] == bob.node_id);
+            CHECK(rd->path[1] == charlie.node_id);
+            CHECK(rd->path[2] == dave.node_id);
+        }
 
         // No endpoint was learned — real IPs never travel in gossip.
         CHECK(!pm.get_peer(charlie.node_id)->endpoint.has_value());
+    }
+
+    // ---- 3b. Paths that loop back through the receiver are rejected ----------
+    {
+        PeerManager pm;
+        RoutingEngine re;
+        std::vector<AdvertisedPeer> advertised;
+        AdvertisedPeer d;
+        d.node_id = dave.node_id;
+        d.public_key = dave.keypair.public_key;
+        // Advertiser (bob) claims a path that passes through us (alice) —
+        // installing it would let the onion loop forever.
+        d.path = { alice.node_id, dave.node_id };
+        d.prefixes.emplace_back(pt_ip(10, 40, 0, 0), 24);
+        advertised.push_back(d);
+
+        size_t learned = merge_peer_table(pm, re, advertised, bob.node_id, alice.node_id);
+        CHECK(learned == 1);            // peer itself is still learned
+        CHECK(re.empty());              // but no routable path is installed
+        CHECK(re.find_route(pt_ip(10, 40, 0, 9)).has_value() == false);
     }
 
     // ---- 4. Re-merge of identical table learns nothing -----------------------
@@ -156,6 +203,7 @@ int main() {
         direct.type = NextHopType::Direct;
         direct.next_hop = charlie.node_id;
         direct.destination = charlie.node_id;
+        direct.path = { charlie.node_id };
         re.add_route(direct);
 
         std::vector<AdvertisedPeer> advertised;

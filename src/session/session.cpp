@@ -290,7 +290,7 @@ void SessionManager::update_replay(Session& session, uint64_t seq) {
 
 std::optional<std::vector<uint8_t>> SessionManager::encrypt_message(
     const NodeId& peer_id, uint8_t packet_type,
-    const uint8_t* plaintext, size_t pt_len)
+    const uint8_t* plaintext, size_t pt_len, uint8_t flags)
 {
     auto sess_opt = get_session(peer_id);
     if (!sess_opt)
@@ -309,13 +309,15 @@ std::optional<std::vector<uint8_t>> SessionManager::encrypt_message(
     std::memcpy(nonce.data() + 4, &seq_hi, 4);
     std::memcpy(nonce.data() + 8, &seq_lo, 4);
 
-    uint8_t ct_buf[2048];
+    // 4096: enough for an MTU-sized IP packet plus onion layers (up to
+    // ONION_MAX_HOPS layers of AEAD overhead) and the relay source NodeID.
+    uint8_t ct_buf[4096];
     uint8_t tag_buf[CHACHA20_POLY1305_TAG_SIZE];
 
     PacketHeader hdr{};
     hdr.version = PACKET_VERSION;
     hdr.packet_type = packet_type;
-    hdr.flags = 0;
+    hdr.flags = flags;
     hdr.reserved = 0;
     hdr.session_id = sess.id;
     hdr.sequence_number = (uint32_t)(send_seq & 0xFFFFFFFF);
@@ -397,7 +399,11 @@ std::optional<SessionManager::DecryptedMessage> SessionManager::decrypt_message(
     std::array<uint8_t, 16> hdr_bytes;
     std::memcpy(hdr_bytes.data(), data, 16);
 
-    uint8_t pt_buf[2048];
+    uint8_t pt_buf[4096];
+    if (ct_len > sizeof(pt_buf)) {
+        fprintf(stderr, "[session] drop: payload too large (%zu)\n", ct_len);
+        return std::nullopt;
+    }
     if (!chacha20_poly1305_decrypt(
             sess.recv_key, nonce,
             ct_ptr, ct_len, tag_ptr, pt_buf,
