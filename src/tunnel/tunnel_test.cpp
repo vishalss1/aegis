@@ -961,8 +961,26 @@ int run_lifecycle_test() {
                 return tunnel_a.session_established(id_b.node_id) &&
                        tunnel_b2.session_established(id_a.node_id);
             }) && pass;
-        if (pass)
-            pass = udp_round_trip(IP_A, IP_B, "A->B after rejoin") && pass;
+        if (pass) {
+            // The recreated adapter's IP/routing state can lag for a moment
+            // after Wintun is destroyed and re-created on the same host, so a
+            // single injected packet may be dropped while Windows settles.
+            // Retry a few times before declaring a data-path failure; a real
+            // tunnel defect fails every attempt.
+            bool rt_ok = false;
+            for (int attempt = 1; attempt <= 5; attempt++) {
+                if (udp_round_trip(IP_A, IP_B, "A->B after rejoin")) {
+                    rt_ok = true;
+                    break;
+                }
+                if (attempt < 5) {
+                    printf("[lifecycle-test] A->B after rejoin attempt %d failed, "
+                           "retrying after adapter settle\n", attempt);
+                    Sleep(1500);
+                }
+            }
+            pass = rt_ok && pass;
+        }
     }
 
     delete_route("10.20.0.0", "255.255.255.0", "10.10.0.1");

@@ -9,6 +9,7 @@
 #include "aegis/session/session.hpp"
 #include "aegis/peer/peer.hpp"
 #include "aegis/routing/routing.hpp"
+#include "aegis/config/config.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -57,6 +58,59 @@ static bool parse_hex(const char* hex, std::vector<uint8_t>& out) {
     return true;
 }
 
+// "a.b.c.d" -> network-byte-order uint32 (the adapter's convention).
+static bool parse_ipv4(const char* s, uint32_t& out) {
+    uint8_t a, b, c, d;
+    if (sscanf_s(s, "%hhu.%hhu.%hhu.%hhu", &a, &b, &c, &d) != 4) return false;
+    out = htonl((static_cast<uint32_t>(a) << 24) |
+                (static_cast<uint32_t>(b) << 16) |
+                (static_cast<uint32_t>(c) << 8)  |
+                static_cast<uint32_t>(d));
+    return true;
+}
+
+// "a.b.c.d/plen" -> network-byte-order prefix + prefix length.
+static bool parse_cidr(const char* s, uint32_t& prefix, uint8_t& plen) {
+    char ip_part[32];
+    unsigned plen_raw = 0;
+    if (sscanf_s(s, "%31[^/]/%u", ip_part, (unsigned)sizeof(ip_part), &plen_raw) != 2 ||
+        plen_raw > 32)
+        return false;
+    if (!parse_ipv4(ip_part, prefix)) return false;
+    plen = (uint8_t)plen_raw;
+    return true;
+}
+
+// "host:port" -> Endpoint. Numeric IPv4 or a resolvable hostname.
+static bool parse_endpoint(const std::string& s, Endpoint& out) {
+    size_t colon = s.rfind(':');
+    if (colon == std::string::npos || colon == s.size() - 1) return false;
+    std::string host = s.substr(0, colon);
+    char* end = nullptr;
+    unsigned long port = std::strtoul(s.c_str() + colon + 1, &end, 10);
+    if (end == s.c_str() + colon + 1 || port == 0 || port > 65535) return false;
+
+    uint32_t ip = 0;
+    if (parse_ipv4(host.c_str(), ip)) {
+        out = Endpoint{ip, htons((uint16_t)port)};
+        return true;
+    }
+    hostent* he = gethostbyname(host.c_str());
+    if (he && he->h_addrtype == AF_INET && he->h_length == 4) {
+        std::memcpy(&ip, he->h_addr_list[0], 4);
+        out = Endpoint{ip, htons((uint16_t)port)};
+        return true;
+    }
+    return false;
+}
+
+static void make_adapter_name(uint32_t local_ip, char* buf, size_t n) {
+    uint32_t ip_host = ntohl(local_ip);
+    snprintf(buf, n, "Aegis %u.%u.%u.%u",
+             (ip_host >> 24) & 0xFF, (ip_host >> 16) & 0xFF,
+             (ip_host >>  8) & 0xFF,  ip_host        & 0xFF);
+}
+
 static void print_usage(const char* prog) {
     printf("usage: %s [--listen | --inject <hex> | --ping-test | --transport-test | --crypto-test | --aead-test | --identity-test]\n\n", prog);
     printf("  --listen           create adapter at 10.10.0.1/24 and print packets for 30s\n");
@@ -78,6 +132,8 @@ static void print_usage(const char* prog) {
     printf("  --lifecycle-test   self-test: keep-alive liveness, dead detection + route teardown,\n");
     printf("                     automatic rejoin after restart, and rekey while traffic flows (step 15)\n");
     printf("  --tunnel <local_ip> <prefix> <listen_port> [--network <hex64>] [--peer <nodeid> <pubkey> <ip> <port> <cidr...>]  mesh node\n");
+    printf("  --config <file>    run a mesh node from a YAML config file (interface/identity/peer,\n");
+    printf("                     see CLAUDE.md config shape). Requires admin; auto-elevates via UAC.\n");
 }
 
 // RFC 8439 Section 2.8.2 AEAD_CHACHA20_POLY1305 test vector
@@ -802,16 +858,9 @@ static int run_tunnel(int argc, char* argv[]) {
 
     // Parse local IP
     uint32_t local_ip = 0;
-    {
-        uint8_t a, b, c, d;
-        if (sscanf_s(argv[2], "%hhu.%hhu.%hhu.%hhu", &a, &b, &c, &d) != 4) {
-            fprintf(stderr, "error: invalid local_ip '%s'\n", argv[2]);
-            return 1;
-        }
-        local_ip = htonl((static_cast<uint32_t>(a) << 24) |
-                         (static_cast<uint32_t>(b) << 16) |
-                         (static_cast<uint32_t>(c) << 8)  |
-                         static_cast<uint32_t>(d));
+    if (!parse_ipv4(argv[2], local_ip)) {
+        fprintf(stderr, "error: invalid local_ip '%s'\n", argv[2]);
+        return 1;
     }
 
     uint8_t prefix = (uint8_t)std::atoi(argv[3]);
@@ -863,32 +912,22 @@ static int run_tunnel(int argc, char* argv[]) {
         std::memcpy(peer.node_id.data(), nid.data(), NODE_ID_SIZE);
         std::memcpy(peer.public_key.data(), pk.data(), KEY_SIZE);
 
-        uint8_t a, b, c, d;
-        if (sscanf_s(argv[i + 3], "%hhu.%hhu.%hhu.%hhu", &a, &b, &c, &d) != 4) {
-            fprintf(stderr, "error: invalid peer_ip '%s'\n", argv[i + 3]);
+        uint32_t peer_ip = 0;
+        uint16_t peer_port = (uint16_t)std::atoi(argv[i + 4]);
+        if (peer_port == 0 || !parse_ipv4(argv[i + 3], peer_ip)) {
+            fprintf(stderr, "error: invalid peer_ip/port '%s' '%s'\n",
+                    argv[i + 3], argv[i + 4]);
             return 1;
         }
-        peer.endpoint = Endpoint::from_parts(a, b, c, d, (uint16_t)std::atoi(argv[i + 4]));
+        peer.endpoint = Endpoint{peer_ip, htons(peer_port)};
         i += 5;
 
         while (i < argc && std::strcmp(argv[i], "--peer") != 0) {
-            char ip_part[32];
-            unsigned plen = 0;
-            if (sscanf_s(argv[i], "%31[^/]/%u", ip_part, (unsigned)sizeof(ip_part), &plen) != 2 || plen > 32) {
-                fprintf(stderr, "error: invalid allowed_cidr '%s'\n", argv[i]);
-                return 1;
-            }
-            uint8_t ia, ib, ic, id_;
-            if (sscanf_s(ip_part, "%hhu.%hhu.%hhu.%hhu", &ia, &ib, &ic, &id_) != 4) {
-                fprintf(stderr, "error: invalid allowed_cidr '%s'\n", argv[i]);
-                return 1;
-            }
             AllowedIP aip;
-            aip.prefix = (static_cast<uint32_t>(ia) << 24) |
-                         (static_cast<uint32_t>(ib) << 16) |
-                         (static_cast<uint32_t>(ic) << 8)  |
-                         static_cast<uint32_t>(id_);
-            aip.prefix_length = (uint8_t)plen;
+            if (!parse_cidr(argv[i], aip.prefix, aip.prefix_length)) {
+                fprintf(stderr, "error: invalid allowed_cidr '%s'\n", argv[i]);
+                return 1;
+            }
             peer.allowed_ips.push_back(aip);
             i++;
         }
@@ -902,14 +941,70 @@ static int run_tunnel(int argc, char* argv[]) {
 
     // Build adapter name from local IP (unique per instance)
     char adapter_name_buf[64];
-    uint32_t ip_host = ntohl(local_ip);
-    snprintf(adapter_name_buf, sizeof(adapter_name_buf),
-             "Aegis %u.%u.%u.%u",
-             (ip_host >> 24) & 0xFF, (ip_host >> 16) & 0xFF,
-             (ip_host >>  8) & 0xFF,  ip_host        & 0xFF);
+    make_adapter_name(local_ip, adapter_name_buf, sizeof(adapter_name_buf));
 
     Tunnel tunnel;
     if (!tunnel.start(cfg, adapter_name_buf)) {
+        fprintf(stderr, "error: tunnel start failed\n");
+        return 1;
+    }
+
+    printf("[tunnel] running — press Ctrl+C to stop\n");
+    while (true) {
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+
+    tunnel.stop();
+    return 0;
+}
+
+// ---- config ----------------------------------------------------------------
+static int run_config(const std::string& path) {
+    Config cfg;
+    if (!cfg.load(path)) {
+        fprintf(stderr, "error: failed to load config '%s'\n", path.c_str());
+        return 1;
+    }
+    const AppConfig& app = cfg.get();
+
+    TunnelConfig tcfg;
+    if (!parse_cidr(app.iface.address.c_str(), tcfg.local_ip, tcfg.local_prefix)) {
+        fprintf(stderr, "error: invalid interface.address '%s' (expected a.b.c.d/plen)\n",
+                app.iface.address.c_str());
+        return 1;
+    }
+    tcfg.listen_port = app.iface.listen_port;
+
+    if (app.network_id)
+        tcfg.identity = Identity::create(*app.network_id);
+
+    for (const auto& pc : app.peers) {
+        TunnelPeer tp;
+        tp.node_id = hash_public_key(pc.public_key);
+        tp.public_key = pc.public_key;
+        if (!parse_endpoint(pc.endpoint, tp.endpoint)) {
+            fprintf(stderr, "error: invalid peer.endpoint '%s'\n", pc.endpoint.c_str());
+            return 1;
+        }
+        for (const auto& cidr : pc.allowed_ips) {
+            AllowedIP aip;
+            if (!parse_cidr(cidr.c_str(), aip.prefix, aip.prefix_length)) {
+                fprintf(stderr, "error: invalid allowed_ip '%s'\n", cidr.c_str());
+                return 1;
+            }
+            tp.allowed_ips.push_back(aip);
+        }
+        tcfg.peers.push_back(std::move(tp));
+    }
+
+    if (tcfg.peers.empty())
+        fprintf(stderr, "[config] no peers configured — node runs presence-only\n");
+
+    char adapter_name_buf[64];
+    make_adapter_name(tcfg.local_ip, adapter_name_buf, sizeof(adapter_name_buf));
+
+    Tunnel tunnel;
+    if (!tunnel.start(tcfg, adapter_name_buf)) {
         fprintf(stderr, "error: tunnel start failed\n");
         return 1;
     }
@@ -1104,8 +1199,26 @@ int main(int argc, char* argv[]) {
         int ret = run_lifecycle_test();
         platform_cleanup_winsock();
         return ret;
+    } else if (std::strcmp(argv[1], "--config") == 0) {
+        if (argc < 3) {
+            fprintf(stderr, "error: --config needs a file path\n");
+            platform_cleanup_winsock();
+            return 1;
+        }
+        if (!platform_is_admin()) {
+            if (platform_elevate())
+                return 0;  // elevated copy relaunched with the same args
+            fprintf(stderr, "error: config mode requires administrator privileges\n");
+            platform_cleanup_winsock();
+            return 1;
+        }
+        int ret = run_config(argv[2]);
+        platform_cleanup_winsock();
+        return ret;
     } else if (std::strcmp(argv[1], "--tunnel") == 0) {
         if (!platform_is_admin()) {
+            if (platform_elevate())
+                return 0;  // elevated copy relaunched with the same args
             fprintf(stderr, "error: tunnel mode requires administrator privileges\n");
             platform_cleanup_winsock();
             return 1;

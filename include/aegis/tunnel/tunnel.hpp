@@ -132,6 +132,11 @@ private:
     void gossip_loop();
     // Step 15: keep-alive + dead detection + rekey on a 1 s tick.
     void maintenance_loop();
+    // Discovery: fold same-network presences for known peers into their
+    // endpoint, so a peer that changed IP (DHCP/NAT rebinding) is re-joinable
+    // without reconfiguring. Presence alone never creates a peer — a handshake
+    // still requires an out-of-band-known public key.
+    void refresh_endpoints_from_discovery();
     void send_keepalive(const Peer& peer);
     void rekey_peer(const NodeId& node_id);
     void rekey_due();

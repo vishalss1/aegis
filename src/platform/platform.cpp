@@ -35,8 +35,32 @@ bool platform_is_admin() {
 }
 
 bool platform_elevate() {
-    fprintf(stderr, "[platform] elevate: not implemented\n");
-    return false;
+    wchar_t exe[MAX_PATH] = {};
+    if (!GetModuleFileNameW(nullptr, exe, MAX_PATH)) return false;
+
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (!argv) return false;
+
+    std::wstring params;
+    for (int i = 1; i < argc; i++) {
+        std::wstring arg = argv[i];
+        bool need_quotes = arg.find(L' ') != std::wstring::npos;
+        if (!params.empty()) params += L' ';
+        if (need_quotes)
+            params += L"\"" + arg + L"\"";
+        else
+            params += arg;
+    }
+    LocalFree(argv);
+
+    // ShellExecuteW "runas" relaunches this process with the same arguments in
+    // an elevated context (UAC prompt). The parent returns immediately; the
+    // elevated child opens its own console.
+    HINSTANCE h = ShellExecuteW(nullptr, L"runas", exe,
+                                params.empty() ? nullptr : params.c_str(),
+                                nullptr, SW_SHOWNORMAL);
+    return (INT_PTR)h > 32;
 }
 
 std::string platform_error_string(int error_code) {

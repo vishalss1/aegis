@@ -100,6 +100,13 @@ int main() {
         CHECK(pa[mallory.node_id].network_id == net2);  // cross-network visible
         CHECK(pm[alice.node_id].network_id == net1);
 
+        // reachable_endpoint = transport sender IP + announced listen port.
+        // Loopback test: sender is 127.0.0.1, announced port is 45190.
+        CHECK(pa[mallory.node_id].reachable_endpoint.ip == htonl(0x7F000001u));
+        CHECK(pa[mallory.node_id].reachable_endpoint.port == htons(45190));
+        CHECK(pm[alice.node_id].reachable_endpoint.ip == htonl(0x7F000001u));
+        CHECK(pm[alice.node_id].reachable_endpoint.port == htons(45120));
+
         d_a.stop();
         d_m.stop();
     }

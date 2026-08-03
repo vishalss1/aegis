@@ -58,6 +58,10 @@ target_include_directories(test_discovery PRIVATE ../include)
 target_link_libraries(test_discovery OpenSSL::Crypto ws2_32)
 add_test(NAME test_discovery COMMAND test_discovery)
 
+add_executable(test_config test_config.cpp ../src/config/config.cpp)
+target_include_directories(test_config PRIVATE ../include)
+add_test(NAME test_config COMMAND test_config)
+
 add_custom_target(check
     COMMAND test_packet
     COMMAND test_transport
@@ -71,5 +75,6 @@ add_custom_target(check
     COMMAND test_peer_table
     COMMAND test_relay
     COMMAND test_discovery
+    COMMAND test_config
     COMMENT "Running all unit tests"
 )

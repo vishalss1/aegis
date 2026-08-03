@@ -110,6 +110,13 @@ void Discovery::on_presence(const uint8_t* data, size_t len, Endpoint sender) {
     if (p->node_id == identity_->node_id)
         return;
 
+    // The announced endpoint's IP is the peer's *overlay* address, which is not
+    // routable on the LAN. What IS usable is the transport sender of the
+    // presence datagram combined with the announced tunnel listen port — that
+    // is where this node must connect to reach the peer's tunnel.
+    p->reachable_endpoint.ip = sender.ip;
+    p->reachable_endpoint.port = p->endpoint.port;
+
     p->last_seen_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
 

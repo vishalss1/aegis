@@ -33,7 +33,6 @@ set(AEGIS_SOURCES
     src/main.cpp
     src/adapter/adapter.cpp
     src/identity/identity.cpp
-    src/crypto/crypto.cpp
     src/crypto/x25519.cpp
     src/crypto/chacha20poly1305.cpp
     src/tunnel/tunnel.cpp
@@ -72,18 +71,9 @@ add_custom_command(TARGET aegis POST_BUILD
 )
 
 # OpenSSL EVP (decided per CLAUDE.md)
-option(AEGIS_USE_LIBSODIUM "Use libsodium instead of OpenSSL" OFF)
-option(AEGIS_USE_OPENSSL "Use OpenSSL EVP for X25519/ChaCha20-Poly1305" ON)
-
-if(AEGIS_USE_OPENSSL)
-    find_package(OpenSSL REQUIRED)
-    target_link_libraries(aegis PRIVATE OpenSSL::Crypto)
-    target_compile_definitions(aegis PRIVATE AEGIS_USE_OPENSSL)
-elseif(AEGIS_USE_LIBSODIUM)
-    find_package(libsodium REQUIRED)
-    target_link_libraries(aegis PRIVATE libsodium)
-    target_compile_definitions(aegis PRIVATE AEGIS_USE_LIBSODIUM)
-endif()
+find_package(OpenSSL REQUIRED)
+target_link_libraries(aegis PRIVATE OpenSSL::Crypto)
+target_compile_definitions(aegis PRIVATE AEGIS_USE_OPENSSL)
 
 # Tests
 enable_testing()

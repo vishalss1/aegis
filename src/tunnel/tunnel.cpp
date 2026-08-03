@@ -236,10 +236,14 @@ bool Tunnel::handshake_peer(const TunnelPeer& peer, bool force) {
     std::unique_lock<std::mutex> lock(hs_mtx_);
     if (!pending_handshakes_.contains(peer.node_id))
         pending_handshakes_[peer.node_id] = {peer.node_id, 0, false};
+    else
+        // done is only meaningful for the handshake that set it; a stale true
+        // from an earlier handshake must not satisfy the wait below.
+        pending_handshakes_[peer.node_id].done = false;
     // The INIT may already have been answered by rx before we registered, so
-    // never wait on a stale flag — re-check the session right away.
-    if (pending_handshakes_[peer.node_id].done ||
-        session_established(peer.node_id)) {
+    // never wait on a stale flag — re-check the session right away. A session
+    // is the only reliable proof the handshake completed.
+    if (session_established(peer.node_id)) {
         peers_.mark_seen(peer.node_id);
         return true;
     }
@@ -457,10 +461,33 @@ void Tunnel::maintenance_loop() {
         // 3) Garbage-collect sessions retired by a rekey.
         session_manager_->purge_retired();
 
-        // 4) Rekey established sessions older than the interval.
+        // 4) Fold same-network presence broadcasts into known peers' endpoints.
+        //    Runs after keep-alives so a peer that just moved IPs has its new
+        //    endpoint ready for the next connect/rekey attempt.
+        refresh_endpoints_from_discovery();
+
+        // 5) Rekey established sessions older than the interval.
         rekey_due();
     }
     fprintf(stderr, "[tunnel] maintenance loop ended\n");
+}
+
+void Tunnel::refresh_endpoints_from_discovery() {
+    for (const auto& [id, presence] : discovery_.presences()) {
+        if (presence.network_id != identity_.network_id)
+            continue;  // cross-network: visible but never reachable
+        Peer* peer = peers_.get_peer(id);
+        if (!peer)
+            continue;  // presence alone never creates a peer entry
+        if (!peer->trusted)
+            continue;  // learned peers stay endpoint-less: real IPs never propagate via gossip
+        if (peer->endpoint && *peer->endpoint == presence.reachable_endpoint)
+            continue;
+        peers_.update_endpoint(id, presence.reachable_endpoint);
+        fprintf(stderr, "[tunnel] discovery updated endpoint for %02x%02x... -> %08x:%04x\n",
+                id[0], id[1], ntohl(presence.reachable_endpoint.ip),
+                ntohs(presence.reachable_endpoint.port));
+    }
 }
 
 void Tunnel::rx_callback(const uint8_t* data, size_t len, Endpoint sender) {
