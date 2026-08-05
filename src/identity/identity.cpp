@@ -1,14 +1,17 @@
 #include "aegis/identity/identity.hpp"
 #include <openssl/evp.h>
 #include <cstdio>
+#include <cstring>
 
 NodeId hash_public_key(const X25519Key& public_key) {
     NodeId hash{};
-    unsigned int len = NODE_ID_SIZE;
+    unsigned char full_hash[64]{};
+    unsigned int len = 64;
     if (EVP_Digest(public_key.data(), X25519_KEY_SIZE,
-                   hash.data(), &len, EVP_sha256(), nullptr) != 1) {
+                   full_hash, &len, EVP_blake2b512(), nullptr) != 1) {
         fprintf(stderr, "[identity] EVP_Digest failed\n");
     }
+    std::memcpy(hash.data(), full_hash, NODE_ID_SIZE);
     return hash;
 }
 

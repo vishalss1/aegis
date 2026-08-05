@@ -4,6 +4,7 @@
 #include "aegis/crypto/chacha20poly1305.hpp"
 #include "aegis/packet/header.hpp"
 #include <array>
+#include <bitset>
 #include <chrono>
 #include <cstdint>
 #include <map>
@@ -23,7 +24,7 @@ struct Session {
     ChaCha20Poly1305Key recv_key{};
     uint64_t send_seq = 0;
     uint64_t recv_last = 0;
-    uint64_t recv_window = 0;
+    std::bitset<2048> recv_window{};
     NodeId peer_id{};
     bool established = false;
     // When the session's keys were established. Rekey (step 15) replaces a
@@ -135,5 +136,5 @@ private:
         const uint8_t* d1, size_t l1,
         const uint8_t* d2, size_t l2);
 
-    static constexpr size_t REPLAY_BITS = 64;
+    static constexpr size_t REPLAY_BITS = 2048;
 };

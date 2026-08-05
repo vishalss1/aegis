@@ -161,8 +161,8 @@ A few design choices that shaped how Aegis works.
 
 | Feature | What It Does |
 |:--------|:-------------|
-| **Cryptographic Identity** | `NodeID = BLAKE2b(PublicKey)`. Every peer is addressed by NodeID everywhere — Routing Engine, Peer Manager, protocol headers. Survives NAT changes and IP changes without re-provisioning. |
-| **X25519 + ChaCha20-Poly1305** | WireGuard-style key exchange: static + ephemeral keypairs, shared secret XOR, BLAKE2b KDF. All data encrypted with 96-bit nonces derived from `SessionID ‖ SequenceNumber`. AAD covers the cleartext header preventing tampering. |
+| **Cryptographic Identity** | `NodeID = BLAKE2b(PublicKey)`. Every peer is addressed by NodeID everywhere — Routing Engine, Peer Manager, protocol headers. Survives connection/IP changes (in LAN/bootstrap environments) without re-provisioning. |
+| **X25519 + ChaCha20-Poly1305** | Ephemeral-ephemeral X25519 DH handshake, SHA-256 double-hash KDF. All data encrypted with 96-bit nonces derived from `SessionID ‖ SequenceNumber`. AAD covers the cleartext header preventing tampering. |
 | **Multi-hop Onion Routing** | Traffic between non-adjacent nodes uses layered encryption. Each hop decrypts one layer, learns only the next hop, re-wraps, and forwards. The original source IP and final payload are invisible to relays. |
 | **Peer Table Gossip** | Full mesh convergence without a coordinator. Every new session triggers a fan-out of the peer table; a periodic 3-second gossip loop ensures far-end peers propagate across multi-hop chains. |
 | **Identity-Hiding Gossip** | Peer tables carry NodeID + public key + IP prefix routes. Physical endpoints are never transmitted in gossip — non-adjacent nodes cannot learn each other's real IP. |
@@ -170,7 +170,7 @@ A few design choices that shaped how Aegis works.
 | **Join-Any-Available Bootstrap** | No fixed entry point, no dedicated server. Each configured candidate gets its own background connect loop with exponential backoff (1s → 30s cap). The node routes immediately; sessions form as peers become reachable. |
 | **Session Keep-Alive & Dead Detection** | Keep-alives every 25s. Dead timeout at 180s removes the session and all routes. Configured peers are re-joined automatically on reconnect, routes reinstalled, peer table re-announced. |
 | **Transparent Rekeying** | Fresh X25519 handshake every 120s driven by the lower-NodeID peer. Prior session retired to a 10s grace window — in-flight packets decrypt cleanly. Replay windows and sequence numbers reset per session ID. |
-| **Endpoint Self-Healing** | Presence broadcasts carry `reachable_endpoint`. The maintenance loop updates endpoints of **trusted** (bootstrap-configured) peers only — so a peer that changed IPs becomes reconnectable without admin intervention. |
+| **Endpoint Self-Healing** | Presence broadcasts (LAN-only) carry `reachable_endpoint`. The maintenance loop updates endpoints of **trusted** (bootstrap-configured) peers only — so a peer that changed IPs becomes reconnectable without admin intervention. |
 | **YAML Config Mode** | `--config <file>` — strict YAML subset parser. Validates all fields, rejects unknown keys. Auto-elevates via UAC (`ShellExecuteW "runas"`) when launched without Administrator rights. |
 | **Replay Protection** | Per-session sliding window of 2048 sequence numbers. Out-of-window and duplicate sequence numbers are silently discarded. |
 | **Explicit Typed Packet Layers** | `IPPacket → EncryptedFrame → RelayPayload → UDPDatagram`. No raw `uint8_t*` passed between modules — each layer owns only its representation. |
@@ -487,7 +487,7 @@ Decided architecture, not yet implemented or open questions from `CLAUDE.md`:
 
 | Item | Status |
 |:-----|:-------|
-| **NAT Traversal** | Open — relaying substitutes for direct paths, but STUN/ICE-style hole punching is not yet designed |
+| **NAT Traversal** | Open — relaying/onion routing substitutes for direct paths, but STUN/ICE-style hole punching is not yet designed. Peer discovery is restricted to the local subnet broadcast domain; remote/WAN discovery requires manual bootstrap endpoints. |
 | **Onion Path Selection** | Open — hop count, relay selection policy, and prevention of a relay learning both origin and destination simultaneously |
 | **NetworkID Distribution** | Open — exact out-of-band mechanism: manual config, QR pairing, or invite flow |
 | **Peer Gossip Convergence** | Implemented — fan-out on session establish, periodic 3s loop, path validation |

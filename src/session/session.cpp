@@ -157,7 +157,7 @@ Session& SessionManager::create_session(
     n->second.id = session_id;
     n->second.send_seq = 0;
     n->second.recv_last = 0;
-    n->second.recv_window = 0;
+    n->second.recv_window.reset();
     n->second.established = false;
     session_to_peer_[session_id] = peer_id;
     return n->second;
@@ -365,8 +365,7 @@ bool SessionManager::check_replay(Session& session, uint64_t seq) {
     if (seq + REPLAY_BITS <= session.recv_last)
         return false;
 
-    uint64_t bit = (uint64_t)1 << (session.recv_last - seq);
-    if (session.recv_window & bit)
+    if (session.recv_window.test(session.recv_last - seq))
         return false;
 
     return true;
@@ -378,12 +377,11 @@ void SessionManager::update_replay(Session& session, uint64_t seq) {
         if (shift < REPLAY_BITS)
             session.recv_window <<= shift;
         else
-            session.recv_window = 0;
+            session.recv_window.reset();
         session.recv_last = seq;
     }
 
-    uint64_t bit = (uint64_t)1 << (session.recv_last - seq);
-    session.recv_window |= bit;
+    session.recv_window.set(session.recv_last - seq);
 }
 
 std::optional<std::vector<uint8_t>> SessionManager::encrypt_message(
