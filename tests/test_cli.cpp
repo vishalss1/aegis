@@ -59,7 +59,6 @@ void test_help_lists_all_commands() {
 
     assert(registry.has_command("help"));
     assert(registry.has_command("config"));
-    assert(registry.has_command("create"));
     assert(registry.has_command("delete"));
     assert(registry.has_command("leave"));
     assert(registry.has_command("discover"));
@@ -97,6 +96,7 @@ void test_invite_trimming() {
     InvitePayload payload{};
     payload.network_id[0] = 1;
     payload.bootstrap_pubkey[0] = 2;
+    payload.network_name = "Test Net";
     payload.bootstrap_endpoint = Endpoint{0x7F000001, htons(51820)};
     payload.bootstrap_prefix = 0x0A0A0001;
     payload.bootstrap_prefix_len = 24;
@@ -108,6 +108,7 @@ void test_invite_trimming() {
     assert(decoded.has_value());
     assert(decoded->network_id == payload.network_id);
     assert(decoded->bootstrap_pubkey == payload.bootstrap_pubkey);
+    assert(decoded->network_name == "Test Net");
     assert(decoded->bootstrap_endpoint.port == payload.bootstrap_endpoint.port);
     printf("[test_cli] test_invite_trimming passed\n");
 }

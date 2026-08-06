@@ -39,6 +39,7 @@ static uint32_t rand_session_id() {
 
 bool Tunnel::start(const TunnelConfig& config, const std::string& adapter_name) {
     config_ = config;
+    network_name_ = config_.network_name;
 
     if (config_.identity)
         identity_ = *config_.identity;
@@ -80,11 +81,21 @@ bool Tunnel::start(const TunnelConfig& config, const std::string& adapter_name) 
         return false;
     }
 
-    if (!transport_.bind(config.listen_port)) {
-        aegis_log( "[tunnel] bind port %u failed\n", config.listen_port);
+    uint16_t actual_port = config.listen_port;
+    bool bound = false;
+    for (int retry = 0; retry < 10; retry++) {
+        if (transport_.bind(actual_port)) {
+            bound = true;
+            break;
+        }
+        actual_port++;
+    }
+    if (!bound) {
+        aegis_log( "[tunnel] bind failed starting at port %u\n", config.listen_port);
         adapter_.close();
         return false;
     }
+    config_.listen_port = actual_port;
 
     // Optional STUN external address discovery
     stun_public_endpoint_ = std::nullopt;

@@ -40,6 +40,7 @@ struct TunnelPeer {
 
 struct TunnelConfig {
     std::optional<Identity> identity;   // nullopt -> generate a fresh one
+    std::string network_name;           // Human-readable network name
     uint32_t local_ip;                  // network byte order (adapter convention)
     uint8_t  local_prefix;              // e.g. 24
     uint16_t listen_port;               // host byte order
@@ -66,6 +67,8 @@ public:
     void stop();
 
     const Identity& identity() const { return identity_; }
+    const std::string& network_name() const { return network_name_; }
+    void set_network_name(const std::string& name) { network_name_ = name; }
     const PeerManager& peers() const { return peers_; }
     PeerManager& peers() { return peers_; }
     const RoutingEngine& routing() const { return routing_; }
@@ -110,6 +113,7 @@ private:
     std::optional<Endpoint> stun_public_endpoint_;
 
     Identity identity_;
+    std::string network_name_;
     NodeId creator_node_id_{};
     bool is_creator_ = false;
     std::unique_ptr<SessionManager> session_manager_;

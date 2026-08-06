@@ -57,13 +57,18 @@ static int cmd_help(const ParsedInput& input, CliContext& ctx) {
     (void)ctx;
     std::printf("Aegis Interactive CLI Commands:\n\n");
     std::printf("  /help                     List available commands\n");
-    std::printf("  /config                   Create or join a mesh network interactively\n");
+    std::printf("  /config                   Create or join a mesh network (with Network Name)\n");
     std::printf("  /config export [path]     Export current running config as YAML\n");
+    std::printf("  /delete or /destroy       Delete/destroy current network (Creator only)\n");
+    std::printf("  /leave or /disconnect     Disconnect/leave current network\n");
+    std::printf("  /discover or /scan        Discover active Aegis networks on local LAN\n");
     std::printf("  /invite                   Generate invite code for current network\n");
     std::printf("  /connect <invite>         Connect to a peer using an invite code\n");
+    std::printf("  /sendfile <path>          Send a file to mesh peers\n");
     std::printf("  /peers                    List known peers and connection health\n");
     std::printf("  /status                   Display node status and network details\n");
     std::printf("  /identity [--reveal]      Display local NodeID, Public Key, (and Private Key)\n");
+    std::printf("  /verbose <on|off>         Toggle background debug logging\n");
     std::printf("  /quit or /exit            Clean shutdown of Aegis session\n");
     std::printf("  /                         Inline path picker\n\n");
     return 0;
@@ -156,7 +161,15 @@ static int cmd_config(const ParsedInput& input, CliContext& ctx) {
     }
 
     if (choice == "1") {
-        std::printf("\n[Creating New Mesh]\n");
+        std::printf("\n[Creating New Mesh Network]\n");
+        std::string net_name = "My Mesh Network";
+        std::printf("Network name [%s]: ", net_name.c_str());
+        std::fflush(stdout);
+        std::string input_name;
+        if (std::getline(std::cin, input_name) && !input_name.empty()) {
+            net_name = input_name;
+        }
+
         std::string addr = "10.10.0.1/24";
         std::printf("Overlay address [%s]: ", addr.c_str());
         std::fflush(stdout);
@@ -181,6 +194,7 @@ static int cmd_config(const ParsedInput& input, CliContext& ctx) {
 
         TunnelConfig tcfg;
         tcfg.identity = ctx.identity;
+        tcfg.network_name = net_name;
         if (!parse_cidr_local(addr.c_str(), tcfg.local_ip, tcfg.local_prefix)) {
             std::printf("Error: Invalid CIDR format %s\n", addr.c_str());
             return 1;
@@ -191,12 +205,13 @@ static int cmd_config(const ParsedInput& input, CliContext& ctx) {
         ctx.active_config.iface.listen_port = port;
         ctx.active_config.network_id = nid;
 
-        std::printf("\nGenerated NetworkID: %s\n", to_hex(nid.data(), nid.size()).c_str());
+        std::printf("\nCreated Network:   '%s'\n", net_name.c_str());
+        std::printf("Generated NetworkID: %s\n", to_hex(nid.data(), nid.size()).c_str());
         std::printf("NodeID (Creator):    %s\n", to_hex(ctx.identity.node_id.data(), ctx.identity.node_id.size()).c_str());
 
         return start_tunnel_helper(ctx, tcfg) ? 0 : 1;
     } else if (choice == "2") {
-        std::printf("\n[Joining Mesh]\n");
+        std::printf("\n[Joining Mesh Network]\n");
         std::printf("Paste AEGIS1 invite code: ");
         std::fflush(stdout);
         std::string invite_str;
@@ -209,6 +224,11 @@ static int cmd_config(const ParsedInput& input, CliContext& ctx) {
         if (!inv) {
             std::printf("Error: Invalid AEGIS1 invite code.\n");
             return 1;
+        }
+
+        if (!inv->network_name.empty()) {
+            std::printf("Decoded invite for Network '%s' (Created by %s...)\n",
+                        inv->network_name.c_str(), to_hex(inv->creator_node_id.data(), 4).c_str());
         }
 
         std::string addr = "10.10.0.2/24";
@@ -239,6 +259,7 @@ static int cmd_config(const ParsedInput& input, CliContext& ctx) {
 
         TunnelConfig tcfg;
         tcfg.identity = ctx.identity;
+        tcfg.network_name = inv->network_name.empty() ? "Joined Mesh" : inv->network_name;
         if (!parse_cidr_local(addr.c_str(), tcfg.local_ip, tcfg.local_prefix)) {
             std::printf("Error: Invalid CIDR format %s\n", addr.c_str());
             return 1;
@@ -280,6 +301,8 @@ static int cmd_invite(const ParsedInput& input, CliContext& ctx) {
     InvitePayload p;
     p.network_id = ctx.identity.network_id;
     p.bootstrap_pubkey = ctx.identity.keypair.public_key;
+    p.creator_node_id = ctx.tunnel->creator_node_id();
+    p.network_name = ctx.tunnel->network_name();
 
     // Use STUN endpoint or local IP & listen port
     if (auto stun_ep = ctx.tunnel->stun_public_endpoint()) {
@@ -296,7 +319,7 @@ static int cmd_invite(const ParsedInput& input, CliContext& ctx) {
     p.bootstrap_prefix_len = plen;
 
     std::string invite_code = encode_invite(p);
-    std::printf("\nAEGIS Invite Code for current network:\n%s\n\n", invite_code.c_str());
+    std::printf("\nAEGIS Invite Code for network '%s':\n%s\n\n", p.network_name.c_str(), invite_code.c_str());
     return 0;
 }
 
@@ -334,7 +357,9 @@ static int cmd_connect(const ParsedInput& input, CliContext& ctx) {
     tp.allowed_ips.push_back(aip);
 
     ctx.tunnel->peers().upsert(tp.node_id, tp.public_key, tp.endpoint, true);
-    std::printf("Connecting to peer %s...\n", to_hex(tp.node_id.data(), tp.node_id.size()).c_str());
+    std::printf("Connecting to peer %s in network '%s'...\n",
+                to_hex(tp.node_id.data(), tp.node_id.size()).c_str(),
+                inv->network_name.empty() ? "Mesh" : inv->network_name.c_str());
     return 0;
 }
 
@@ -347,7 +372,7 @@ static int cmd_peers(const ParsedInput& input, CliContext& ctx) {
     }
 
     auto peers = ctx.tunnel->peers().all_peers();
-    std::printf("\nKnown Peers (%zu total):\n", peers.size());
+    std::printf("\nKnown Peers in '%s' (%zu total):\n", ctx.tunnel->network_name().c_str(), peers.size());
     std::printf("%-16s %-12s %-22s %-8s\n", "NodeID (prefix)", "State", "Endpoint", "Type");
     std::printf("------------------------------------------------------------\n");
     for (const auto* p : peers) {
@@ -382,14 +407,17 @@ static int cmd_peers(const ParsedInput& input, CliContext& ctx) {
 static int cmd_status(const ParsedInput& input, CliContext& ctx) {
     (void)input;
     std::printf("\n--- Aegis Node Status ---\n");
-    std::printf("Status:      %s\n", ctx.state == CliState::Running ? "RUNNING" : "NO ACTIVE NETWORK");
-    std::printf("NodeID:      %s\n", to_hex(ctx.identity.node_id.data(), ctx.identity.node_id.size()).c_str());
-    std::printf("NetworkID:   %s\n", to_hex(ctx.identity.network_id.data(), ctx.identity.network_id.size()).c_str());
+    std::printf("Status:       %s\n", ctx.state == CliState::Running ? "RUNNING" : "NO ACTIVE NETWORK");
+    if (ctx.state == CliState::Running && ctx.tunnel) {
+        std::printf("Network Name: %s\n", ctx.tunnel->network_name().c_str());
+    }
+    std::printf("NodeID:       %s\n", to_hex(ctx.identity.node_id.data(), ctx.identity.node_id.size()).c_str());
+    std::printf("NetworkID:    %s\n", to_hex(ctx.identity.network_id.data(), ctx.identity.network_id.size()).c_str());
 
     if (ctx.state == CliState::Running && ctx.tunnel) {
-        std::printf("Overlay IP:  %s\n", ctx.active_config.iface.address.c_str());
-        std::printf("Listen Port: %u\n", ctx.active_config.iface.listen_port);
-        std::printf("Peers:       %zu active\n", ctx.tunnel->peers().size());
+        std::printf("Overlay IP:   %s\n", ctx.active_config.iface.address.c_str());
+        std::printf("Listen Port:  %u\n", ctx.active_config.iface.listen_port);
+        std::printf("Peers:        %zu active\n", ctx.tunnel->peers().size());
     }
     std::printf("\n");
     return 0;
@@ -430,62 +458,6 @@ static int cmd_verbose(const ParsedInput& input, CliContext& ctx) {
     } else {
         std::printf("Usage: /verbose <on|off>\n");
     }
-    return 0;
-}
-
-// Command: /create [overlay_ip] [port]
-static int cmd_create(const ParsedInput& input, CliContext& ctx) {
-    if (ctx.state == CliState::Running && ctx.tunnel) {
-        std::printf("Already connected to an active network. Type /leave first to disconnect.\n");
-        return 0;
-    }
-    std::string addr = "10.10.0.1/24";
-    uint16_t port = 51820;
-
-    if (!input.args.empty()) {
-        addr = input.args[0];
-    }
-    if (input.args.size() >= 2) {
-        port = (uint16_t)std::atoi(input.args[1].c_str());
-    }
-
-    NetworkId nid{};
-    for (size_t i = 0; i < nid.size(); ++i) nid[i] = (uint8_t)(rand() % 256);
-    ctx.identity.network_id = nid;
-    ctx.identity.creator_node_id = ctx.identity.node_id;
-
-    TunnelConfig tcfg;
-    tcfg.identity = ctx.identity;
-    if (!parse_cidr_local(addr.c_str(), tcfg.local_ip, tcfg.local_prefix)) {
-        std::printf("Error: Invalid CIDR format %s\n", addr.c_str());
-        return 1;
-    }
-    tcfg.listen_port = port;
-
-    ctx.active_config.iface.address = addr;
-    ctx.active_config.iface.listen_port = port;
-    ctx.active_config.network_id = nid;
-
-    std::printf("\n[Creating New Mesh Network]\n");
-    std::printf("Generated NetworkID: %s\n", to_hex(nid.data(), nid.size()).c_str());
-    std::printf("NodeID (Creator):    %s\n", to_hex(ctx.identity.node_id.data(), ctx.identity.node_id.size()).c_str());
-
-    if (!start_tunnel_helper(ctx, tcfg)) {
-        return 1;
-    }
-
-    InvitePayload p;
-    p.network_id = ctx.identity.network_id;
-    p.bootstrap_pubkey = ctx.identity.keypair.public_key;
-    p.creator_node_id = ctx.identity.node_id;
-    p.bootstrap_endpoint = Endpoint{htonl((127 << 24) | 1), htons(port)};
-    uint32_t local_ip = 0; uint8_t plen = 0;
-    parse_cidr_local(addr.c_str(), local_ip, plen);
-    p.bootstrap_prefix = local_ip;
-    p.bootstrap_prefix_len = plen;
-
-    std::string invite_code = encode_invite(p);
-    std::printf("\nAEGIS Invite Code for current network:\n%s\n\n", invite_code.c_str());
     return 0;
 }
 
@@ -611,7 +583,6 @@ static int cmd_quit(const ParsedInput& input, CliContext& ctx) {
 void register_cli_commands(CommandRegistry& registry) {
     registry.register_command("help", "List commands", cmd_help);
     registry.register_command("config", "Interactive create-or-join flow / export config", cmd_config);
-    registry.register_command("create", "Create a new mesh network directly", cmd_create);
     registry.register_command("delete", "Delete/destroy current network (Creator only)", cmd_delete);
     registry.register_command("destroy", "Delete/destroy current network (Creator only)", cmd_delete);
     registry.register_command("leave", "Disconnect/leave current network", cmd_leave);

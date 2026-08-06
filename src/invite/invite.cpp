@@ -47,35 +47,34 @@ static std::optional<std::vector<uint8_t>> base64url_decode(const std::string& i
 }
 
 static const char INVITE_PREFIX[] = "AEGIS1:";
-static constexpr size_t INVITE_PAYLOAD_SIZE = 107;
-
 std::string encode_invite(const InvitePayload& payload) {
-    std::vector<uint8_t> buf(INVITE_PAYLOAD_SIZE, 0);
-    size_t off = 0;
+    uint8_t name_len = (uint8_t)(std::min)(payload.network_name.size(), (size_t)64);
+    std::vector<uint8_t> buf;
+    buf.reserve(107 + 1 + name_len);
 
-    std::memcpy(buf.data() + off, payload.network_id.data(), 32);
-    off += 32;
+    buf.insert(buf.end(), payload.network_id.begin(), payload.network_id.end());
+    buf.insert(buf.end(), payload.bootstrap_pubkey.begin(), payload.bootstrap_pubkey.end());
+    buf.insert(buf.end(), payload.creator_node_id.begin(), payload.creator_node_id.end());
 
-    std::memcpy(buf.data() + off, payload.bootstrap_pubkey.data(), 32);
-    off += 32;
+    buf.push_back((uint8_t)(payload.bootstrap_endpoint.ip >> 24));
+    buf.push_back((uint8_t)(payload.bootstrap_endpoint.ip >> 16));
+    buf.push_back((uint8_t)(payload.bootstrap_endpoint.ip >> 8));
+    buf.push_back((uint8_t)(payload.bootstrap_endpoint.ip));
 
-    std::memcpy(buf.data() + off, payload.creator_node_id.data(), 32);
-    off += 32;
+    buf.push_back((uint8_t)(payload.bootstrap_endpoint.port >> 8));
+    buf.push_back((uint8_t)(payload.bootstrap_endpoint.port));
 
-    buf[off++] = (uint8_t)(payload.bootstrap_endpoint.ip >> 24);
-    buf[off++] = (uint8_t)(payload.bootstrap_endpoint.ip >> 16);
-    buf[off++] = (uint8_t)(payload.bootstrap_endpoint.ip >> 8);
-    buf[off++] = (uint8_t)(payload.bootstrap_endpoint.ip);
+    buf.push_back((uint8_t)(payload.bootstrap_prefix >> 24));
+    buf.push_back((uint8_t)(payload.bootstrap_prefix >> 16));
+    buf.push_back((uint8_t)(payload.bootstrap_prefix >> 8));
+    buf.push_back((uint8_t)(payload.bootstrap_prefix));
 
-    buf[off++] = (uint8_t)(payload.bootstrap_endpoint.port >> 8);
-    buf[off++] = (uint8_t)(payload.bootstrap_endpoint.port);
+    buf.push_back(payload.bootstrap_prefix_len);
 
-    buf[off++] = (uint8_t)(payload.bootstrap_prefix >> 24);
-    buf[off++] = (uint8_t)(payload.bootstrap_prefix >> 16);
-    buf[off++] = (uint8_t)(payload.bootstrap_prefix >> 8);
-    buf[off++] = (uint8_t)(payload.bootstrap_prefix);
-
-    buf[off++] = payload.bootstrap_prefix_len;
+    buf.push_back(name_len);
+    if (name_len > 0) {
+        buf.insert(buf.end(), payload.network_name.data(), payload.network_name.data() + name_len);
+    }
 
     return std::string(INVITE_PREFIX) + base64url_encode(buf.data(), buf.size());
 }
@@ -94,21 +93,16 @@ std::optional<InvitePayload> decode_invite(const std::string& invite_str) {
 
     std::string b64 = clean.substr(prefix_len);
     auto bytes = base64url_decode(b64);
-    if (!bytes || bytes->size() != INVITE_PAYLOAD_SIZE) {
+    if (!bytes || bytes->size() < 107) {
         return std::nullopt;
     }
 
     InvitePayload payload;
     size_t off = 0;
 
-    std::memcpy(payload.network_id.data(), bytes->data() + off, 32);
-    off += 32;
-
-    std::memcpy(payload.bootstrap_pubkey.data(), bytes->data() + off, 32);
-    off += 32;
-
-    std::memcpy(payload.creator_node_id.data(), bytes->data() + off, 32);
-    off += 32;
+    std::memcpy(payload.network_id.data(), bytes->data() + off, 32); off += 32;
+    std::memcpy(payload.bootstrap_pubkey.data(), bytes->data() + off, 32); off += 32;
+    std::memcpy(payload.creator_node_id.data(), bytes->data() + off, 32); off += 32;
 
     payload.bootstrap_endpoint.ip =
         ((uint32_t)(*bytes)[off] << 24) | ((uint32_t)(*bytes)[off + 1] << 16) |
@@ -125,6 +119,13 @@ std::optional<InvitePayload> decode_invite(const std::string& invite_str) {
     off += 4;
 
     payload.bootstrap_prefix_len = (*bytes)[off++];
+
+    if (off < bytes->size()) {
+        uint8_t name_len = (*bytes)[off++];
+        if (off + name_len <= bytes->size() && name_len > 0) {
+            payload.network_name = std::string((const char*)bytes->data() + off, name_len);
+        }
+    }
 
     return payload;
 }

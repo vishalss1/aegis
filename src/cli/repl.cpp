@@ -21,8 +21,9 @@ int run_repl() {
     std::string line_buffer;
 
     while (!ctx.quit_requested) {
-        if (ctx.state == CliState::Running && !ctx.active_config.iface.address.empty()) {
-            std::cout << "Aegis [" << ctx.active_config.iface.address << "]> ";
+        if (ctx.state == CliState::Running && ctx.tunnel && !ctx.active_config.iface.address.empty()) {
+            std::string net_title = ctx.tunnel->network_name().empty() ? "Mesh" : ctx.tunnel->network_name();
+            std::cout << "Aegis (" << net_title << ") [" << ctx.active_config.iface.address << "]> ";
         } else {
             std::cout << "> ";
         }
