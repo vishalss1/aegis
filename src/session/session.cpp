@@ -1,4 +1,5 @@
 #include "aegis/session/session.hpp"
+#include "aegis/platform/logger.hpp"
 #include <openssl/evp.h>
 #include <cstdio>
 #include <cstring>
@@ -95,7 +96,7 @@ X25519Key SessionManager::derive_master_secret(
 {
     auto opt = x25519_derive_shared_secret(our_priv, their_pub);
     if (!opt) {
-        fprintf(stderr, "[session] derive_master_secret failed\n");
+        aegis_log( "[session] derive_master_secret failed\n");
         return X25519Key{};
     }
     return *opt;
@@ -239,7 +240,7 @@ std::optional<std::vector<uint8_t>> SessionManager::handle_handshake_init(
     std::lock_guard<std::mutex> lock(mtx_);
 
     if (message.size() < HANDSHAKE_PAYLOAD_SIZE) {
-        fprintf(stderr, "[session] handle_handshake_init: short message (%zu)\n",
+        aegis_log( "[session] handle_handshake_init: short message (%zu)\n",
                 message.size());
         return std::nullopt;
     }
@@ -255,7 +256,7 @@ std::optional<std::vector<uint8_t>> SessionManager::handle_handshake_init(
     std::memcpy(received_id.data(), message.data() + 36, 32);
 
     if (received_id != sender_id) {
-        fprintf(stderr, "[session] handle_handshake_init: NodeID mismatch\n");
+        aegis_log( "[session] handle_handshake_init: NodeID mismatch\n");
         return std::nullopt;
     }
 
@@ -266,7 +267,7 @@ std::optional<std::vector<uint8_t>> SessionManager::handle_handshake_init(
     NetworkId peer_network{};
     std::memcpy(peer_network.data(), message.data() + 68, NETWORK_ID_SIZE);
     if (peer_network != identity_.network_id) {
-        fprintf(stderr, "[session] reject handshake init: network mismatch "
+        aegis_log( "[session] reject handshake init: network mismatch "
                         "(peer %02x%02x..., expected net %02x...)\n",
                 received_id[0], received_id[1], identity_.network_id[0]);
         return std::nullopt;
@@ -282,10 +283,10 @@ std::optional<std::vector<uint8_t>> SessionManager::handle_handshake_init(
     derive_keys(sess, secret, session_id, false);
     sess.established = true;
 
-    fprintf(stderr, "[session] session %08x established with ",
+    aegis_log( "[session] session %08x established with ",
             session_id);
-    for (auto b : sender_id) fprintf(stderr, "%02x", b);
-    fprintf(stderr, "\n");
+    for (auto b : sender_id) aegis_log( "%02x", b);
+    aegis_log( "\n");
 
     return build_handshake_message(TYPE_HANDSHAKE_RESP, session_id, ephemeral);
 }
@@ -296,7 +297,7 @@ bool SessionManager::handle_handshake_resp(
     std::lock_guard<std::mutex> lock(mtx_);
 
     if (message.size() < HANDSHAKE_PAYLOAD_SIZE) {
-        fprintf(stderr, "[session] handle_handshake_resp: short message (%zu)\n",
+        aegis_log( "[session] handle_handshake_resp: short message (%zu)\n",
                 message.size());
         return false;
     }
@@ -306,7 +307,7 @@ bool SessionManager::handle_handshake_resp(
     resp_session_id = bswap32(resp_session_id);
 
     if (resp_session_id != session_id) {
-        fprintf(stderr, "[session] handle_handshake_resp: session_id mismatch "
+        aegis_log( "[session] handle_handshake_resp: session_id mismatch "
                 "(got %08x, expected %08x)\n", resp_session_id, session_id);
         return false;
     }
@@ -323,7 +324,7 @@ bool SessionManager::handle_handshake_resp(
     NetworkId peer_network{};
     std::memcpy(peer_network.data(), message.data() + 68, NETWORK_ID_SIZE);
     if (peer_network != identity_.network_id) {
-        fprintf(stderr, "[session] reject handshake resp: network mismatch "
+        aegis_log( "[session] reject handshake resp: network mismatch "
                         "(peer %02x%02x...)\n",
                 peer_id[0], peer_id[1]);
         ephemerals_.erase(session_id);
@@ -332,7 +333,7 @@ bool SessionManager::handle_handshake_resp(
 
     auto eit = ephemerals_.find(session_id);
     if (eit == ephemerals_.end()) {
-        fprintf(stderr, "[session] handle_handshake_resp: no ephemeral for "
+        aegis_log( "[session] handle_handshake_resp: no ephemeral for "
                 "session %08x\n", session_id);
         return false;
     }
@@ -346,10 +347,10 @@ bool SessionManager::handle_handshake_resp(
     derive_keys(sess, secret, session_id, true);
     sess.established = true;
 
-    fprintf(stderr, "[session] session %08x established with ",
+    aegis_log( "[session] session %08x established with ",
             session_id);
-    for (auto b : peer_id) fprintf(stderr, "%02x", b);
-    fprintf(stderr, "\n");
+    for (auto b : peer_id) aegis_log( "%02x", b);
+    aegis_log( "\n");
 
     return true;
 }
@@ -425,7 +426,7 @@ std::optional<std::vector<uint8_t>> SessionManager::encrypt_message(
             sess.send_key, nonce,
             plaintext, pt_len, ct_buf, tag_buf,
             hdr_bytes.data(), hdr_bytes.size())) {
-        fprintf(stderr, "[session] encrypt failed\n");
+        aegis_log( "[session] encrypt failed\n");
         return std::nullopt;
     }
 
@@ -443,7 +444,7 @@ std::optional<SessionManager::DecryptedMessage> SessionManager::decrypt_message(
     const uint8_t* data, size_t len)
 {
     if (len < 16 + 12 + CHACHA20_POLY1305_TAG_SIZE) {
-        fprintf(stderr, "[session] decrypt: packet too small (%zu)\n", len);
+        aegis_log( "[session] decrypt: packet too small (%zu)\n", len);
         return std::nullopt;
     }
 
@@ -460,13 +461,13 @@ std::optional<SessionManager::DecryptedMessage> SessionManager::decrypt_message(
                          ((uint32_t)data[14] << 8) | (uint32_t)data[15];
 
     if (hdr.version != PACKET_VERSION) {
-        fprintf(stderr, "[session] decrypt: bad header\n");
+        aegis_log( "[session] decrypt: bad header\n");
         return std::nullopt;
     }
 
     size_t ct_len = hdr.payload_length;
     if (16 + 12 + ct_len + 16 != len) {
-        fprintf(stderr, "[session] decrypt: length mismatch (hdr=%u, wire=%zu)\n",
+        aegis_log( "[session] decrypt: length mismatch (hdr=%u, wire=%zu)\n",
                 hdr.payload_length, len);
         return std::nullopt;
     }
@@ -480,7 +481,7 @@ std::optional<SessionManager::DecryptedMessage> SessionManager::decrypt_message(
     uint64_t wire_seq = ((uint64_t)hdr.sequence_number);
 
     if (!check_replay(sess, wire_seq)) {
-        fprintf(stderr, "[session] drop: replay (seq=%llu)\n",
+        aegis_log( "[session] drop: replay (seq=%llu)\n",
                 (unsigned long long)wire_seq);
         return std::nullopt;
     }
@@ -497,14 +498,14 @@ std::optional<SessionManager::DecryptedMessage> SessionManager::decrypt_message(
 
     uint8_t pt_buf[4096];
     if (ct_len > sizeof(pt_buf)) {
-        fprintf(stderr, "[session] drop: payload too large (%zu)\n", ct_len);
+        aegis_log( "[session] drop: payload too large (%zu)\n", ct_len);
         return std::nullopt;
     }
     if (!chacha20_poly1305_decrypt(
             sess.recv_key, nonce,
             ct_ptr, ct_len, tag_ptr, pt_buf,
             hdr_bytes.data(), hdr_bytes.size())) {
-        fprintf(stderr, "[session] drop: decrypt/auth failure\n");
+        aegis_log( "[session] drop: decrypt/auth failure\n");
         return std::nullopt;
     }
 

@@ -67,6 +67,7 @@ public:
 
     const Identity& identity() const { return identity_; }
     const PeerManager& peers() const { return peers_; }
+    PeerManager& peers() { return peers_; }
     const RoutingEngine& routing() const { return routing_; }
     uint32_t interface_index() const { return adapter_.interface_index(); }
     // Observability: the current session (and its id / established_at) for a

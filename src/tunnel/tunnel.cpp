@@ -2,6 +2,7 @@
 #include "aegis/packet/packet.hpp"
 #include "aegis/packet/relay.hpp"
 #include "aegis/stun/stun.hpp"
+#include "aegis/platform/logger.hpp"
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -33,9 +34,9 @@ bool Tunnel::start(const TunnelConfig& config, const std::string& adapter_name) 
     else
         identity_ = Identity::create(NetworkId{});
 
-    fprintf(stderr, "[tunnel] node_id: ");
-    for (auto b : identity_.node_id) fprintf(stderr, "%02x", b);
-    fprintf(stderr, "\n");
+    aegis_log( "[tunnel] node_id: ");
+    for (auto b : identity_.node_id) aegis_log( "%02x", b);
+    aegis_log( "\n");
 
     session_manager_ = std::make_unique<SessionManager>(identity_);
     peers_.set_session_manager(session_manager_.get());
@@ -64,12 +65,12 @@ bool Tunnel::start(const TunnelConfig& config, const std::string& adapter_name) 
     mbstowcs_s(&converted, wname, adapter_name.c_str(), _TRUNCATE);
 
     if (!adapter_.create(config.local_ip, config.local_prefix, wname)) {
-        fprintf(stderr, "[tunnel] adapter creation failed\n");
+        aegis_log( "[tunnel] adapter creation failed\n");
         return false;
     }
 
     if (!transport_.bind(config.listen_port)) {
-        fprintf(stderr, "[tunnel] bind port %u failed\n", config.listen_port);
+        aegis_log( "[tunnel] bind port %u failed\n", config.listen_port);
         adapter_.close();
         return false;
     }
@@ -87,11 +88,11 @@ bool Tunnel::start(const TunnelConfig& config, const std::string& adapter_name) 
             stun_public_endpoint_ = st_ep;
             uint32_t ip_h = ntohl(st_ep->ip);
             uint16_t port_h = ntohs(st_ep->port);
-            fprintf(stderr, "[tunnel] STUN public endpoint: %u.%u.%u.%u:%u\n",
+            aegis_log( "[tunnel] STUN public endpoint: %u.%u.%u.%u:%u\n",
                     (ip_h >> 24) & 0xFF, (ip_h >> 16) & 0xFF,
                     (ip_h >> 8) & 0xFF, ip_h & 0xFF, port_h);
         } else {
-            fprintf(stderr, "[tunnel] STUN discovery failed for %s\n", server.c_str());
+            aegis_log( "[tunnel] STUN discovery failed for %s\n", server.c_str());
         }
     }
 
@@ -106,11 +107,11 @@ bool Tunnel::start(const TunnelConfig& config, const std::string& adapter_name) 
         announced.port = htons(config.listen_port);
     }
     if (!discovery_.start(identity_, announced)) {
-        fprintf(stderr, "[tunnel] warning: discovery failed to start\n");
+        aegis_log( "[tunnel] warning: discovery failed to start\n");
     }
 
 
-    fprintf(stderr, "[tunnel] listening on %u, %zu configured peer(s)\n",
+    aegis_log( "[tunnel] listening on %u, %zu configured peer(s)\n",
             config.listen_port, config_.peers.size());
 
     transport_.start_receive(
@@ -128,7 +129,7 @@ bool Tunnel::start(const TunnelConfig& config, const std::string& adapter_name) 
         connect_threads_.emplace_back(&Tunnel::connect_loop, this, p);
     }
 
-    fprintf(stderr, "[tunnel] up, %zu bootstrap candidate(s), joining in background\n",
+    aegis_log( "[tunnel] up, %zu bootstrap candidate(s), joining in background\n",
             config_.peers.size());
     return true;
 }
@@ -153,7 +154,7 @@ bool Tunnel::session_established(const NodeId& node_id) const {
 }
 
 void Tunnel::connect_loop(const TunnelPeer& peer) {
-    fprintf(stderr, "[tunnel] connect loop for peer %02x%02x...\n",
+    aegis_log( "[tunnel] connect loop for peer %02x%02x...\n",
             peer.node_id[0], peer.node_id[1]);
     uint32_t backoff_ms = CONNECT_BACKOFF_BASE_MS;
     while (running_) {
@@ -172,9 +173,17 @@ void Tunnel::connect_loop(const TunnelPeer& peer) {
             continue;
         }
 
+        // Use discovery-discovered endpoint if available
+        TunnelPeer active_peer = peer;
+        if (auto p = peers_.get_peer(peer.node_id)) {
+            if (p->endpoint) {
+                active_peer.endpoint = *p->endpoint;
+            }
+        }
+
         // Session is down. The maintenance loop may have marked the peer dead
         // (removing its session and routes); this thread re-establishes it.
-        if (handshake_peer(peer)) {
+        if (handshake_peer(active_peer)) {
             install_configured_routes(peer);
             backoff_ms = CONNECT_BACKOFF_BASE_MS;
             continue;
@@ -199,7 +208,7 @@ void Tunnel::install_configured_routes(const TunnelPeer& peer) {
         r.destination = peer.node_id;
         r.path = {peer.node_id};
         if (!routing_.add_route(r))
-            fprintf(stderr, "[tunnel] warning: route %08x/%u rejected\n",
+            aegis_log( "[tunnel] warning: route %08x/%u rejected\n",
                     aip.prefix, aip.prefix_length);
     }
 }
@@ -210,11 +219,10 @@ bool Tunnel::handshake_peer(const TunnelPeer& peer, bool force) {
 
     peers_.mark_connecting(peer.node_id);
 
-    // Deterministic role: the lower NodeID initiates. Both sides of a pair
-    // compute the same role, which prevents the simultaneous-init race.
-    bool initiator = identity_.node_id < peer.node_id;
+    // Initiate if our NodeID is lower, or if we have an explicit non-zero endpoint for the candidate.
+    bool initiator = (identity_.node_id < peer.node_id) || (peer.endpoint.ip != 0);
 
-    fprintf(stderr, "[tunnel] handshake with peer %02x%02x... (%s)\n",
+    aegis_log( "[tunnel] handshake with peer %02x%02x... (%s)\n",
             peer.node_id[0], peer.node_id[1],
             initiator ? "initiator" : "responder");
 
@@ -244,13 +252,13 @@ bool Tunnel::handshake_peer(const TunnelPeer& peer, bool force) {
                     [&] { return !running_ ||
                              pending_handshakes_[peer.node_id].done; }))
                 break;
-            fprintf(stderr, "[tunnel] handshake retry %d for peer %02x%02x...\n",
+            aegis_log( "[tunnel] handshake retry %d for peer %02x%02x...\n",
                     attempt + 1, peer.node_id[0], peer.node_id[1]);
         }
         if (!running_) return false;
         if (!pending_handshakes_[peer.node_id].done &&
             !session_established(peer.node_id)) {
-            fprintf(stderr, "[tunnel] handshake failed for peer %02x%02x...\n",
+            aegis_log( "[tunnel] handshake failed for peer %02x%02x...\n",
                     peer.node_id[0], peer.node_id[1]);
             return false;
         }
@@ -281,7 +289,7 @@ bool Tunnel::handshake_peer(const TunnelPeer& peer, bool force) {
             peers_.mark_seen(peer.node_id);
             return true;
         }
-        fprintf(stderr, "[tunnel] handshake timed out for peer %02x%02x...\n",
+        aegis_log( "[tunnel] handshake timed out for peer %02x%02x...\n",
                 peer.node_id[0], peer.node_id[1]);
         return false;
     }
@@ -290,7 +298,7 @@ bool Tunnel::handshake_peer(const TunnelPeer& peer, bool force) {
 }
 
 void Tunnel::tx_loop() {
-    fprintf(stderr, "[tunnel] tx loop started\n");
+    aegis_log( "[tunnel] tx loop started\n");
     std::vector<uint8_t> raw;
 
     while (running_) {
@@ -310,7 +318,7 @@ void Tunnel::tx_loop() {
         auto route = routing_.find_route(dest);
         if (!route) {
             if (unrouted_count_ == 0 || (unrouted_count_ % 100) == 0)
-                fprintf(stderr, "[tunnel] no route for %08x, dropping (%u so far)\n",
+                aegis_log( "[tunnel] no route for %08x, dropping (%u so far)\n",
                         dest, unrouted_count_ + 1);
             unrouted_count_++;
             continue;
@@ -319,7 +327,7 @@ void Tunnel::tx_loop() {
         if (route->type == NextHopType::Direct) {
             Peer* peer = peers_.get_peer(route->destination);
             if (!peer || !peer->endpoint) {
-                fprintf(stderr, "[tunnel] peer %02x%02x... has no endpoint, dropping\n",
+                aegis_log( "[tunnel] peer %02x%02x... has no endpoint, dropping\n",
                         (*route).destination[0], (*route).destination[1]);
                 continue;
             }
@@ -327,12 +335,12 @@ void Tunnel::tx_loop() {
             auto enc = session_manager_->encrypt_data(route->destination,
                                                       raw.data(), raw.size());
             if (!enc) {
-                fprintf(stderr, "[tunnel] encrypt failed, dropping packet\n");
+                aegis_log( "[tunnel] encrypt failed, dropping packet\n");
                 continue;
             }
 
             if (!transport_.send(enc->data(), enc->size(), *peer->endpoint)) {
-                fprintf(stderr, "[tunnel] send failed, dropping packet\n");
+                aegis_log( "[tunnel] send failed, dropping packet\n");
             }
             continue;
         }
@@ -351,14 +359,14 @@ void Tunnel::tx_loop() {
             path_keys.push_back(hp->public_key);
         }
         if (path_keys.size() != path.size()) {
-            fprintf(stderr, "[tunnel] relay hop unknown, dropping packet\n");
+            aegis_log( "[tunnel] relay hop unknown, dropping packet\n");
             continue;
         }
 
         auto onion = build_onion(identity_.keypair, path, path_keys,
                                  raw.data(), raw.size());
         if (!onion) {
-            fprintf(stderr, "[tunnel] onion build failed, dropping packet\n");
+            aegis_log( "[tunnel] onion build failed, dropping packet\n");
             continue;
         }
 
@@ -372,24 +380,24 @@ void Tunnel::tx_loop() {
             route->next_hop, TYPE_RELAY, payload.data(), payload.size(),
             FLAG_RELAY);
         if (!frame) {
-            fprintf(stderr, "[tunnel] relay encrypt failed, dropping packet\n");
+            aegis_log( "[tunnel] relay encrypt failed, dropping packet\n");
             continue;
         }
 
         Peer* first = peers_.get_peer(route->next_hop);
         if (!first || !first->endpoint) {
-            fprintf(stderr, "[tunnel] first hop %02x%02x... has no endpoint, dropping\n",
+            aegis_log( "[tunnel] first hop %02x%02x... has no endpoint, dropping\n",
                     route->next_hop[0], route->next_hop[1]);
             continue;
         }
         if (!transport_.send(frame->data(), frame->size(), *first->endpoint))
-            fprintf(stderr, "[tunnel] relay send failed, dropping packet\n");
+            aegis_log( "[tunnel] relay send failed, dropping packet\n");
     }
-    fprintf(stderr, "[tunnel] tx loop ended\n");
+    aegis_log( "[tunnel] tx loop ended\n");
 }
 
 void Tunnel::gossip_loop() {
-    fprintf(stderr, "[tunnel] gossip loop started\n");
+    aegis_log( "[tunnel] gossip loop started\n");
     while (running_) {
         std::this_thread::sleep_for(std::chrono::milliseconds(GOSSIP_INTERVAL_MS));
         if (!running_) break;
@@ -400,14 +408,14 @@ void Tunnel::gossip_loop() {
         // (e.g. B in A-B-C) would otherwise never relay C/D onward to A.
         announce_peer_table(std::nullopt);
     }
-    fprintf(stderr, "[tunnel] gossip loop ended\n");
+    aegis_log( "[tunnel] gossip loop ended\n");
 }
 
 void Tunnel::send_keepalive(const Peer& peer) {
     auto frame = session_manager_->encrypt_message(
         peer.node_id, TYPE_KEEPALIVE, nullptr, 0);
     if (!frame) {
-        fprintf(stderr, "[tunnel] keepalive encrypt failed for %02x%02x...\n",
+        aegis_log( "[tunnel] keepalive encrypt failed for %02x%02x...\n",
                 peer.node_id[0], peer.node_id[1]);
         return;
     }
@@ -424,10 +432,10 @@ void Tunnel::rekey_peer(const NodeId& node_id) {
     tp.public_key = p->public_key;
     tp.endpoint = *p->endpoint;
     if (handshake_peer(tp, /*force=*/true))
-        fprintf(stderr, "[tunnel] rekey complete for %02x%02x...\n",
+        aegis_log( "[tunnel] rekey complete for %02x%02x...\n",
                 node_id[0], node_id[1]);
     else
-        fprintf(stderr, "[tunnel] rekey failed for %02x%02x...\n",
+        aegis_log( "[tunnel] rekey failed for %02x%02x...\n",
                 node_id[0], node_id[1]);
 }
 
@@ -461,7 +469,7 @@ void Tunnel::rekey_due() {
 }
 
 void Tunnel::maintenance_loop() {
-    fprintf(stderr, "[tunnel] maintenance loop started\n");
+    aegis_log( "[tunnel] maintenance loop started\n");
     while (running_) {
         std::this_thread::sleep_for(std::chrono::milliseconds(MAINTENANCE_TICK_MS));
         if (!running_) break;
@@ -480,7 +488,7 @@ void Tunnel::maintenance_loop() {
             peers_.mark_dead(peer->node_id);
             session_manager_->remove_session(peer->node_id);
             routing_.remove_route(peer->node_id);
-            fprintf(stderr, "[tunnel] peer %02x%02x... marked dead\n",
+            aegis_log( "[tunnel] peer %02x%02x... marked dead\n",
                     peer->node_id[0], peer->node_id[1]);
         }
 
@@ -495,7 +503,7 @@ void Tunnel::maintenance_loop() {
         // 5) Rekey established sessions older than the interval.
         rekey_due();
     }
-    fprintf(stderr, "[tunnel] maintenance loop ended\n");
+    aegis_log( "[tunnel] maintenance loop ended\n");
 }
 
 void Tunnel::refresh_endpoints_from_discovery() {
@@ -510,7 +518,7 @@ void Tunnel::refresh_endpoints_from_discovery() {
         if (peer->endpoint && *peer->endpoint == presence.reachable_endpoint)
             continue;
         peers_.update_endpoint(id, presence.reachable_endpoint);
-        fprintf(stderr, "[tunnel] discovery updated endpoint for %02x%02x... -> %08x:%04x\n",
+        aegis_log( "[tunnel] discovery updated endpoint for %02x%02x... -> %08x:%04x\n",
                 id[0], id[1], ntohl(presence.reachable_endpoint.ip),
                 ntohs(presence.reachable_endpoint.port));
     }
@@ -530,7 +538,7 @@ void Tunnel::rx_callback(const uint8_t* data, size_t len, Endpoint sender) {
         if (auto sess = session_manager_->get_session_by_id(sid))
             peers_.mark_seen((*sess)->peer_id, sender);
         if (!adapter_.write_packet(*dec)) {
-            fprintf(stderr, "[tunnel] write_packet failed\n");
+            aegis_log( "[tunnel] write_packet failed\n");
         }
         return;
     }
@@ -576,7 +584,7 @@ void Tunnel::rx_callback(const uint8_t* data, size_t len, Endpoint sender) {
             [&](const auto& kv) { return kv.second.session_id == sid; });
         if (it == pending_handshakes_.end()) return;
         if (it->second.peer_id != peer_id) {
-            fprintf(stderr, "[tunnel] handshake resp NodeID mismatch\n");
+            aegis_log( "[tunnel] handshake resp NodeID mismatch\n");
             return;
         }
         if (session_manager_->handle_handshake_resp(payload, sid)) {
@@ -593,10 +601,10 @@ void Tunnel::rx_callback(const uint8_t* data, size_t len, Endpoint sender) {
         NodeId sender_id{};
         std::memcpy(sender_id.data(), payload.data() + 36, 32);
 
-        // Static config for now: only handshake with peers we know.
+        // If incoming handshake is from an unknown peer, record endpoint so we can respond.
+        // NetworkID match is strictly checked by handle_handshake_init next.
         if (!peers_.has_peer(sender_id)) {
-            fprintf(stderr, "[tunnel] handshake init from unknown peer, dropping\n");
-            return;
+            peers_.upsert(sender_id, Key{}, sender, false);
         }
 
         auto resp_payload = session_manager_->handle_handshake_init(payload, sender_id);
@@ -633,7 +641,7 @@ void Tunnel::handle_relay(const uint8_t* data, size_t len, uint32_t session_id) 
     // with — every layer was keyed to the source's static key, and a relay is
     // only ever a hop between the source and the destination.
     if (msg->payload.size() < NODE_ID_SIZE + ONION_OVERHEAD) {
-        fprintf(stderr, "[tunnel] relay frame too small, dropping\n");
+        aegis_log( "[tunnel] relay frame too small, dropping\n");
         return;
     }
     NodeId source{};
@@ -643,14 +651,14 @@ void Tunnel::handle_relay(const uint8_t* data, size_t len, uint32_t session_id) 
 
     const Peer* sp = peers_.get_peer(source);
     if (!sp) {
-        fprintf(stderr, "[tunnel] relay from unknown source %02x%02x..., dropping\n",
+        aegis_log( "[tunnel] relay from unknown source %02x%02x..., dropping\n",
                 source[0], source[1]);
         return;
     }
 
     auto peeled = peel_onion(identity_.keypair, sp->public_key, blob, blob_len);
     if (!peeled) {
-        fprintf(stderr, "[tunnel] relay layer open failed (source %02x%02x...), dropping\n",
+        aegis_log( "[tunnel] relay layer open failed (source %02x%02x...), dropping\n",
                 source[0], source[1]);
         return;
     }
@@ -661,20 +669,20 @@ void Tunnel::handle_relay(const uint8_t* data, size_t len, uint32_t session_id) 
         if (b != 0) { final = false; break; }
     if (final) {
         if (!adapter_.write_packet(peeled->inner))
-            fprintf(stderr, "[tunnel] relay final write_packet failed\n");
+            aegis_log( "[tunnel] relay final write_packet failed\n");
         return;
     }
 
     // A relay must never peel to itself — that can only come from a broken or
     // malicious path, and forwarding it would spin forever.
     if (peeled->next_hop == identity_.node_id) {
-        fprintf(stderr, "[tunnel] relay loop (next hop is us), dropping\n");
+        aegis_log( "[tunnel] relay loop (next hop is us), dropping\n");
         return;
     }
 
     const Peer* nh = peers_.get_peer(peeled->next_hop);
     if (!nh || !nh->endpoint) {
-        fprintf(stderr, "[tunnel] relay next hop %02x%02x... unreachable, dropping\n",
+        aegis_log( "[tunnel] relay next hop %02x%02x... unreachable, dropping\n",
                 peeled->next_hop[0], peeled->next_hop[1]);
         return;
     }
@@ -688,11 +696,11 @@ void Tunnel::handle_relay(const uint8_t* data, size_t len, uint32_t session_id) 
     auto frame = session_manager_->encrypt_message(
         peeled->next_hop, TYPE_RELAY, fwd.data(), fwd.size(), FLAG_RELAY);
     if (!frame) {
-        fprintf(stderr, "[tunnel] relay forward encrypt failed, dropping\n");
+        aegis_log( "[tunnel] relay forward encrypt failed, dropping\n");
         return;
     }
     if (!transport_.send(frame->data(), frame->size(), *nh->endpoint))
-        fprintf(stderr, "[tunnel] relay forward send failed, dropping\n");
+        aegis_log( "[tunnel] relay forward send failed, dropping\n");
 }
 
 std::vector<AdvertisedPeer> Tunnel::build_advertised_peers() const {
@@ -736,13 +744,13 @@ void Tunnel::send_peer_table(const NodeId& to_peer) {
     auto enc = session_manager_->encrypt_message(
         to_peer, TYPE_PEER_TABLE, payload.data(), payload.size());
     if (!enc) {
-        fprintf(stderr, "[tunnel] encrypt peer table failed\n");
+        aegis_log( "[tunnel] encrypt peer table failed\n");
         return;
     }
     Peer* peer = peers_.get_peer(to_peer);
     if (!peer || !peer->endpoint)
         return;
-    fprintf(stderr, "[tunnel] sent peer table (%zu peer(s)) to %02x%02x...\n",
+    aegis_log( "[tunnel] sent peer table (%zu peer(s)) to %02x%02x...\n",
             advertised.size(), to_peer[0], to_peer[1]);
     transport_.send(enc->data(), enc->size(), *peer->endpoint);
 }
@@ -759,14 +767,14 @@ void Tunnel::announce_peer_table(const std::optional<NodeId>& exclude) {
 void Tunnel::handle_peer_table(const NodeId& sender, const uint8_t* data, size_t len) {
     auto advertised = deserialize_peer_table(data, len);
     if (!advertised) {
-        fprintf(stderr, "[tunnel] peer table parse failed from %02x%02x...\n",
+        aegis_log( "[tunnel] peer table parse failed from %02x%02x...\n",
                 sender[0], sender[1]);
         return;
     }
     size_t routes_installed = 0;
     size_t learned = merge_peer_table(peers_, routing_, *advertised, sender,
                                       identity_.node_id, &routes_installed);
-    fprintf(stderr, "[tunnel] peer table from %02x%02x...: %zu peer(s), %zu new\n",
+    aegis_log( "[tunnel] peer table from %02x%02x...: %zu peer(s), %zu new\n",
             sender[0], sender[1], advertised->size(), learned);
     // Fan out any new knowledge (peers or routes) so the mesh converges without
     // waiting for the next periodic gossip cycle.

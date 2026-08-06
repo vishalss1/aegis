@@ -51,6 +51,13 @@ set(AEGIS_SOURCES
     src/invite/invite.cpp
     src/stun/stun.cpp
     src/platform/platform.cpp
+    src/platform/logger.cpp
+    src/cli/repl.cpp
+    src/cli/input_parser.cpp
+    src/cli/command_registry.cpp
+    src/cli/commands.cpp
+    src/cli/path_picker.cpp
+    src/cli/identity_store.cpp
 )
 
 

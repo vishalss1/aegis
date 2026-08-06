@@ -78,13 +78,18 @@ std::string encode_invite(const InvitePayload& payload) {
 }
 
 std::optional<InvitePayload> decode_invite(const std::string& invite_str) {
+    size_t start = invite_str.find_first_not_of(" \t\r\n\"");
+    if (start == std::string::npos) return std::nullopt;
+    size_t end = invite_str.find_last_not_of(" \t\r\n\"");
+    std::string clean = invite_str.substr(start, end - start + 1);
+
     size_t prefix_len = std::strlen(INVITE_PREFIX);
-    if (invite_str.size() <= prefix_len ||
-        invite_str.compare(0, prefix_len, INVITE_PREFIX) != 0) {
+    if (clean.size() <= prefix_len ||
+        clean.compare(0, prefix_len, INVITE_PREFIX) != 0) {
         return std::nullopt;
     }
 
-    std::string b64 = invite_str.substr(prefix_len);
+    std::string b64 = clean.substr(prefix_len);
     auto bytes = base64url_decode(b64);
     if (!bytes || bytes->size() != INVITE_PAYLOAD_SIZE) {
         return std::nullopt;

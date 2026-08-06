@@ -12,6 +12,7 @@
 #include "aegis/config/config.hpp"
 #include "aegis/invite/invite.hpp"
 #include "aegis/stun/stun.hpp"
+#include "aegis/cli/repl.hpp"
 #include <cstdio>
 
 #include <cstdlib>
@@ -1232,7 +1233,9 @@ int main(int argc, char* argv[]) {
     std::vector<uint8_t> inject_data;
 
     if (argc < 2) {
-        mode_listen = true;
+        int ret = run_repl();
+        platform_cleanup_winsock();
+        return ret;
     } else if (std::strcmp(argv[1], "--invite") == 0) {
         int ret = run_invite(argc, argv);
         platform_cleanup_winsock();

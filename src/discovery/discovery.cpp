@@ -1,6 +1,7 @@
 #include "aegis/discovery/discovery.hpp"
 #include "aegis/packet/header.hpp"
 #include "aegis/session/session.hpp"
+#include "aegis/platform/logger.hpp"
 #include <cstdio>
 #include <cstring>
 #include <chrono>
@@ -56,13 +57,13 @@ bool Discovery::start(const Identity& identity, const Endpoint& endpoint,
     opts.broadcast = true;
     opts.reuseaddr = true;
     if (!socket_.bind(discovery_port_, opts)) {
-        fprintf(stderr, "[discovery] bind port %u failed\n", discovery_port_);
+        aegis_log( "[discovery] bind port %u failed\n", discovery_port_);
         return false;
     }
 
     if (!socket_.start_receive(
             [this](const uint8_t* d, size_t l, Endpoint s) { on_presence(d, l, s); })) {
-        fprintf(stderr, "[discovery] start_receive failed\n");
+        aegis_log( "[discovery] start_receive failed\n");
         return false;
     }
 
@@ -80,7 +81,7 @@ void Discovery::stop() {
 }
 
 void Discovery::announce_loop() {
-    fprintf(stderr, "[discovery] announcing presence on port %u (net %02x...)\n",
+    aegis_log( "[discovery] announcing presence on port %u (net %02x...)\n",
             discovery_port_, identity_->network_id[0]);
     auto packet = build_presence(*identity_, announced_endpoint_);
     Endpoint bcast = Endpoint::from_parts(255, 255, 255, 255, discovery_port_);
@@ -91,7 +92,7 @@ void Discovery::announce_loop() {
     while (running_) {
         if (!socket_.send(packet.data(), packet.size(), bcast) ||
             !socket_.send(packet.data(), packet.size(), lbcast)) {
-            fprintf(stderr, "[discovery] broadcast failed\n");
+            aegis_log( "[discovery] broadcast failed\n");
         }
         for (int i = 0; running_ && i < 10; i++)
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
@@ -101,7 +102,7 @@ void Discovery::announce_loop() {
 void Discovery::on_presence(const uint8_t* data, size_t len, Endpoint sender) {
     auto p = parse_presence(data, len);
     if (!p) {
-        fprintf(stderr, "[discovery] dropped malformed presence from %08x:%04x\n",
+        aegis_log( "[discovery] dropped malformed presence from %08x:%04x\n",
                 ntohl(sender.ip), ntohs(sender.port));
         return;
     }
@@ -125,7 +126,7 @@ void Discovery::on_presence(const uint8_t* data, size_t len, Endpoint sender) {
         std::lock_guard<std::mutex> lock(mtx_);
         presences_[p->node_id] = *p;
     }
-    fprintf(stderr, "[discovery] presence from %02x%02x... (net %02x..., %s) at %08x:%04x\n",
+    aegis_log( "[discovery] presence from %02x%02x... (net %02x..., %s) at %08x:%04x\n",
             p->node_id[0], p->node_id[1], p->network_id[0],
             same_net ? "same network" : "DIFFERENT network",
             ntohl(p->endpoint.ip), ntohs(p->endpoint.port));
