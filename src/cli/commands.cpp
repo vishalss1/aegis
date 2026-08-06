@@ -511,6 +511,17 @@ static int cmd_discover(const ParsedInput& input, CliContext& ctx) {
         disc.stop();
     }
 
+    // Include local node if running an active tunnel
+    if (ctx.tunnel && ctx.state == CliState::Running) {
+        Presence self_p;
+        self_p.node_id = ctx.identity.node_id;
+        self_p.network_id = ctx.identity.network_id;
+        self_p.creator_node_id = ctx.tunnel->creator_node_id();
+        self_p.network_name = ctx.tunnel->network_name();
+        self_p.reachable_endpoint = Endpoint{htonl((127 << 24) | 1), htons(ctx.active_config.iface.listen_port)};
+        presences[ctx.identity.node_id] = self_p;
+    }
+
     if (presences.empty()) {
         std::printf("No Aegis network presences discovered on local LAN.\n");
         std::printf("Note: Discovery scans visible LAN presence only. An invite code (/connect <invite>) is required to join.\n");
@@ -518,6 +529,7 @@ static int cmd_discover(const ParsedInput& input, CliContext& ctx) {
     }
 
     struct NetInfo {
+        std::string network_name;
         size_t node_count = 0;
         Endpoint bootstrap_ep;
         NodeId creator_id;
@@ -527,15 +539,19 @@ static int cmd_discover(const ParsedInput& input, CliContext& ctx) {
     for (const auto& [id, p] : presences) {
         auto& ni = nets[p.network_id];
         ni.node_count++;
+        if (!p.network_name.empty()) {
+            ni.network_name = p.network_name;
+        }
         ni.bootstrap_ep = p.reachable_endpoint;
         ni.creator_id = p.creator_node_id;
     }
 
     std::printf("\nDiscovered Aegis Networks on LAN (%zu total):\n", nets.size());
-    std::printf("%-36s %-7s %-22s %-16s\n", "NetworkID (prefix)", "Nodes", "Reachable Endpoint", "Creator (prefix)");
-    std::printf("----------------------------------------------------------------------------------------------------\n");
+    std::printf("%-20s %-34s %-7s %-22s %-16s\n", "Network Name", "NetworkID (prefix)", "Nodes", "Reachable Endpoint", "Creator (prefix)");
+    std::printf("----------------------------------------------------------------------------------------------------------------------\n");
 
     for (const auto& [net_id, info] : nets) {
+        std::string name_str = info.network_name.empty() ? "Aegis Mesh" : info.network_name;
         std::string net_hex = to_hex(net_id.data(), 16);
         std::string creator_hex = to_hex(info.creator_id.data(), 8);
         uint32_t ip_h = ntohl(info.bootstrap_ep.ip);
@@ -545,8 +561,8 @@ static int cmd_discover(const ParsedInput& input, CliContext& ctx) {
                       (ip_h >> 24) & 0xFF, (ip_h >> 16) & 0xFF,
                       (ip_h >> 8) & 0xFF, ip_h & 0xFF, port_h);
 
-        std::printf("%-36s %-7zu %-22s %-16s\n",
-                    net_hex.c_str(), info.node_count, ep_buf, creator_hex.c_str());
+        std::printf("%-20s %-34s %-7zu %-22s %-16s\n",
+                    name_str.c_str(), net_hex.c_str(), info.node_count, ep_buf, creator_hex.c_str());
     }
     std::printf("\nNote: Discovery displays visible networks only. An invite code (/connect <invite>) is required to join.\n\n");
     return 0;

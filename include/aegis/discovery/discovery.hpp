@@ -37,6 +37,7 @@ struct Presence {
     NodeId node_id{};
     NetworkId network_id{};
     NodeId creator_node_id{};
+    std::string network_name;
     Endpoint endpoint{};        // announced endpoint (overlay IP + listen port)
     Endpoint reachable_endpoint{};  // actual connect target: sender IP + announced listen port
     int64_t last_seen_ms = 0;
