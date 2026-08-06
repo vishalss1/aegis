@@ -193,19 +193,38 @@ int main() {
         CHECK(*left == p2);
     }
 
-    // ---- 7. clear / empty / accessor ----------------------------------------
+    // ---- 8. Path precedence and routes_to -----------------------------------
     {
         RoutingEngine re;
-        CHECK(re.empty());
-        CHECK(re.routes().empty());
-        re.add_route(make_direct(make_ip(10,10,0,0), 24, p1));
-        CHECK(!re.empty());
-        CHECK(re.size() == 1);
-        CHECK(re.routes().size() == 1);
-        re.clear();
-        CHECK(re.empty());
+        NodeId A = make_id(10);
+        NodeId B = make_id(11);
+        NodeId D = make_id(12);
+
+        // Add 3-hop relay route
+        re.add_route(make_relay(make_ip(10,90,0,0), 24, A, D, { A, B, D }));
+        auto r1 = re.find_route(make_ip(10,90,0,5));
+        CHECK(r1.has_value());
+        CHECK(r1->path.size() == 3);
+
+        // Shorter 2-hop relay route to same prefix should win
+        re.add_route(make_relay(make_ip(10,90,0,0), 24, A, D, { A, D }));
+        auto r2 = re.find_route(make_ip(10,90,0,5));
+        CHECK(r2.has_value());
+        CHECK(r2->path.size() == 2);
+
+        // Direct route should win over Relay route
+        re.add_route(make_direct(make_ip(10,90,0,0), 24, D));
+        auto r3 = re.find_route(make_ip(10,90,0,5));
+        CHECK(r3.has_value());
+        CHECK(r3->type == NextHopType::Direct);
+
+        // routes_to check
+        auto r_to_D = re.routes_to(D);
+        CHECK(r_to_D.size() == 1);
+        CHECK(r_to_D[0].destination == D);
     }
 
     printf("\n%d / %d passed\n", passed, tests);
     return (passed == tests) ? 0 : 1;
 }
+

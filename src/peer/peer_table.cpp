@@ -121,15 +121,21 @@ size_t merge_peer_table(PeerManager& pm, RoutingEngine& re,
         }
 
         for (const auto& [prefix, prefix_length] : p.prefixes) {
-            bool exists = false;
+            bool skip = false;
             for (const auto& r : re.routes()) {
                 if (r.prefix == prefix && r.prefix_length == prefix_length) {
-                    exists = true;
-                    break;
+                    if (r.type == NextHopType::Direct) {
+                        skip = true;  // Direct route always wins
+                        break;
+                    }
+                    if (r.type == NextHopType::Relay && r.path.size() <= path.size()) {
+                        skip = true;  // Existing relay route is equal or shorter
+                        break;
+                    }
                 }
             }
-            if (exists)
-                continue;  // keep an existing route (e.g. a Direct one) as-is
+            if (skip)
+                continue;
             if (!path_ok)
                 continue;  // a looping path can never be used, do not install
 

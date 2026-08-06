@@ -43,6 +43,7 @@ struct TunnelConfig {
     uint32_t local_ip;                  // network byte order (adapter convention)
     uint8_t  local_prefix;              // e.g. 24
     uint16_t listen_port;               // host byte order
+    std::optional<std::string> stun_server; // e.g. "stun.l.google.com:19302"
     std::vector<TunnelPeer> peers;      // bootstrap candidates
 
     // Step 15 lifecycle tuning (ms). Zero values fall back to the defaults.
@@ -71,6 +72,7 @@ public:
     // Observability: the current session (and its id / established_at) for a
     // peer, so tests can prove a rekey replaced the keys.
     SessionManager* session_manager() const { return session_manager_.get(); }
+    std::optional<Endpoint> stun_public_endpoint() const { return stun_public_endpoint_; }
 
     // Step 14: presences seen via LAN-wide discovery. Deliberately
     // network-agnostic — every node on the LAN is visible regardless of
@@ -87,11 +89,13 @@ private:
     Transport transport_;
     Discovery discovery_;
     TunnelConfig config_;
+    std::optional<Endpoint> stun_public_endpoint_;
 
     Identity identity_;
     std::unique_ptr<SessionManager> session_manager_;
     PeerManager peers_;
     RoutingEngine routing_;
+
 
     std::thread tx_thread_;
     std::thread gossip_thread_;

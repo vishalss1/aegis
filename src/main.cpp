@@ -10,7 +10,10 @@
 #include "aegis/peer/peer.hpp"
 #include "aegis/routing/routing.hpp"
 #include "aegis/config/config.hpp"
+#include "aegis/invite/invite.hpp"
+#include "aegis/stun/stun.hpp"
 #include <cstdio>
+
 #include <cstdlib>
 #include <cstring>
 #include <thread>
@@ -974,9 +977,29 @@ static int run_config(const std::string& path) {
         return 1;
     }
     tcfg.listen_port = app.iface.listen_port;
+    tcfg.stun_server = app.iface.stun_server;
 
     if (app.network_id)
         tcfg.identity = Identity::create(*app.network_id);
+
+    if (app.invite) {
+        auto inv = decode_invite(*app.invite);
+        if (!inv) {
+            fprintf(stderr, "error: invalid invite code in config\n");
+            return 1;
+        }
+        if (!tcfg.identity)
+            tcfg.identity = Identity::create(inv->network_id);
+        TunnelPeer tp;
+        tp.node_id = hash_public_key(inv->bootstrap_pubkey);
+        tp.public_key = inv->bootstrap_pubkey;
+        tp.endpoint = inv->bootstrap_endpoint;
+        AllowedIP aip;
+        aip.prefix = inv->bootstrap_prefix;
+        aip.prefix_length = inv->bootstrap_prefix_len;
+        tp.allowed_ips.push_back(aip);
+        tcfg.peers.push_back(std::move(tp));
+    }
 
     for (const auto& pc : app.peers) {
         TunnelPeer tp;
@@ -996,6 +1019,7 @@ static int run_config(const std::string& path) {
         }
         tcfg.peers.push_back(std::move(tp));
     }
+
 
     if (tcfg.peers.empty())
         fprintf(stderr, "[config] no peers configured — node runs presence-only\n");
@@ -1113,6 +1137,79 @@ static int run_transport_test() {
     return 0;
 }
 
+// ---- invite ----------------------------------------------------------------
+static int run_invite(int argc, char* argv[]) {
+    if (argc < 3) {
+        fprintf(stderr, "usage: aegis --invite generate <network_id_hex> <pubkey_hex> <endpoint> <prefix_cidr>\n"
+                        "       aegis --invite decode <invite_code>\n");
+        return 1;
+    }
+    if (std::strcmp(argv[2], "generate") == 0) {
+        if (argc < 7) {
+            fprintf(stderr, "usage: aegis --invite generate <network_id_hex> <pubkey_hex> <endpoint> <prefix_cidr>\n");
+            return 1;
+        }
+        std::vector<uint8_t> nid_bytes, pk_bytes;
+        if (!parse_hex(argv[3], nid_bytes) || nid_bytes.size() != NETWORK_ID_SIZE) {
+            fprintf(stderr, "error: invalid network_id_hex (expected 64 hex chars)\n");
+            return 1;
+        }
+        if (!parse_hex(argv[4], pk_bytes) || pk_bytes.size() != KEY_SIZE) {
+            fprintf(stderr, "error: invalid pubkey_hex (expected 64 hex chars)\n");
+            return 1;
+        }
+        Endpoint ep;
+        if (!parse_endpoint(argv[5], ep)) {
+            fprintf(stderr, "error: invalid endpoint (expected host:port)\n");
+            return 1;
+        }
+        uint32_t prefix = 0;
+        uint8_t plen = 0;
+        if (!parse_cidr(argv[6], prefix, plen)) {
+            fprintf(stderr, "error: invalid prefix_cidr (expected a.b.c.d/plen)\n");
+            return 1;
+        }
+
+        InvitePayload p;
+        std::memcpy(p.network_id.data(), nid_bytes.data(), 32);
+        std::memcpy(p.bootstrap_pubkey.data(), pk_bytes.data(), 32);
+        p.bootstrap_endpoint = ep;
+        p.bootstrap_prefix = prefix;
+        p.bootstrap_prefix_len = plen;
+
+        std::string invite = encode_invite(p);
+        printf("%s\n", invite.c_str());
+        return 0;
+    } else if (std::strcmp(argv[2], "decode") == 0) {
+        if (argc < 4) {
+            fprintf(stderr, "usage: aegis --invite decode <invite_code>\n");
+            return 1;
+        }
+        auto p = decode_invite(argv[3]);
+        if (!p) {
+            fprintf(stderr, "error: invalid invite code\n");
+            return 1;
+        }
+        printf("NetworkID:        ");
+        for (auto b : p->network_id) printf("%02x", b);
+        printf("\nBootstrap PubKey: ");
+        for (auto b : p->bootstrap_pubkey) printf("%02x", b);
+        uint32_t ip_h = ntohl(p->bootstrap_endpoint.ip);
+        uint16_t port_h = ntohs(p->bootstrap_endpoint.port);
+        printf("\nEndpoint:         %u.%u.%u.%u:%u",
+               (ip_h >> 24) & 0xFF, (ip_h >> 16) & 0xFF,
+               (ip_h >> 8) & 0xFF, ip_h & 0xFF, port_h);
+        uint32_t pref_h = ntohl(p->bootstrap_prefix);
+        printf("\nAllowed Prefix:   %u.%u.%u.%u/%u\n",
+               (pref_h >> 24) & 0xFF, (pref_h >> 16) & 0xFF,
+               (pref_h >> 8) & 0xFF, pref_h & 0xFF, p->bootstrap_prefix_len);
+        return 0;
+    } else {
+        fprintf(stderr, "error: unknown --invite action '%s' (expected generate or decode)\n", argv[2]);
+        return 1;
+    }
+}
+
 // ---- main ------------------------------------------------------------------
 int main(int argc, char* argv[]) {
     setvbuf(stdout, nullptr, _IONBF, 0);
@@ -1136,7 +1233,12 @@ int main(int argc, char* argv[]) {
 
     if (argc < 2) {
         mode_listen = true;
+    } else if (std::strcmp(argv[1], "--invite") == 0) {
+        int ret = run_invite(argc, argv);
+        platform_cleanup_winsock();
+        return ret;
     } else if (std::strcmp(argv[1], "--listen") == 0) {
+
         mode_listen = true;
     } else if (std::strcmp(argv[1], "--ping-test") == 0) {
         mode_ping_test = true;

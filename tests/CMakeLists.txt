@@ -62,6 +62,16 @@ add_executable(test_config test_config.cpp ../src/config/config.cpp)
 target_include_directories(test_config PRIVATE ../include)
 add_test(NAME test_config COMMAND test_config)
 
+add_executable(test_invite test_invite.cpp ../src/invite/invite.cpp ../src/identity/identity.cpp ../src/crypto/x25519.cpp)
+target_include_directories(test_invite PRIVATE ../include)
+target_link_libraries(test_invite OpenSSL::Crypto ws2_32)
+add_test(NAME test_invite COMMAND test_invite)
+
+add_executable(test_stun test_stun.cpp ../src/stun/stun.cpp ../src/platform/platform.cpp)
+target_include_directories(test_stun PRIVATE ../include)
+target_link_libraries(test_stun ws2_32)
+add_test(NAME test_stun COMMAND test_stun)
+
 add_custom_target(check
     COMMAND test_packet
     COMMAND test_transport
@@ -76,5 +86,8 @@ add_custom_target(check
     COMMAND test_relay
     COMMAND test_discovery
     COMMAND test_config
+    COMMAND test_invite
+    COMMAND test_stun
     COMMENT "Running all unit tests"
 )
+

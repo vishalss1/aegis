@@ -40,8 +40,10 @@ public:
     size_t size() const;
     bool empty() const;
     std::vector<Route> routes() const;
+    std::vector<Route> routes_to(const NodeId& dest) const;
 
 private:
     mutable std::mutex mtx_;
     std::vector<Route> routes_;
 };
+

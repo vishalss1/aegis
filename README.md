@@ -4,7 +4,7 @@
 
 ### Windows-Native Secure Overlay Network Mesh
 
-A production-grade, user-space **encrypted overlay network** built in **C++20** — handling identity-based routing, multi-hop onion relaying, mesh bootstrapping, peer gossip, session rekeying, and cryptographic security at every layer.
+A production-grade, user-space **encrypted overlay network** built in **C++** — handling identity-based routing, multi-hop onion relaying, mesh bootstrapping, peer gossip, session rekeying, and cryptographic security at every layer.
 
 [![Build](https://github.com/vishalss1/aegis/actions/workflows/build.yml/badge.svg)](https://github.com/vishalss1/aegis/actions/workflows/build.yml)
 ![C++20](https://img.shields.io/badge/C++20-MSVC-00599C?style=flat&logo=cplusplus)
@@ -78,7 +78,7 @@ A few design choices that shaped how Aegis works.
                    └─────────┬──────────┘
                              │
          ┌───────────────────┴──────────────────────────┐
-         │                Aegis Overlay Stack            │
+         │                Aegis Overlay Stack           │
          │                                              │
          │  ┌───────────────────────────────────────┐   │
          │  │          Packet Engine                │   │
@@ -86,34 +86,34 @@ A few design choices that shaped how Aegis works.
          │  │  IP Packet → Encrypted Frame          │   │
          │  │  Encrypted Frame → Relay Payload      │   │
          │  └───────────────┬───────────────────────┘   │
-         │                  │                            │
+         │                  │                           │
          │  ┌───────────────┴───────────────────────┐   │
          │  │          Routing Engine               │   │
          │  │  prefix → next-hop → peer (NodeID)    │   │
          │  │  Direct routes + Relay routes         │   │
-         │  │  Loop detection · mutex-serialised     │   │
+         │  │  Loop detection · mutex-serialised    │   │
          │  └───────────────┬───────────────────────┘   │
-         │                  │                            │
+         │                  │                           │
          │  ┌───────────────┴───────────────────────┐   │
          │  │          Session Manager              │   │
          │  │  X25519 handshake · rekeying          │   │
          │  │  ChaCha20-Poly1305 · replay windows   │   │
-         │  │  NetworkID gate · grace-window retire  │   │
+         │  │  NetworkID gate · grace-window retire │   │
          │  └───────────────┬───────────────────────┘   │
-         │                  │                            │
+         │                  │                           │
          │  ┌───────────────┴───────────────────────┐   │
          │  │          Peer Manager                 │   │
          │  │  NodeID-indexed peer table            │   │
          │  │  Endpoint tracking · health state     │   │
          │  │  Peer table gossip (no IP in wire)    │   │
          │  └───────────────┬───────────────────────┘   │
-         │                  │                            │
+         │                  │                           │
          │  ┌───────────────┴───────────────────────┐   │
          │  │          Identity Module              │   │
          │  │  NodeID = BLAKE2b(PublicKey)          │   │
          │  │  Static X25519 keypair · NetworkID    │   │
          │  └───────────────┬───────────────────────┘   │
-         │                  │                            │
+         │                  │                           │
          │  ┌───────────────┴───────────────────────┐   │
          │  │          Transport Layer              │   │
          │  │  Winsock UDP · keep-alives            │   │
@@ -122,7 +122,7 @@ A few design choices that shaped how Aegis works.
          └───────────────────┼──────────────────────────┘
                              │ Encrypted UDP datagrams
                    ┌─────────┴──────────┐
-                   │    UDP / Winsock    │
+                   │    UDP / Winsock   │
                    └─────────┬──────────┘
                              │
                          Internet
@@ -258,11 +258,13 @@ aegis/
 │       ├── crypto/             # X25519 and ChaCha20-Poly1305 primitives
 │       ├── discovery/          # LAN presence broadcasts
 │       ├── identity/           # NodeID, NetworkID, static keypair
+│       ├── invite/             # AEGIS1 invite code encoder/decoder
 │       ├── packet/             # IP packet, encrypted frame, relay payload types
 │       ├── peer/               # Peer table, gossip, peer state
 │       ├── platform/           # Windows privilege check + UAC elevation
 │       ├── routing/            # Route table — prefix → next-hop → peer
 │       ├── session/            # Handshake, rekeying, replay window, grace retire
+│       ├── stun/               # RFC 5389 STUN Binding Request & mapped address discovery
 │       ├── transport/          # Winsock UDP socket send/receive
 │       └── tunnel/             # Integrated data path — tx/rx loops, maintenance
 ├── src/                        # Implementation .cpp files (mirrors include/aegis/)
@@ -273,6 +275,7 @@ aegis/
 │   ├── crypto/chacha20poly1305.cpp
 │   ├── discovery/discovery.cpp
 │   ├── identity/identity.cpp
+│   ├── invite/invite.cpp       # AEGIS1 invite string encoding & decoding
 │   ├── packet/packet.cpp
 │   ├── packet/relay.cpp        # build_onion / peel_onion
 │   ├── peer/peer.cpp
@@ -280,9 +283,10 @@ aegis/
 │   ├── platform/platform.cpp
 │   ├── routing/routing.cpp
 │   ├── session/session.cpp
+│   ├── stun/stun.cpp           # STUN client for WAN endpoint discovery
 │   ├── transport/transport.cpp
 │   └── tunnel/tunnel.cpp       # tx_loop, rx_loop, maintenance loop
-├── tests/                      # CTest unit test suite — 13 binaries
+├── tests/                      # CTest unit test suite — 15 binaries
 │   ├── test_packet.cpp
 │   ├── test_transport.cpp
 │   ├── test_crypto.cpp
@@ -295,16 +299,20 @@ aegis/
 │   ├── test_peer_table.cpp
 │   ├── test_relay.cpp
 │   ├── test_discovery.cpp
-│   └── test_config.cpp
+│   ├── test_config.cpp
+│   ├── test_invite.cpp
+│   └── test_stun.cpp
 ├── docs/                       # Engineering design documentation
 │   ├── architecture.md         # Full component overview + version plan
 │   ├── crypto.md               # KDF, key derivation, onion layer keys
+│   ├── invite.md               # AEGIS1 invite code format specification
 │   ├── packet-format.md        # Layer structs and wire serialisation diagrams
 │   ├── protocol.md             # Wire format, handshake, rekey, keep-alive
 │   ├── routing.md              # Route table, next-hop types, packet flow
 │   ├── windows-networking.md   # Winsock + IP Helper API integration details
 │   └── wintun.md               # Wintun SDK layout, API usage, privilege notes
 └── wintun/                     # Wintun SDK (include/ + bin/amd64/ + bin/x86/)
+
     ├── include/wintun.h
     └── bin/
         ├── amd64/wintun.dll
@@ -372,8 +380,10 @@ aegis.exe --tunnel <local_ip> <prefix> <listen_port>
           [--network <hex64>]
           [--peer <nodeid_hex> <pubkey_hex> <ip> <port> <allowed_cidr> ...]
 
-  --config <file>      Run from YAML config file. Auto-elevates via UAC.
-  --tunnel ...         Start a mesh node from command-line flags.
+  --config <file>                             Run from YAML config file. Auto-elevates via UAC.
+  --invite generate <netid> <pk> <ep> <cidr> Generate an AEGIS1 invite code string.
+  --invite decode <invite_code>               Decode and display an AEGIS1 invite code.
+  --tunnel ...                                Start a mesh node from command-line flags.
 ```
 
 ### Diagnostic / Self-Test Modes
@@ -414,13 +424,15 @@ interface:
   address: 10.10.0.1/24
   # Physical UDP port — Winsock binds here for all overlay traffic
   listen_port: 51820
+  # Optional STUN server for WAN public IP:port discovery (RFC 5389)
+  stun_server: stun.l.google.com:19302
 
 identity:
   # 256-bit NetworkID as 64 lowercase hex characters.
   # All nodes in the same mesh must share this value.
-  # Absent = all-zero default network (only peers each other with other
-  # all-zero nodes; useful for isolated testing).
   network_id: 0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20
+  # Alternatively, supply an AEGIS1 invite code:
+  # invite: AEGIS1:AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyCGqP_u3cy7qgARIjNEVWZ3iJmqu8zd7v8AESIzRFVmdwJxAMtsygIACgog
 
 peer:
   # Each entry is a bootstrap candidate. The node joins whichever
@@ -458,6 +470,8 @@ build\bin\Release\test_relay.exe
 build\bin\Release\test_peer_table.exe
 build\bin\Release\test_routing.exe
 build\bin\Release\test_config.exe
+build\bin\Release\test_invite.exe
+build\bin\Release\test_stun.exe
 REM ... etc.
 ```
 
@@ -473,26 +487,29 @@ Unit test coverage:
 | `test_tunnel` | Nonce counter arithmetic, wire format round-trip, AEAD integration |
 | `test_session` | Handshake initiation/response, key derivation, replay window, rekey grace |
 | `test_peer` | Multi-peer table — states, endpoints, session lookup, health tracking |
-| `test_routing` | Prefix → next-hop → peer resolution, Direct/Relay/Unknown types, loop rejection |
+| `test_routing` | Prefix → next-hop → peer resolution, Direct/Relay/Unknown types, loop rejection, tie-breaking |
 | `test_peer_table` | TYPE_PEER_TABLE wire encoding/decoding, gossip merge, IP-stripping |
 | `test_relay` | `build_onion` / `peel_onion` — layer construction, per-hop decryption, innermost injection |
 | `test_discovery` | LAN presence broadcast format, NetworkID extraction, endpoint parsing |
 | `test_config` | YAML parsing, strict validation, unknown-key rejection, malformed value errors |
+| `test_invite` | AEGIS1 invite code encoding, decoding, validation, round-trip |
+| `test_stun` | RFC 5389 STUN Binding Request formatting, XOR-MAPPED-ADDRESS parsing |
 
 ---
 
 ## Roadmap
 
-Decided architecture, not yet implemented or open questions from `CLAUDE.md`:
+Decided architecture & implementation status:
 
 | Item | Status |
 |:-----|:-------|
-| **NAT Traversal** | Open — relaying/onion routing substitutes for direct paths, but STUN/ICE-style hole punching is not yet designed. Peer discovery is restricted to the local subnet broadcast domain; remote/WAN discovery requires manual bootstrap endpoints. |
-| **Onion Path Selection** | Open — hop count, relay selection policy, and prevention of a relay learning both origin and destination simultaneously |
-| **NetworkID Distribution** | Open — exact out-of-band mechanism: manual config, QR pairing, or invite flow |
+| **NAT Traversal (STUN)** | Implemented — RFC 5389 STUN discovery resolves public WAN `IP:port` for presence broadcasts; relaying/onion routing substitutes for direct hole-punched paths |
+| **Onion Path Selection** | Implemented — Routing Engine selects shortest valid path; min 2-hop relay policy enforced for multi-hop onion frames |
+| **NetworkID Distribution** | Implemented — `AEGIS1:<base64url>` compact invite codes for out-of-band network sharing via CLI and YAML config |
 | **Peer Gossip Convergence** | Implemented — fan-out on session establish, periodic 3s loop, path validation |
 | **Relay / Onion Routing** | Implemented — `TYPE_RELAY`, `build_onion`, `peel_onion`, identity hidden per threat model |
-| **NAT Traversal Refinements** | Stretch goal |
+| **NAT Traversal Refinements** | Stretch goal — ICE/STUN symmetric hole-punching |
+
 
 ---
 

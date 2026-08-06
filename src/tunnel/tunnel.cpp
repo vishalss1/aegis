@@ -1,6 +1,7 @@
 #include "aegis/tunnel/tunnel.hpp"
 #include "aegis/packet/packet.hpp"
 #include "aegis/packet/relay.hpp"
+#include "aegis/stun/stun.hpp"
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -73,16 +74,41 @@ bool Tunnel::start(const TunnelConfig& config, const std::string& adapter_name) 
         return false;
     }
 
+    // Optional STUN external address discovery
+    stun_public_endpoint_ = std::nullopt;
+    if (config_.stun_server) {
+        std::string server = *config_.stun_server;
+        size_t colon = server.rfind(':');
+        std::string host = (colon != std::string::npos) ? server.substr(0, colon) : server;
+        uint16_t port = (colon != std::string::npos) ? (uint16_t)std::atoi(server.c_str() + colon + 1) : 3478;
+
+        auto st_ep = stun_discover(host, port, config.listen_port);
+        if (st_ep) {
+            stun_public_endpoint_ = st_ep;
+            uint32_t ip_h = ntohl(st_ep->ip);
+            uint16_t port_h = ntohs(st_ep->port);
+            fprintf(stderr, "[tunnel] STUN public endpoint: %u.%u.%u.%u:%u\n",
+                    (ip_h >> 24) & 0xFF, (ip_h >> 16) & 0xFF,
+                    (ip_h >> 8) & 0xFF, ip_h & 0xFF, port_h);
+        } else {
+            fprintf(stderr, "[tunnel] STUN discovery failed for %s\n", server.c_str());
+        }
+    }
+
     // Step 14: LAN-wide presence. Announce on the shared discovery port and
     // listen for every other node's presence — same network or not (visible
-    // presence, unreachable across networks). The announced endpoint is the
-    // overlay address + listen port.
+    // presence, unreachable across networks).
     Endpoint announced{};
-    announced.ip = config.local_ip;
-    announced.port = htons(config.listen_port);
+    if (stun_public_endpoint_) {
+        announced = *stun_public_endpoint_;
+    } else {
+        announced.ip = config.local_ip;
+        announced.port = htons(config.listen_port);
+    }
     if (!discovery_.start(identity_, announced)) {
         fprintf(stderr, "[tunnel] warning: discovery failed to start\n");
     }
+
 
     fprintf(stderr, "[tunnel] listening on %u, %zu configured peer(s)\n",
             config.listen_port, config_.peers.size());

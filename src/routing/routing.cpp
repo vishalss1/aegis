@@ -49,14 +49,28 @@ static uint32_t prefix_mask(uint32_t prefix_length) {
 std::optional<Route> RoutingEngine::find_route(uint32_t dest_ip) const {
     std::lock_guard<std::mutex> lock(mtx_);
     const Route* best = nullptr;
-    uint32_t best_prefix_len = 0;
 
     for (const auto& route : routes_) {
         uint32_t mask = prefix_mask(route.prefix_length);
         if ((dest_ip & mask) != (route.prefix & mask)) continue;
-        if (route.prefix_length > best_prefix_len) {
+
+        if (!best) {
             best = &route;
-            best_prefix_len = route.prefix_length;
+            continue;
+        }
+
+        if (route.prefix_length > best->prefix_length) {
+            best = &route;
+        } else if (route.prefix_length == best->prefix_length) {
+            // Direct routes take precedence over Relay routes.
+            if (route.type == NextHopType::Direct && best->type == NextHopType::Relay) {
+                best = &route;
+            } else if (route.type == NextHopType::Relay && best->type == NextHopType::Relay) {
+                // For Relay routes, prefer shorter path length.
+                if (route.path.size() < best->path.size()) {
+                    best = &route;
+                }
+            }
         }
     }
 
@@ -68,7 +82,7 @@ std::optional<Route> RoutingEngine::find_route(uint32_t dest_ip) const {
     // drift out of sync.
     if (best->type == NextHopType::Relay) {
         const auto& path = best->path;
-        if (path.empty() || path.front() != best->next_hop ||
+        if (path.size() < 2 || path.front() != best->next_hop ||
             path.back() != best->destination)
             return std::nullopt;
         std::set<NodeId> seen;
@@ -105,4 +119,15 @@ bool RoutingEngine::empty() const {
 std::vector<Route> RoutingEngine::routes() const {
     std::lock_guard<std::mutex> lock(mtx_);
     return routes_;
+}
+
+std::vector<Route> RoutingEngine::routes_to(const NodeId& dest) const {
+    std::lock_guard<std::mutex> lock(mtx_);
+    std::vector<Route> out;
+    for (const auto& r : routes_) {
+        if (r.destination == dest) {
+            out.push_back(r);
+        }
+    }
+    return out;
 }

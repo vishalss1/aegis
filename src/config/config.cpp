@@ -145,6 +145,11 @@ bool Config::parse_yaml(const std::string& content) {
                 if (!parse_port(value, cfg.iface.listen_port)) return false;
                 continue;
             }
+            if (key == "stun_server") {
+                if (value.empty()) return false;
+                cfg.iface.stun_server = value;
+                continue;
+            }
             fprintf(stderr, "[config] parse_yaml: unknown interface key '%s'\n", key.c_str());
             return false;
         }
@@ -161,9 +166,15 @@ bool Config::parse_yaml(const std::string& content) {
                 cfg.network_id = nid;
                 continue;
             }
+            if (key == "invite") {
+                if (value.empty()) return false;
+                cfg.invite = value;
+                continue;
+            }
             fprintf(stderr, "[config] parse_yaml: unknown identity key '%s'\n", key.c_str());
             return false;
         }
+
 
         if (section == Section::Peers) {
             if (line.rfind("- ", 0) == 0) {

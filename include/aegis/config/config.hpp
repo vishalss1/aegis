@@ -18,13 +18,16 @@ struct PeerConfig {
 struct InterfaceConfig {
     std::string address;                   // "10.10.0.1/24"
     uint16_t listen_port = 0;
+    std::optional<std::string> stun_server; // "stun.l.google.com:19302"
 };
 
 struct AppConfig {
-    InterfaceConfig iface;                   // field name avoids the MSVC `interface` macro
+    InterfaceConfig iface;                 // field name avoids the MSVC `interface` macro
     std::optional<NetworkId> network_id;   // absent -> all-zero default network
+    std::optional<std::string> invite;     // AEGIS1 invite code
     std::vector<PeerConfig> peers;
 };
+
 
 class Config {
 public:

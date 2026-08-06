@@ -15,6 +15,7 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 if(NOT DEFINED WINTUN_DIR)
     set(WINTUN_DIR "${CMAKE_SOURCE_DIR}/wintun" CACHE PATH "Path to Wintun SDK directory")
 endif()
+get_filename_component(WINTUN_DIR "${WINTUN_DIR}" ABSOLUTE)
 if(EXISTS "${WINTUN_DIR}/include/wintun.h")
     add_library(wintun INTERFACE)
     target_include_directories(wintun INTERFACE "${WINTUN_DIR}/include")
@@ -23,6 +24,7 @@ if(EXISTS "${WINTUN_DIR}/include/wintun.h")
     else()
         set(WINTUN_DLL "${WINTUN_DIR}/bin/x86/wintun.dll")
     endif()
+
 else()
     message(FATAL_ERROR "Wintun SDK not found in ${WINTUN_DIR}. "
         "Download from https://www.wintun.net/ and set WINTUN_DIR.")
@@ -46,8 +48,11 @@ set(AEGIS_SOURCES
     src/packet/relay.cpp
     src/discovery/discovery.cpp
     src/config/config.cpp
+    src/invite/invite.cpp
+    src/stun/stun.cpp
     src/platform/platform.cpp
 )
+
 
 add_executable(aegis ${AEGIS_SOURCES})
 
