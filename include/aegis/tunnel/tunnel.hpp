@@ -89,6 +89,18 @@ public:
     bool broadcast_chat(const std::string& text);
     bool send_file(const std::string& filepath, const std::optional<NodeId>& target_peer = std::nullopt);
 
+    // Network Ownership & Teardown
+    bool is_creator() const { return is_creator_; }
+    const NodeId& creator_node_id() const { return creator_node_id_; }
+    void set_creator_node_id(const NodeId& cid, bool is_creator = false) {
+        creator_node_id_ = cid;
+        is_creator_ = is_creator;
+        identity_.creator_node_id = cid;
+    }
+
+    bool delete_network();
+    void leave_network();
+
 
 private:
     Adapter adapter_;
@@ -98,6 +110,8 @@ private:
     std::optional<Endpoint> stun_public_endpoint_;
 
     Identity identity_;
+    NodeId creator_node_id_{};
+    bool is_creator_ = false;
     std::unique_ptr<SessionManager> session_manager_;
     PeerManager peers_;
     RoutingEngine routing_;

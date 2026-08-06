@@ -677,6 +677,27 @@ void Tunnel::rx_callback(const uint8_t* data, size_t len, Endpoint sender) {
         return;
     }
 
+    if (type == TYPE_NETWORK_TEARDOWN) {
+        if (!running_) return;
+        auto msg = session_manager_->decrypt_message(data, len);
+        if (!msg || msg->payload.size() < 32) return;
+
+        auto sess = session_manager_->get_session_by_id(sid);
+        if (!sess) return;
+        NodeId sender = (*sess)->peer_id;
+
+        if (sender == creator_node_id_) {
+            std::printf("\n[Network]: Network was destroyed by creator (%02x%02x...). Disconnecting session...\n",
+                        sender[0], sender[1]);
+            std::fflush(stdout);
+            std::thread([this]() { stop(); }).detach();
+        } else {
+            aegis_log("[tunnel] dropped teardown request from non-creator %02x%02x...\n",
+                      sender[0], sender[1]);
+        }
+        return;
+    }
+
     if (type == TYPE_HANDSHAKE_RESP) {
         std::vector<uint8_t> payload(data + 16, data + len);
         if (payload.size() < HANDSHAKE_PAYLOAD_SIZE) return;
@@ -1000,4 +1021,39 @@ bool Tunnel::send_file(const std::string& filepath, const std::optional<NodeId>&
 
     std::printf("[Aegis] File '%s' transfer complete!\n", filename.c_str());
     return true;
+}
+
+bool Tunnel::delete_network() {
+    if (!running_) return false;
+    if (!is_creator_) {
+        std::printf("[Aegis] Error: Only the network creator has privilege to delete/destroy this network.\n");
+        return false;
+    }
+    std::printf("[Aegis] Destroying network... Broadcasting teardown signal to all peers.\n");
+    std::vector<Peer*> established_peers;
+    for (auto* p : peers_.all_peers()) {
+        if (session_established(p->node_id)) {
+            established_peers.push_back(p);
+        }
+    }
+    std::vector<uint8_t> payload(32);
+    std::memcpy(payload.data(), identity_.node_id.data(), 32);
+
+    for (auto* peer : established_peers) {
+        auto msg = session_manager_->encrypt_message(
+            peer->node_id, TYPE_NETWORK_TEARDOWN, payload.data(), payload.size());
+        if (msg && peer->endpoint) {
+            transport_.send(msg->data(), msg->size(), *peer->endpoint);
+        }
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    stop();
+    return true;
+}
+
+void Tunnel::leave_network() {
+    if (running_) {
+        std::printf("[Aegis] Disconnecting from mesh network...\n");
+        stop();
+    }
 }

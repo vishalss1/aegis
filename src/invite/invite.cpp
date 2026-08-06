@@ -47,7 +47,7 @@ static std::optional<std::vector<uint8_t>> base64url_decode(const std::string& i
 }
 
 static const char INVITE_PREFIX[] = "AEGIS1:";
-static constexpr size_t INVITE_PAYLOAD_SIZE = 75;
+static constexpr size_t INVITE_PAYLOAD_SIZE = 107;
 
 std::string encode_invite(const InvitePayload& payload) {
     std::vector<uint8_t> buf(INVITE_PAYLOAD_SIZE, 0);
@@ -57,6 +57,9 @@ std::string encode_invite(const InvitePayload& payload) {
     off += 32;
 
     std::memcpy(buf.data() + off, payload.bootstrap_pubkey.data(), 32);
+    off += 32;
+
+    std::memcpy(buf.data() + off, payload.creator_node_id.data(), 32);
     off += 32;
 
     buf[off++] = (uint8_t)(payload.bootstrap_endpoint.ip >> 24);
@@ -102,6 +105,9 @@ std::optional<InvitePayload> decode_invite(const std::string& invite_str) {
     off += 32;
 
     std::memcpy(payload.bootstrap_pubkey.data(), bytes->data() + off, 32);
+    off += 32;
+
+    std::memcpy(payload.creator_node_id.data(), bytes->data() + off, 32);
     off += 32;
 
     payload.bootstrap_endpoint.ip =

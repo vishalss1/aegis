@@ -86,6 +86,9 @@ static bool start_tunnel_helper(CliContext& ctx, const TunnelConfig& tcfg) {
     make_adapter_name_local(tcfg.local_ip, adapter_name, sizeof(adapter_name));
 
     ctx.tunnel = std::make_unique<Tunnel>();
+    bool is_creator = (ctx.identity.creator_node_id == ctx.identity.node_id);
+    ctx.tunnel->set_creator_node_id(ctx.identity.creator_node_id, is_creator);
+
     if (!ctx.tunnel->start(tcfg, adapter_name)) {
         std::printf("Error: Failed to start Aegis tunnel.\n");
         ctx.tunnel.reset();
@@ -174,6 +177,7 @@ static int cmd_config(const ParsedInput& input, CliContext& ctx) {
         NetworkId nid{};
         for (size_t i = 0; i < nid.size(); ++i) nid[i] = (uint8_t)(rand() % 256);
         ctx.identity.network_id = nid;
+        ctx.identity.creator_node_id = ctx.identity.node_id;
 
         TunnelConfig tcfg;
         tcfg.identity = ctx.identity;
@@ -188,7 +192,7 @@ static int cmd_config(const ParsedInput& input, CliContext& ctx) {
         ctx.active_config.network_id = nid;
 
         std::printf("\nGenerated NetworkID: %s\n", to_hex(nid.data(), nid.size()).c_str());
-        std::printf("NodeID:              %s\n", to_hex(ctx.identity.node_id.data(), ctx.identity.node_id.size()).c_str());
+        std::printf("NodeID (Creator):    %s\n", to_hex(ctx.identity.node_id.data(), ctx.identity.node_id.size()).c_str());
 
         return start_tunnel_helper(ctx, tcfg) ? 0 : 1;
     } else if (choice == "2") {
@@ -227,8 +231,10 @@ static int cmd_config(const ParsedInput& input, CliContext& ctx) {
             std::printf("\nNote: Same-machine testing detected (local key matches bootstrap key).\n");
             std::printf("Generating a fresh identity for this node...\n");
             ctx.identity = Identity::create(inv->network_id);
+            ctx.identity.creator_node_id = inv->creator_node_id;
         } else {
             ctx.identity.network_id = inv->network_id;
+            ctx.identity.creator_node_id = inv->creator_node_id;
         }
 
         TunnelConfig tcfg;
@@ -427,6 +433,153 @@ static int cmd_verbose(const ParsedInput& input, CliContext& ctx) {
     return 0;
 }
 
+// Command: /create [overlay_ip] [port]
+static int cmd_create(const ParsedInput& input, CliContext& ctx) {
+    if (ctx.state == CliState::Running && ctx.tunnel) {
+        std::printf("Already connected to an active network. Type /leave first to disconnect.\n");
+        return 0;
+    }
+    std::string addr = "10.10.0.1/24";
+    uint16_t port = 51820;
+
+    if (!input.args.empty()) {
+        addr = input.args[0];
+    }
+    if (input.args.size() >= 2) {
+        port = (uint16_t)std::atoi(input.args[1].c_str());
+    }
+
+    NetworkId nid{};
+    for (size_t i = 0; i < nid.size(); ++i) nid[i] = (uint8_t)(rand() % 256);
+    ctx.identity.network_id = nid;
+    ctx.identity.creator_node_id = ctx.identity.node_id;
+
+    TunnelConfig tcfg;
+    tcfg.identity = ctx.identity;
+    if (!parse_cidr_local(addr.c_str(), tcfg.local_ip, tcfg.local_prefix)) {
+        std::printf("Error: Invalid CIDR format %s\n", addr.c_str());
+        return 1;
+    }
+    tcfg.listen_port = port;
+
+    ctx.active_config.iface.address = addr;
+    ctx.active_config.iface.listen_port = port;
+    ctx.active_config.network_id = nid;
+
+    std::printf("\n[Creating New Mesh Network]\n");
+    std::printf("Generated NetworkID: %s\n", to_hex(nid.data(), nid.size()).c_str());
+    std::printf("NodeID (Creator):    %s\n", to_hex(ctx.identity.node_id.data(), ctx.identity.node_id.size()).c_str());
+
+    if (!start_tunnel_helper(ctx, tcfg)) {
+        return 1;
+    }
+
+    InvitePayload p;
+    p.network_id = ctx.identity.network_id;
+    p.bootstrap_pubkey = ctx.identity.keypair.public_key;
+    p.creator_node_id = ctx.identity.node_id;
+    p.bootstrap_endpoint = Endpoint{htonl((127 << 24) | 1), htons(port)};
+    uint32_t local_ip = 0; uint8_t plen = 0;
+    parse_cidr_local(addr.c_str(), local_ip, plen);
+    p.bootstrap_prefix = local_ip;
+    p.bootstrap_prefix_len = plen;
+
+    std::string invite_code = encode_invite(p);
+    std::printf("\nAEGIS Invite Code for current network:\n%s\n\n", invite_code.c_str());
+    return 0;
+}
+
+// Command: /delete or /destroy
+static int cmd_delete(const ParsedInput& input, CliContext& ctx) {
+    (void)input;
+    if (!ctx.tunnel || ctx.state != CliState::Running) {
+        std::printf("No active network session to delete.\n");
+        return 0;
+    }
+    if (!ctx.tunnel->is_creator()) {
+        std::string cid_hex = to_hex(ctx.tunnel->creator_node_id().data(), 4);
+        std::printf("Error: Only the network creator (%s...) has privilege to delete this network.\n",
+                    cid_hex.c_str());
+        return 0;
+    }
+    ctx.tunnel->delete_network();
+    ctx.tunnel.reset();
+    ctx.state = CliState::NoNetwork;
+    std::printf("Network destroyed. Returned to idle session.\n");
+    return 0;
+}
+
+// Command: /leave or /disconnect
+static int cmd_leave(const ParsedInput& input, CliContext& ctx) {
+    (void)input;
+    if (!ctx.tunnel || ctx.state != CliState::Running) {
+        std::printf("No active network session to leave.\n");
+        return 0;
+    }
+    ctx.tunnel->leave_network();
+    ctx.tunnel.reset();
+    ctx.state = CliState::NoNetwork;
+    std::printf("Left network session. Returned to idle session.\n");
+    return 0;
+}
+
+// Command: /discover or /scan
+static int cmd_discover(const ParsedInput& input, CliContext& ctx) {
+    (void)input;
+    std::map<NodeId, Presence> presences;
+    if (ctx.tunnel) {
+        presences = ctx.tunnel->presences();
+    } else {
+        Discovery disc;
+        Endpoint dummy_ep{0, 0};
+        disc.start(ctx.identity, dummy_ep);
+        std::printf("Scanning local network for Aegis presences (2 seconds)...\n");
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+        presences = disc.presences();
+        disc.stop();
+    }
+
+    if (presences.empty()) {
+        std::printf("No Aegis network presences discovered on local LAN.\n");
+        std::printf("Note: Discovery scans visible LAN presence only. An invite code (/connect <invite>) is required to join.\n");
+        return 0;
+    }
+
+    struct NetInfo {
+        size_t node_count = 0;
+        Endpoint bootstrap_ep;
+        NodeId creator_id;
+    };
+    std::map<NetworkId, NetInfo> nets;
+
+    for (const auto& [id, p] : presences) {
+        auto& ni = nets[p.network_id];
+        ni.node_count++;
+        ni.bootstrap_ep = p.reachable_endpoint;
+        ni.creator_id = p.creator_node_id;
+    }
+
+    std::printf("\nDiscovered Aegis Networks on LAN (%zu total):\n", nets.size());
+    std::printf("%-36s %-7s %-22s %-16s\n", "NetworkID (prefix)", "Nodes", "Reachable Endpoint", "Creator (prefix)");
+    std::printf("----------------------------------------------------------------------------------------------------\n");
+
+    for (const auto& [net_id, info] : nets) {
+        std::string net_hex = to_hex(net_id.data(), 16);
+        std::string creator_hex = to_hex(info.creator_id.data(), 8);
+        uint32_t ip_h = ntohl(info.bootstrap_ep.ip);
+        uint16_t port_h = ntohs(info.bootstrap_ep.port);
+        char ep_buf[32];
+        std::snprintf(ep_buf, sizeof(ep_buf), "%u.%u.%u.%u:%u",
+                      (ip_h >> 24) & 0xFF, (ip_h >> 16) & 0xFF,
+                      (ip_h >> 8) & 0xFF, ip_h & 0xFF, port_h);
+
+        std::printf("%-36s %-7zu %-22s %-16s\n",
+                    net_hex.c_str(), info.node_count, ep_buf, creator_hex.c_str());
+    }
+    std::printf("\nNote: Discovery displays visible networks only. An invite code (/connect <invite>) is required to join.\n\n");
+    return 0;
+}
+
 // Command: /sendfile <path>
 static int cmd_sendfile(const ParsedInput& input, CliContext& ctx) {
     if (input.args.empty()) {
@@ -458,6 +611,13 @@ static int cmd_quit(const ParsedInput& input, CliContext& ctx) {
 void register_cli_commands(CommandRegistry& registry) {
     registry.register_command("help", "List commands", cmd_help);
     registry.register_command("config", "Interactive create-or-join flow / export config", cmd_config);
+    registry.register_command("create", "Create a new mesh network directly", cmd_create);
+    registry.register_command("delete", "Delete/destroy current network (Creator only)", cmd_delete);
+    registry.register_command("destroy", "Delete/destroy current network (Creator only)", cmd_delete);
+    registry.register_command("leave", "Disconnect/leave current network", cmd_leave);
+    registry.register_command("disconnect", "Disconnect/leave current network", cmd_leave);
+    registry.register_command("discover", "Discover active Aegis networks on local LAN", cmd_discover);
+    registry.register_command("scan", "Discover active Aegis networks on local LAN", cmd_discover);
     registry.register_command("invite", "Generate an invite code for the current network", cmd_invite);
     registry.register_command("connect", "Connect to a peer via invite code", cmd_connect);
     registry.register_command("sendfile", "Send a file to mesh peers (/sendfile <path>)", cmd_sendfile);

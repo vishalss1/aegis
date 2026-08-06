@@ -18,6 +18,7 @@ struct Identity {
     X25519KeyPair keypair{};
     NodeId node_id{};
     NetworkId network_id{};
+    NodeId creator_node_id{};
 
     static Identity create(const NetworkId& network_id);
 

@@ -26,6 +26,7 @@ std::vector<uint8_t> Discovery::build_presence(const Identity& identity,
     out.insert(out.end(), hdr_bytes.begin(), hdr_bytes.end());
     out.insert(out.end(), identity.node_id.begin(), identity.node_id.end());
     out.insert(out.end(), identity.network_id.begin(), identity.network_id.end());
+    out.insert(out.end(), identity.creator_node_id.begin(), identity.creator_node_id.end());
     out.insert(out.end(), (const uint8_t*)&endpoint.ip, (const uint8_t*)&endpoint.ip + 4);
     out.insert(out.end(), (const uint8_t*)&endpoint.port, (const uint8_t*)&endpoint.port + 2);
     return out;
@@ -40,8 +41,9 @@ std::optional<Presence> Discovery::parse_presence(const uint8_t* data, size_t le
     Presence p;
     std::memcpy(p.node_id.data(), data + 16, NODE_ID_SIZE);
     std::memcpy(p.network_id.data(), data + 48, NETWORK_ID_SIZE);
-    std::memcpy(&p.endpoint.ip, data + 80, 4);
-    std::memcpy(&p.endpoint.port, data + 84, 2);
+    std::memcpy(p.creator_node_id.data(), data + 80, NODE_ID_SIZE);
+    std::memcpy(&p.endpoint.ip, data + 112, 4);
+    std::memcpy(&p.endpoint.port, data + 116, 2);
     return p;
 }
 

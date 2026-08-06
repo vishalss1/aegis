@@ -59,6 +59,10 @@ void test_help_lists_all_commands() {
 
     assert(registry.has_command("help"));
     assert(registry.has_command("config"));
+    assert(registry.has_command("create"));
+    assert(registry.has_command("delete"));
+    assert(registry.has_command("leave"));
+    assert(registry.has_command("discover"));
     assert(registry.has_command("invite"));
     assert(registry.has_command("connect"));
     assert(registry.has_command("sendfile"));

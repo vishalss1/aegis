@@ -22,19 +22,21 @@
 // Windows dynamically reserves for "Administered port exclusions" (49k+),
 // which intermittently fail bind with WSAEACCES on some systems.
 static constexpr uint16_t DISCOVERY_PORT = 45950;
-static constexpr size_t DISCOVERY_PAYLOAD_SIZE = 70;  // NodeID+NetworkID+endpoint
+static constexpr size_t DISCOVERY_PAYLOAD_SIZE = 102;  // NodeID+NetworkID+CreatorID+endpoint
 
 // Presence wire format (cleartext, pre-session metadata):
-//   [0:16]  PacketHeader (type = TYPE_DISCOVERY, payload_length = 70)
-//   [16:48] NodeID   (32)
-//   [48:80] NetworkID(32)
-//   [80:84] endpoint IP   (4, network byte order)
-//   [84:86] endpoint port (2, network byte order)
+//   [0:16]   PacketHeader (type = TYPE_DISCOVERY, payload_length = 102)
+//   [16:48]  NodeID   (32)
+//   [48:80]  NetworkID(32)
+//   [80:112] CreatorID(32)
+//   [112:116] endpoint IP   (4, network byte order)
+//   [116:118] endpoint port (2, network byte order)
 static constexpr size_t DISCOVERY_FRAME_SIZE = 16 + DISCOVERY_PAYLOAD_SIZE;
 
 struct Presence {
     NodeId node_id{};
     NetworkId network_id{};
+    NodeId creator_node_id{};
     Endpoint endpoint{};        // announced endpoint (overlay IP + listen port)
     Endpoint reachable_endpoint{};  // actual connect target: sender IP + announced listen port
     int64_t last_seen_ms = 0;
