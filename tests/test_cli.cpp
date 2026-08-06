@@ -61,6 +61,7 @@ void test_help_lists_all_commands() {
     assert(registry.has_command("config"));
     assert(registry.has_command("invite"));
     assert(registry.has_command("connect"));
+    assert(registry.has_command("sendfile"));
     assert(registry.has_command("peers"));
     assert(registry.has_command("status"));
     assert(registry.has_command("identity"));

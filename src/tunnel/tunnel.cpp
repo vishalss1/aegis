@@ -9,10 +9,21 @@
 #include <ctime>
 #include <chrono>
 #include <algorithm>
+#include <fstream>
 
 Tunnel::Tunnel() = default;
 
 Tunnel::~Tunnel() { stop(); }
+
+struct IncomingFileTransfer {
+    std::string filename;
+    uint64_t file_size = 0;
+    uint32_t total_chunks = 0;
+    uint32_t received_chunks = 0;
+    std::string output_path;
+};
+static std::mutex g_ft_mtx;
+static std::map<uint64_t, IncomingFileTransfer> g_incoming_transfers;
 
 static uint32_t rand_session_id() {
     // Unique per call within this process (multi-peer needs distinct ids for
@@ -572,6 +583,100 @@ void Tunnel::rx_callback(const uint8_t* data, size_t len, Endpoint sender) {
         return;
     }
 
+    if (type == TYPE_CHAT_MSG) {
+        if (!running_) return;
+        auto msg = session_manager_->decrypt_message(data, len);
+        if (!msg) return;
+        auto sess = session_manager_->get_session_by_id(sid);
+        if (!sess) return;
+        peers_.mark_seen((*sess)->peer_id, sender);
+
+        std::string chat_text((const char*)msg->payload.data(), msg->payload.size());
+        NodeId peer_id = (*sess)->peer_id;
+        std::printf("\n[Peer %02x%02x...]: %s\n", peer_id[0], peer_id[1], chat_text.c_str());
+        std::fflush(stdout);
+        return;
+    }
+
+    if (type == TYPE_FILE_HEADER) {
+        if (!running_) return;
+        auto msg = session_manager_->decrypt_message(data, len);
+        if (!msg || msg->payload.size() < 22) return;
+
+        auto sess = session_manager_->get_session_by_id(sid);
+        if (!sess) return;
+        peers_.mark_seen((*sess)->peer_id, sender);
+
+        const uint8_t* ptr = msg->payload.data();
+        uint64_t transfer_id; std::memcpy(&transfer_id, ptr, 8); ptr += 8;
+        uint64_t file_size; std::memcpy(&file_size, ptr, 8); ptr += 8;
+        uint32_t total_chunks; std::memcpy(&total_chunks, ptr, 4); ptr += 4;
+        uint16_t fn_len; std::memcpy(&fn_len, ptr, 2); ptr += 2;
+        if (msg->payload.size() < 22 + fn_len) return;
+
+        std::string filename((const char*)ptr, fn_len);
+
+        system("mkdir downloads 2>NUL");
+        std::string out_path = "./downloads/" + filename;
+
+        {
+            std::lock_guard<std::mutex> lock(g_ft_mtx);
+            IncomingFileTransfer ft;
+            ft.filename = filename;
+            ft.file_size = file_size;
+            ft.total_chunks = total_chunks;
+            ft.received_chunks = 0;
+            ft.output_path = out_path;
+            g_incoming_transfers[transfer_id] = ft;
+        }
+
+        std::ofstream ofs(out_path, std::ios::binary | std::ios::trunc);
+
+        NodeId peer_id = (*sess)->peer_id;
+        std::printf("\n[Incoming File]: '%s' (%.2f KB, %u chunks) from Peer %02x%02x...\n",
+                    filename.c_str(), (double)file_size / 1024.0, total_chunks,
+                    peer_id[0], peer_id[1]);
+        std::fflush(stdout);
+        return;
+    }
+
+    if (type == TYPE_FILE_CHUNK) {
+        if (!running_) return;
+        auto msg = session_manager_->decrypt_message(data, len);
+        if (!msg || msg->payload.size() < 16) return;
+
+        auto sess = session_manager_->get_session_by_id(sid);
+        if (!sess) return;
+        peers_.mark_seen((*sess)->peer_id, sender);
+
+        const uint8_t* ptr = msg->payload.data();
+        uint64_t transfer_id; std::memcpy(&transfer_id, ptr, 8); ptr += 8;
+        uint32_t chunk_idx; std::memcpy(&chunk_idx, ptr, 4); ptr += 4;
+        uint32_t dlen; std::memcpy(&dlen, ptr, 4); ptr += 4;
+        if (msg->payload.size() < 16 + dlen) return;
+
+        std::lock_guard<std::mutex> lock(g_ft_mtx);
+        auto it = g_incoming_transfers.find(transfer_id);
+        if (it == g_incoming_transfers.end()) return;
+
+        std::fstream fs(it->second.output_path, std::ios::binary | std::ios::in | std::ios::out);
+        if (fs.is_open()) {
+            fs.seekp((uint64_t)chunk_idx * 32768, std::ios::beg);
+            fs.write((const char*)ptr, dlen);
+            fs.close();
+        }
+        it->second.received_chunks++;
+
+        if (it->second.received_chunks >= it->second.total_chunks) {
+            std::printf("\n[File Received]: '%s' (%.2f KB) saved to %s\n",
+                        it->second.filename.c_str(), (double)it->second.file_size / 1024.0,
+                        it->second.output_path.c_str());
+            std::fflush(stdout);
+            g_incoming_transfers.erase(it);
+        }
+        return;
+    }
+
     if (type == TYPE_HANDSHAKE_RESP) {
         std::vector<uint8_t> payload(data + 16, data + len);
         if (payload.size() < HANDSHAKE_PAYLOAD_SIZE) return;
@@ -780,4 +885,119 @@ void Tunnel::handle_peer_table(const NodeId& sender, const uint8_t* data, size_t
     // waiting for the next periodic gossip cycle.
     if (learned > 0 || routes_installed > 0)
         announce_peer_table(sender);
+}
+
+bool Tunnel::broadcast_chat(const std::string& text) {
+    if (!running_) return false;
+    std::vector<Peer*> established_peers;
+    for (auto* p : peers_.all_peers()) {
+        if (session_established(p->node_id)) {
+            established_peers.push_back(p);
+        }
+    }
+    if (established_peers.empty()) {
+        std::printf("[Aegis] No established peers connected to send message.\n");
+        return false;
+    }
+    bool sent_any = false;
+    for (auto* peer : established_peers) {
+        auto msg = session_manager_->encrypt_message(
+            peer->node_id, TYPE_CHAT_MSG, (const uint8_t*)text.data(), text.size());
+        if (msg && peer->endpoint) {
+            transport_.send(msg->data(), msg->size(), *peer->endpoint);
+            sent_any = true;
+        }
+    }
+    return sent_any;
+}
+
+bool Tunnel::send_file(const std::string& filepath, const std::optional<NodeId>& target_peer) {
+    if (!running_) {
+        std::printf("[Aegis] Error: Tunnel is not running.\n");
+        return false;
+    }
+    std::ifstream file(filepath, std::ios::binary | std::ios::ate);
+    if (!file.is_open()) {
+        std::printf("[Aegis] Error: Cannot open file '%s'\n", filepath.c_str());
+        return false;
+    }
+    uint64_t file_size = file.tellg();
+    file.seekg(0, std::ios::beg);
+
+    std::string filename = filepath;
+    size_t last_slash = filename.find_last_of("/\\");
+    if (last_slash != std::string::npos) {
+        filename = filename.substr(last_slash + 1);
+    }
+
+    constexpr uint32_t CHUNK_SIZE = 32768; // 32 KB per chunk
+    uint32_t total_chunks = (uint32_t)((file_size + CHUNK_SIZE - 1) / CHUNK_SIZE);
+    if (total_chunks == 0) total_chunks = 1;
+
+    uint64_t transfer_id = (uint64_t)rand() << 32 | rand();
+
+    std::vector<Peer*> established_peers;
+    for (auto* p : peers_.all_peers()) {
+        if (session_established(p->node_id)) {
+            established_peers.push_back(p);
+        }
+    }
+    if (established_peers.empty()) {
+        std::printf("[Aegis] Error: No established peers connected to receive file.\n");
+        return false;
+    }
+
+    std::printf("[Aegis] Sending file '%s' (%.2f KB, %u chunks) to %zu peer(s)...\n",
+                filename.c_str(), (double)file_size / 1024.0, total_chunks, established_peers.size());
+
+    // Build FILE_HEADER payload
+    std::vector<uint8_t> header_payload;
+    header_payload.resize(8 + 8 + 4 + 2 + filename.size());
+    uint8_t* ptr = header_payload.data();
+    std::memcpy(ptr, &transfer_id, 8); ptr += 8;
+    std::memcpy(ptr, &file_size, 8); ptr += 8;
+    std::memcpy(ptr, &total_chunks, 4); ptr += 4;
+    uint16_t fn_len = (uint16_t)filename.size();
+    std::memcpy(ptr, &fn_len, 2); ptr += 2;
+    std::memcpy(ptr, filename.data(), fn_len);
+
+    for (auto* peer : established_peers) {
+        if (target_peer && peer->node_id != *target_peer) continue;
+        
+        auto frame = session_manager_->encrypt_message(
+            peer->node_id, TYPE_FILE_HEADER, header_payload.data(), header_payload.size());
+        if (frame && peer->endpoint) {
+            transport_.send(frame->data(), frame->size(), *peer->endpoint);
+        }
+    }
+
+    // Stream file chunks
+    std::vector<uint8_t> buffer(CHUNK_SIZE);
+    for (uint32_t chunk_idx = 0; chunk_idx < total_chunks; chunk_idx++) {
+        file.read((char*)buffer.data(), CHUNK_SIZE);
+        size_t bytes_read = file.gcount();
+
+        std::vector<uint8_t> chunk_payload;
+        chunk_payload.resize(8 + 4 + 4 + bytes_read);
+        uint8_t* cptr = chunk_payload.data();
+        std::memcpy(cptr, &transfer_id, 8); cptr += 8;
+        std::memcpy(cptr, &chunk_idx, 4); cptr += 4;
+        uint32_t dlen = (uint32_t)bytes_read;
+        std::memcpy(cptr, &dlen, 4); cptr += 4;
+        std::memcpy(cptr, buffer.data(), bytes_read);
+
+        for (auto* peer : established_peers) {
+            if (target_peer && peer->node_id != *target_peer) continue;
+
+            auto frame = session_manager_->encrypt_message(
+                peer->node_id, TYPE_FILE_CHUNK, chunk_payload.data(), chunk_payload.size());
+            if (frame && peer->endpoint) {
+                transport_.send(frame->data(), frame->size(), *peer->endpoint);
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+
+    std::printf("[Aegis] File '%s' transfer complete!\n", filename.c_str());
+    return true;
 }

@@ -85,6 +85,11 @@ public:
     // them as the peers become available.
     bool session_established(const NodeId& node_id) const;
 
+    // Messaging & File Sharing over active sessions
+    bool broadcast_chat(const std::string& text);
+    bool send_file(const std::string& filepath, const std::optional<NodeId>& target_peer = std::nullopt);
+
+
 private:
     Adapter adapter_;
     Transport transport_;

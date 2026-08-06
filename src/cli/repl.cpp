@@ -57,7 +57,12 @@ int run_repl() {
         } else {
             // Message mode (non-slash input)
             if (!parsed.raw_text.empty()) {
-                std::cout << "(message buffered — not yet routed: \"" << parsed.raw_text << "\")\n";
+                if (ctx.tunnel && ctx.state == CliState::Running) {
+                    std::cout << "[You]: " << parsed.raw_text << "\n";
+                    ctx.tunnel->broadcast_chat(parsed.raw_text);
+                } else {
+                    std::cout << "No active mesh network session. Type /config to create or join one first.\n";
+                }
             }
         }
     }

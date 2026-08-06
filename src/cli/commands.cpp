@@ -427,6 +427,21 @@ static int cmd_verbose(const ParsedInput& input, CliContext& ctx) {
     return 0;
 }
 
+// Command: /sendfile <path>
+static int cmd_sendfile(const ParsedInput& input, CliContext& ctx) {
+    if (input.args.empty()) {
+        std::printf("Usage: /sendfile <file_path>\n");
+        return 0;
+    }
+    if (!ctx.tunnel) {
+        std::printf("Error: No active mesh network session. Run /config first.\n");
+        return 0;
+    }
+    std::string filepath = input.args[0];
+    ctx.tunnel->send_file(filepath);
+    return 0;
+}
+
 // Command: /quit or /exit
 static int cmd_quit(const ParsedInput& input, CliContext& ctx) {
     (void)input;
@@ -445,6 +460,7 @@ void register_cli_commands(CommandRegistry& registry) {
     registry.register_command("config", "Interactive create-or-join flow / export config", cmd_config);
     registry.register_command("invite", "Generate an invite code for the current network", cmd_invite);
     registry.register_command("connect", "Connect to a peer via invite code", cmd_connect);
+    registry.register_command("sendfile", "Send a file to mesh peers (/sendfile <path>)", cmd_sendfile);
     registry.register_command("peers", "List known peers and health state", cmd_peers);
     registry.register_command("status", "Show current node status and active sessions", cmd_status);
     registry.register_command("identity", "Show local NodeID and public key", cmd_identity);
