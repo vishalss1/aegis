@@ -497,22 +497,6 @@ Unit test coverage:
 
 ---
 
-## Roadmap
-
-Decided architecture & implementation status:
-
-| Item | Status |
-|:-----|:-------|
-| **NAT Traversal (STUN)** | Implemented — RFC 5389 STUN discovery resolves public WAN `IP:port` for presence broadcasts; relaying/onion routing substitutes for direct hole-punched paths |
-| **Onion Path Selection** | Implemented — Routing Engine selects shortest valid path; min 2-hop relay policy enforced for multi-hop onion frames |
-| **NetworkID Distribution** | Implemented — `AEGIS1:<base64url>` compact invite codes for out-of-band network sharing via CLI and YAML config |
-| **Peer Gossip Convergence** | Implemented — fan-out on session establish, periodic 3s loop, path validation |
-| **Relay / Onion Routing** | Implemented — `TYPE_RELAY`, `build_onion`, `peel_onion`, identity hidden per threat model |
-| **NAT Traversal Refinements** | Stretch goal — ICE/STUN symmetric hole-punching |
-
-
----
-
 ## Contributing
 
 1. Fork the repository
