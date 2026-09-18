@@ -302,17 +302,8 @@ aegis/
 │   ├── test_config.cpp
 │   ├── test_invite.cpp
 │   └── test_stun.cpp
-├── docs/                       # Engineering design documentation
-│   ├── architecture.md         # Full component overview + version plan
-│   ├── crypto.md               # KDF, key derivation, onion layer keys
-│   ├── invite.md               # AEGIS1 invite code format specification
-│   ├── packet-format.md        # Layer structs and wire serialisation diagrams
-│   ├── protocol.md             # Wire format, handshake, rekey, keep-alive
-│   ├── routing.md              # Route table, next-hop types, packet flow
-│   ├── windows-networking.md   # Winsock + IP Helper API integration details
-│   └── wintun.md               # Wintun SDK layout, API usage, privilege notes
+│
 └── wintun/                     # Wintun SDK (include/ + bin/amd64/ + bin/x86/)
-
     ├── include/wintun.h
     └── bin/
         ├── amd64/wintun.dll

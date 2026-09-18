@@ -47,6 +47,22 @@ std::optional<Presence> Discovery::parse_presence(const uint8_t* data, size_t le
     return p;
 }
 
+std::optional<Presence> Discovery::parse_received_presence(
+    const uint8_t* data, size_t len, Endpoint sender,
+    const NodeId& self_node_id, int64_t observed_at_ms)
+{
+    auto presence = parse_presence(data, len);
+    if (!presence || presence->node_id == self_node_id)
+        return std::nullopt;
+
+    // The announced IP is the peer's overlay address. The routable discovery
+    // target is the datagram's source IP paired with the announced tunnel port.
+    presence->reachable_endpoint.ip = sender.ip;
+    presence->reachable_endpoint.port = presence->endpoint.port;
+    presence->last_seen_ms = observed_at_ms;
+    return presence;
+}
+
 bool Discovery::start(const Identity& identity, const Endpoint& endpoint,
                       uint16_t discovery_port)
 {
@@ -102,27 +118,14 @@ void Discovery::announce_loop() {
 }
 
 void Discovery::on_presence(const uint8_t* data, size_t len, Endpoint sender) {
-    auto p = parse_presence(data, len);
-    if (!p) {
-        aegis_log( "[discovery] dropped malformed presence from %08x:%04x\n",
-                ntohl(sender.ip), ntohs(sender.port));
-        return;
-    }
-
-    // Never record ourselves.
-    if (p->node_id == identity_->node_id)
-        return;
-
-    // The announced endpoint's IP is the peer's *overlay* address, which is not
-    // routable on the LAN. What IS usable is the transport sender of the
-    // presence datagram combined with the announced tunnel listen port — that
-    // is where this node must connect to reach the peer's tunnel.
-    p->reachable_endpoint.ip = sender.ip;
-    p->reachable_endpoint.port = p->endpoint.port;
-
-    p->last_seen_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+    const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
+    auto p = parse_received_presence(
+        data, len, sender, identity_->node_id, now_ms);
+    if (!p)
+        return;
 
+    // Discovery is network-agnostic; the session layer applies network gates.
     bool same_net = (p->network_id == identity_->network_id);
     {
         std::lock_guard<std::mutex> lock(mtx_);

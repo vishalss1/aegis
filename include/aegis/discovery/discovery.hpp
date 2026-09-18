@@ -64,6 +64,13 @@ public:
                                                const Endpoint& endpoint);
     static std::optional<Presence> parse_presence(const uint8_t* data, size_t len);
 
+    // Decode a received presence into the form used by the discovery table.
+    // Kept separate from socket I/O so validation, self-filtering, and endpoint
+    // resolution can be tested deterministically.
+    static std::optional<Presence> parse_received_presence(
+        const uint8_t* data, size_t len, Endpoint sender,
+        const NodeId& self_node_id, int64_t observed_at_ms);
+
 private:
     const Identity* identity_ = nullptr;
     Endpoint announced_endpoint_{};
