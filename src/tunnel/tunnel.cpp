@@ -695,16 +695,16 @@ void Tunnel::rx_callback(const uint8_t* data, size_t len, Endpoint sender) {
 
         auto sess = session_manager_->get_session_by_id(sid);
         if (!sess) return;
-        NodeId sender = (*sess)->peer_id;
+        NodeId requester_id = (*sess)->peer_id;
 
-        if (sender == creator_node_id_) {
+        if (requester_id == creator_node_id_) {
             std::printf("\n[Network]: Network was destroyed by creator (%02x%02x...). Disconnecting session...\n",
-                        sender[0], sender[1]);
+                        requester_id[0], requester_id[1]);
             std::fflush(stdout);
             std::thread([this]() { stop(); }).detach();
         } else {
             aegis_log("[tunnel] dropped teardown request from non-creator %02x%02x...\n",
-                      sender[0], sender[1]);
+                      requester_id[0], requester_id[1]);
         }
         return;
     }

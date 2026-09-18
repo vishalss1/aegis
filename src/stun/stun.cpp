@@ -14,10 +14,10 @@ std::vector<uint8_t> create_stun_binding_request(const uint8_t transaction_id[12
     req[2] = 0x00; // Length: 0
     req[3] = 0x00;
 
-    req[4] = (uint8_t)(STUN_MAGIC_COOKIE >> 24);
-    req[5] = (uint8_t)(STUN_MAGIC_COOKIE >> 16);
-    req[6] = (uint8_t)(STUN_MAGIC_COOKIE >> 8);
-    req[7] = (uint8_t)(STUN_MAGIC_COOKIE);
+    req[4] = static_cast<uint8_t>((STUN_MAGIC_COOKIE >> 24) & 0xFFu);
+    req[5] = static_cast<uint8_t>((STUN_MAGIC_COOKIE >> 16) & 0xFFu);
+    req[6] = static_cast<uint8_t>((STUN_MAGIC_COOKIE >> 8) & 0xFFu);
+    req[7] = static_cast<uint8_t>(STUN_MAGIC_COOKIE & 0xFFu);
 
     std::memcpy(req.data() + 8, transaction_id, 12);
     return req;

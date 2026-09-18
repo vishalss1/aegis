@@ -99,13 +99,18 @@ static bool parse_endpoint(const std::string& s, Endpoint& out) {
         out = Endpoint{ip, htons((uint16_t)port)};
         return true;
     }
-    hostent* he = gethostbyname(host.c_str());
-    if (he && he->h_addrtype == AF_INET && he->h_length == 4) {
-        std::memcpy(&ip, he->h_addr_list[0], 4);
-        out = Endpoint{ip, htons((uint16_t)port)};
-        return true;
-    }
-    return false;
+    addrinfo hints{};
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_DGRAM;
+
+    addrinfo* result = nullptr;
+    if (getaddrinfo(host.c_str(), nullptr, &hints, &result) != 0 || !result)
+        return false;
+
+    const auto* address = reinterpret_cast<const sockaddr_in*>(result->ai_addr);
+    out = Endpoint{address->sin_addr.s_addr, htons((uint16_t)port)};
+    freeaddrinfo(result);
+    return true;
 }
 
 static void make_adapter_name(uint32_t local_ip, char* buf, size_t n) {
@@ -1438,9 +1443,13 @@ int main(int argc, char* argv[]) {
                                  (struct sockaddr*)&from, &fromlen);
                 if (r > 0) {
                     buf[r] = 0;
+                    char source_ip[INET_ADDRSTRLEN]{};
+                    const char* source = inet_ntop(
+                        AF_INET, &from.sin_addr, source_ip, sizeof(source_ip));
                     printf("[main] *** INJECTION CONFIRMED *** listener received %d bytes"
                            " from %s:%d: \"%s\"\n",
-                           r, inet_ntoa(from.sin_addr), ntohs(from.sin_port), buf);
+                            r, source ? source : "<invalid>",
+                            ntohs(from.sin_port), buf);
                 } else {
                     int err = WSAGetLastError();
                     printf("[main] listener error %d (0x%x)"

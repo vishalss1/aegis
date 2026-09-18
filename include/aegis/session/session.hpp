@@ -117,7 +117,7 @@ private:
     std::mutex mtx_;
 
     std::vector<uint8_t> build_handshake_message(
-        uint8_t type, uint32_t session_id,
+        uint32_t session_id,
         const X25519KeyPair& ephemeral) const;
 
     Session& create_session(const NodeId& peer_id, uint32_t session_id);

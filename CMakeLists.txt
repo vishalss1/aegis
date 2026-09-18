@@ -11,6 +11,32 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
+option(AEGIS_WARNINGS_AS_ERRORS "Treat Aegis compiler warnings as errors" OFF)
+
+function(aegis_enable_warnings target)
+    if(MSVC)
+        target_compile_options(${target} PRIVATE
+            /W4
+            /permissive-
+            /Zc:__cplusplus
+        )
+        if(AEGIS_WARNINGS_AS_ERRORS)
+            target_compile_options(${target} PRIVATE /WX)
+        endif()
+    else()
+        target_compile_options(${target} PRIVATE
+            -Wall
+            -Wextra
+            -Wpedantic
+            -Wconversion
+            -Wsign-conversion
+        )
+        if(AEGIS_WARNINGS_AS_ERRORS)
+            target_compile_options(${target} PRIVATE -Werror)
+        endif()
+    endif()
+endfunction()
+
 # Wintun — downloaded or provided by the user
 if(NOT DEFINED WINTUN_DIR)
     set(WINTUN_DIR "${CMAKE_SOURCE_DIR}/wintun" CACHE PATH "Path to Wintun SDK directory")
@@ -18,7 +44,7 @@ endif()
 get_filename_component(WINTUN_DIR "${WINTUN_DIR}" ABSOLUTE)
 if(EXISTS "${WINTUN_DIR}/include/wintun.h")
     add_library(wintun INTERFACE)
-    target_include_directories(wintun INTERFACE "${WINTUN_DIR}/include")
+    target_include_directories(wintun SYSTEM INTERFACE "${WINTUN_DIR}/include")
     if(CMAKE_SIZEOF_VOID_P EQUAL 8)
         set(WINTUN_DLL "${WINTUN_DIR}/bin/amd64/wintun.dll")
     else()
@@ -62,6 +88,7 @@ set(AEGIS_SOURCES
 
 
 add_executable(aegis ${AEGIS_SOURCES})
+aegis_enable_warnings(aegis)
 
 target_include_directories(aegis PRIVATE
     ${CMAKE_SOURCE_DIR}/include

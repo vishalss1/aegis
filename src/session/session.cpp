@@ -70,7 +70,7 @@ std::array<uint8_t, 16> SessionManager::serialize_header(const PacketHeader& hdr
 }
 
 std::vector<uint8_t> SessionManager::build_handshake_message(
-    uint8_t type, uint32_t session_id,
+    uint32_t session_id,
     const X25519KeyPair& ephemeral) const
 {
     std::vector<uint8_t> msg;
@@ -231,7 +231,7 @@ std::vector<uint8_t> SessionManager::create_handshake_init(uint32_t session_id) 
         std::lock_guard<std::mutex> lock(mtx_);
         ephemerals_[session_id] = ephemeral;
     }
-    return build_handshake_message(TYPE_HANDSHAKE_INIT, session_id, ephemeral);
+    return build_handshake_message(session_id, ephemeral);
 }
 
 std::optional<std::vector<uint8_t>> SessionManager::handle_handshake_init(
@@ -288,7 +288,7 @@ std::optional<std::vector<uint8_t>> SessionManager::handle_handshake_init(
     for (auto b : sender_id) aegis_log( "%02x", b);
     aegis_log( "\n");
 
-    return build_handshake_message(TYPE_HANDSHAKE_RESP, session_id, ephemeral);
+    return build_handshake_message(session_id, ephemeral);
 }
 
 bool SessionManager::handle_handshake_resp(

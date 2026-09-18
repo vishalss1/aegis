@@ -3,6 +3,9 @@
 #include "aegis/cli/identity_store.hpp"
 #include "aegis/cli/commands.hpp"
 #include "aegis/invite/invite.hpp"
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include <cassert>
 #include <cstdio>
 #include <fstream>

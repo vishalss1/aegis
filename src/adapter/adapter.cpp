@@ -11,6 +11,7 @@ Adapter::~Adapter() { close(); }
 static void CALLBACK wintun_log(_In_ WINTUN_LOGGER_LEVEL Level,
                                 _In_ DWORD64 Timestamp,
                                 _In_z_ LPCWSTR Message) {
+    (void)Timestamp;
     const char* level_str = "?";
     switch (Level) {
         case WINTUN_LOG_INFO: level_str = "INFO"; break;

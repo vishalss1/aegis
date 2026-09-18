@@ -77,6 +77,29 @@ target_include_directories(test_cli PRIVATE ../include)
 target_link_libraries(test_cli OpenSSL::Crypto ws2_32 wintun iphlpapi)
 add_test(NAME test_cli COMMAND test_cli)
 
+set(AEGIS_TEST_TARGETS
+    test_packet
+    test_transport
+    test_crypto
+    test_aead
+    test_identity
+    test_tunnel
+    test_session
+    test_peer
+    test_routing
+    test_peer_table
+    test_relay
+    test_discovery
+    test_config
+    test_invite
+    test_stun
+    test_cli
+)
+
+foreach(target IN LISTS AEGIS_TEST_TARGETS)
+    aegis_enable_warnings(${target})
+endforeach()
+
 add_custom_target(check
     COMMAND test_packet
     COMMAND test_transport
@@ -96,4 +119,3 @@ add_custom_target(check
     COMMAND test_cli
     COMMENT "Running all unit tests"
 )
-
