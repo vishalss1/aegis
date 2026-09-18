@@ -4,7 +4,7 @@
 
 ### Windows-Native Secure Overlay Network Mesh
 
-A production-grade, user-space **encrypted overlay network** built in **C++** — handling identity-based routing, multi-hop onion relaying, mesh bootstrapping, peer gossip, session rekeying, and cryptographic security at every layer.
+An experimental, user-space **encrypted overlay network** built in **C++** — exploring identity-based routing, multi-hop onion relaying, mesh bootstrapping, peer gossip, and session rekeying.
 
 [![Build](https://github.com/vishalss1/aegis/actions/workflows/build.yml/badge.svg)](https://github.com/vishalss1/aegis/actions/workflows/build.yml)
 ![C++20](https://img.shields.io/badge/C++20-MSVC-00599C?style=flat&logo=cplusplus)
@@ -20,13 +20,24 @@ A production-grade, user-space **encrypted overlay network** built in **C++** �
 
 ## Table of Contents
 
-[What Is Aegis](#what-is-aegis) · [Engineering Decisions](#engineering-decisions) · [Architecture](#architecture) · [Features](#features) · [OTA Security Model](#onion-security-model) · [CI/CD](#cicd-pipeline) · [Tech Stack](#tech-stack) · [Quick Start](#quick-start) · [Usage](#usage) · [Config Format](#configuration-file) · [Testing](#testing) · [Roadmap](#roadmap)
+[Security Status](#security-status) · [What Is Aegis](#what-is-aegis) · [Engineering Decisions](#engineering-decisions) · [Architecture](#architecture) · [Features](#features) · [Onion Security Model](#onion-security-model) · [CI/CD](#cicd-pipeline) · [Tech Stack](#tech-stack) · [Quick Start](#quick-start) · [Usage](#usage) · [Config Format](#configuration-file) · [Testing](#testing)
+
+---
+
+## Security Status
+
+> [!WARNING]
+> Aegis is an experimental prototype and is not ready to protect sensitive or
+> production traffic. The current handshake does not authenticate static peer
+> identities, gossip does not yet enforce the NodeID/public-key binding, and
+> MTU, resource-exhaustion, and reliability protections are incomplete. See
+> [SECURITY.md](SECURITY.md) for the current guarantees and known limitations.
 
 ---
 
 ## What Is Aegis
 
-Most VPNs stop at "two endpoints, one encrypted tunnel." Aegis goes further — every node is a cryptographically identified, remotely controllable compute point in a self-healing mesh. Traffic between non-adjacent nodes is wrapped in **onion-layered encryption** so that no relay learns the original sender's IP or the final destination's payload.
+Most VPNs stop at "two endpoints, one encrypted tunnel." Aegis explores a decentralized mesh in which nodes are addressed by public-key-derived identifiers. The current handshake does not yet authenticate those identifiers. Traffic between non-adjacent nodes can be onion-wrapped, but relays still observe the logical source NodeID, adjacent hops, packet sizes, and timing.
 
 Built as a Windows-native CLI binary that creates a Wintun virtual adapter, Aegis routes overlay traffic through a fully layered stack:
 
@@ -43,15 +54,15 @@ A VPN point-to-point tunnel is only the first application of this overlay. The m
 
 A few design choices that shaped how Aegis works.
 
-**NodeID, not IP, is identity.** Every node's identity is `BLAKE2b(PublicKey)` — a 32-byte `NodeID`. The Peer Manager, Routing Engine, and all protocol headers address peers by NodeID exclusively. A peer that moves IPs or crosses NAT keeps the same identity. Real IPs never travel through gossip — only direct handshake sessions reveal an endpoint to the immediate peer.
+**NodeID, not IP, is the intended identity.** Every node derives a 32-byte `NodeID` as `BLAKE2b(PublicKey)`. The current peer-table merge path does not yet enforce this binding for received gossip, and the session handshake does not prove possession of the corresponding static private key.
 
-**Onion routing is a core requirement, not a stretch goal.** Direct connections reveal IP to the immediate peer by necessity. Hiding identity from non-adjacent nodes and path observers requires multi-hop relaying with layered encryption. Each relay hop decrypts exactly one `ChaCha20-Poly1305` layer keyed by `SHA256("aegis-onion-v1" ‖ X25519(our_priv, source_pub))`. A relay learns only its predecessor and successor — never the origin, destination, or payload.
+**Onion routing is a core requirement, not a stretch goal.** Each hop decrypts one `ChaCha20-Poly1305` layer keyed by `SHA256("aegis-onion-v1" ‖ X25519(our_priv, source_pub))`. The current framing exposes the source NodeID to every relay and does not pad length or timing, so it should not yet be treated as a complete anonymity system.
 
 **A mesh with no fixed entry point.** Nodes are provisioned with a list of bootstrap candidates via out-of-band config. Joining follows an availability-based policy — each candidate gets its own background connect loop with exponential backoff. The node comes up and starts routing immediately even if zero peers are reachable. Whichever candidate becomes available first is used; no node is a server.
 
-**Peer table gossip with IP-stripping.** Once a session exists, every node fans out its full peer table so the mesh converges on all members — not just the bootstrap pair. Critically, **endpoints (IP:port) are never transmitted in gossip**. Remote peers are learned as NodeID + public key + allowed prefixes only. Real IPs never propagate beyond a direct session, preserving the identity-hiding model across the full mesh.
+**Peer table gossip with IP-stripping.** Once a session exists, every node fans out its full peer table so the mesh converges on all members. Endpoints are omitted from gossip, which limits physical-address propagation. Current gossip does not authenticate advertised NodeID/public-key bindings, prefixes, or paths.
 
-**NetworkID gates sessions, not discovery.** Multiple independent meshes can coexist on the same physical LAN. LAN-wide presence broadcasts are network-agnostic — any node sees any other node's presence. But session creation is gated: if a `NetworkID` mismatch is detected before X25519 key derivation, the handshake is silently dropped, no session is created, and no route is ever added. The cross-mesh node is "visible but unreachable."
+**NetworkID gates sessions, not discovery.** A mismatched NetworkID is rejected before a session is created. NetworkID is currently sent in cleartext and must be treated as a mesh selector or bearer value, not peer authentication. LAN presence broadcasts are unauthenticated and network-agnostic.
 
 **Explicit typed layers, no raw byte buffers.** The Packet Engine converts between explicit internal representations at each stage — `IPPacket → EncryptedFrame → RelayPayload → UDPDatagram`. No module reaches past its own layer. This makes each component independently testable and future relay protocol changes local to one module.
 
@@ -117,7 +128,7 @@ A few design choices that shaped how Aegis works.
          │  ┌───────────────┴───────────────────────┐   │
          │  │          Transport Layer              │   │
          │  │  Winsock UDP · keep-alives            │   │
-         │  │  Fragmentation · background rx thread │   │
+         │  │  Datagram I/O · background rx thread │   │
          │  └───────────────┬───────────────────────┘   │
          └───────────────────┼──────────────────────────┘
                              │ Encrypted UDP datagrams
@@ -161,16 +172,16 @@ A few design choices that shaped how Aegis works.
 
 | Feature | What It Does |
 |:--------|:-------------|
-| **Cryptographic Identity** | `NodeID = BLAKE2b(PublicKey)`. Every peer is addressed by NodeID everywhere — Routing Engine, Peer Manager, protocol headers. Survives connection/IP changes (in LAN/bootstrap environments) without re-provisioning. |
-| **X25519 + ChaCha20-Poly1305** | Ephemeral-ephemeral X25519 DH handshake, SHA-256 double-hash KDF. All data encrypted with 96-bit nonces derived from `SessionID ‖ SequenceNumber`. AAD covers the cleartext header preventing tampering. |
-| **Multi-hop Onion Routing** | Traffic between non-adjacent nodes uses layered encryption. Each hop decrypts one layer, learns only the next hop, re-wraps, and forwards. The original source IP and final payload are invisible to relays. |
+| **NodeID Addressing** | Peers are addressed as `NodeID = BLAKE2b(PublicKey)`. Received gossip and the current handshake do not yet securely enforce that identity binding. |
+| **X25519 + ChaCha20-Poly1305** | Ephemeral X25519 derives session keys and ChaCha20-Poly1305 authenticates data frames. The handshake itself does not authenticate static identities or provide transcript key confirmation. |
+| **Multi-hop Onion Routing** | Each hop decrypts one layer and learns the next hop. Relays also receive the source NodeID, and unpadded packet size and timing remain visible. |
 | **Peer Table Gossip** | Full mesh convergence without a coordinator. Every new session triggers a fan-out of the peer table; a periodic 3-second gossip loop ensures far-end peers propagate across multi-hop chains. |
 | **Identity-Hiding Gossip** | Peer tables carry NodeID + public key + IP prefix routes. Physical endpoints are never transmitted in gossip — non-adjacent nodes cannot learn each other's real IP. |
-| **NetworkID Mesh Segmentation** | Multiple independent meshes on the same LAN. Discovery is network-agnostic; sessions are gated by NetworkID at the Session Manager before any key derivation. Mismatch → silent drop, no session, no route. |
+| **NetworkID Mesh Segmentation** | NetworkID mismatches are rejected before session creation. This separates accidental cross-mesh traffic but is not static peer authentication. |
 | **Join-Any-Available Bootstrap** | No fixed entry point, no dedicated server. Each configured candidate gets its own background connect loop with exponential backoff (1s → 30s cap). The node routes immediately; sessions form as peers become reachable. |
 | **Session Keep-Alive & Dead Detection** | Keep-alives every 25s. Dead timeout at 180s removes the session and all routes. Configured peers are re-joined automatically on reconnect, routes reinstalled, peer table re-announced. |
 | **Transparent Rekeying** | Fresh X25519 handshake every 120s driven by the lower-NodeID peer. Prior session retired to a 10s grace window — in-flight packets decrypt cleanly. Replay windows and sequence numbers reset per session ID. |
-| **Endpoint Self-Healing** | Presence broadcasts (LAN-only) carry `reachable_endpoint`. The maintenance loop updates endpoints of **trusted** (bootstrap-configured) peers only — so a peer that changed IPs becomes reconnectable without admin intervention. |
+| **Endpoint Self-Healing** | LAN presences provide endpoint hints for configured peers. Broadcasts are unauthenticated, so these hints can be spoofed and must not yet be considered validated endpoints. |
 | **YAML Config Mode** | `--config <file>` — strict YAML subset parser. Validates all fields, rejects unknown keys. Auto-elevates via UAC (`ShellExecuteW "runas"`) when launched without Administrator rights. |
 | **Replay Protection** | Per-session sliding window of 2048 sequence numbers. Out-of-window and duplicate sequence numbers are silently discarded. |
 | **Explicit Typed Packet Layers** | `IPPacket → EncryptedFrame → RelayPayload → UDPDatagram`. No raw `uint8_t*` passed between modules — each layer owns only its representation. |
@@ -190,21 +201,23 @@ Hop N — Onion Layer Decryption
            layer_key = SHA256("aegis-onion-v1" ‖ X25519(hop_priv, source_pub))
          Decrypts its layer, reads the next_hop NodeID, re-wraps the
          remaining blob under the same source NodeID, forwards to next_hop.
-         The relay sees: one predecessor NodeID, one successor NodeID.
-         The relay does NOT see: origin IP, final destination, payload.
+         The relay sees: the source NodeID, its predecessor, its successor,
+         and observable packet length and timing.
+         The relay does not directly receive the source IP or inner payload.
 
 Final hop — next_hop = 0x00…00
          Source builds the innermost layer with next_hop = all zeros.
          The destination decrypts the last layer and injects the raw
          IP packet directly into its Wintun adapter — no nested frame.
 
-Identity propagation rule (enforced in gossip merge):
+Endpoint propagation rule:
          Endpoints are NEVER sent in TYPE_PEER_TABLE messages.
          A node's real IP is never reachable from gossip alone —
          only from a live direct session that the node itself accepted.
+         NodeID/public-key binding is not yet verified during merge.
 ```
 
-Keys are generated once at node startup (static X25519 keypair). Onion layer keys are static per `(source, hop)` pair — not forward-secret per packet. The per-hop session encryption that carries the relay frame **is** forward-secret (fresh ephemerals per handshake).
+Keys are generated once at node startup (static X25519 keypair). Onion layer keys are static per `(source, hop)` pair and are not forward-secret. Adjacent session keys use fresh ephemeral DH, but the current handshake does not authenticate those ephemeral keys to the static peer identity. See [SECURITY.md](SECURITY.md) before relying on these properties.
 
 ---
 
@@ -346,7 +359,7 @@ cmake --build build --config Release
 > [!IMPORTANT]
 > `aegis.exe` requires **Administrator** privileges to create and configure the Wintun virtual adapter. If launched from an unprivileged console, it will automatically trigger a UAC prompt and relaunch itself elevated.
 
-### Config File Mode (recommended for production)
+### Config File Mode
 
 ```cmd
 aegis.exe --config mesh.yaml
