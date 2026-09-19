@@ -878,8 +878,12 @@ std::vector<AdvertisedPeer> Tunnel::build_advertised_peers() const {
 void Tunnel::send_peer_table(const NodeId& to_peer) {
     auto advertised = build_advertised_peers();
     auto payload = serialize_peer_table(advertised);
+    if (!payload) {
+        aegis_log("[tunnel] peer table exceeds protocol limits\n");
+        return;
+    }
     auto enc = session_manager_->encrypt_message(
-        to_peer, TYPE_PEER_TABLE, payload.data(), payload.size());
+        to_peer, TYPE_PEER_TABLE, payload->data(), payload->size());
     if (!enc) {
         aegis_log( "[tunnel] encrypt peer table failed\n");
         return;

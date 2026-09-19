@@ -16,9 +16,27 @@ static void put_u32(std::vector<uint8_t>& out, uint32_t v) {
     out.push_back((uint8_t)(v));
 }
 
-std::vector<uint8_t> serialize_peer_table(const std::vector<AdvertisedPeer>& peers) {
+std::optional<std::vector<uint8_t>> serialize_peer_table(
+    const std::vector<AdvertisedPeer>& peers) {
+    if (peers.size() > PEER_TABLE_MAX_PEERS)
+        return std::nullopt;
+
+    size_t encoded_size = 3;
+    for (const auto& p : peers) {
+        if (p.path.size() > PEER_TABLE_MAX_PATH_HOPS ||
+            p.prefixes.size() > PEER_TABLE_MAX_PREFIXES)
+            return std::nullopt;
+
+        constexpr size_t fixed_peer_bytes = 32 + 32 + 1 + 1 + 1;
+        const size_t peer_bytes = fixed_peer_bytes + p.path.size() * 32 +
+                                  p.prefixes.size() * 5;
+        if (peer_bytes > PEER_TABLE_MAX_WIRE_BYTES - encoded_size)
+            return std::nullopt;
+        encoded_size += peer_bytes;
+    }
+
     std::vector<uint8_t> out;
-    out.reserve(3 + peers.size() * (32 + 32 + 1 + 8 * 32 + 2 + 5));
+    out.reserve(encoded_size);
     out.push_back(PEER_TABLE_VERSION);
     put_u16(out, (uint16_t)peers.size());
     for (const auto& p : peers) {
@@ -39,13 +57,15 @@ std::vector<uint8_t> serialize_peer_table(const std::vector<AdvertisedPeer>& pee
 
 std::optional<std::vector<AdvertisedPeer>> deserialize_peer_table(
     const uint8_t* data, size_t len) {
-    if (!data || len < 3)
+    if (!data || len < 3 || len > PEER_TABLE_MAX_WIRE_BYTES)
         return std::nullopt;
     size_t off = 0;
     if (data[off++] != PEER_TABLE_VERSION)
         return std::nullopt;
     uint16_t count = ((uint16_t)data[off] << 8) | data[off + 1];
     off += 2;
+    if (count > PEER_TABLE_MAX_PEERS)
+        return std::nullopt;
 
     std::vector<AdvertisedPeer> out;
     out.reserve(count);
@@ -58,6 +78,8 @@ std::optional<std::vector<AdvertisedPeer>> deserialize_peer_table(
         std::memcpy(p.public_key.data(), data + off, 32);
         off += 32;
         uint8_t path_count = data[off++];
+        if (path_count > PEER_TABLE_MAX_PATH_HOPS)
+            return std::nullopt;
         for (uint8_t j = 0; j < path_count; ++j) {
             if (off + 32 > len)
                 return std::nullopt;
@@ -70,6 +92,8 @@ std::optional<std::vector<AdvertisedPeer>> deserialize_peer_table(
             return std::nullopt;
         off += 1;  // flags (reserved)
         uint8_t prefix_count = data[off++];
+        if (prefix_count > PEER_TABLE_MAX_PREFIXES)
+            return std::nullopt;
         for (uint8_t j = 0; j < prefix_count; ++j) {
             if (off + 5 > len)
                 return std::nullopt;

@@ -49,8 +49,11 @@ int main() {
         in.push_back(b);
 
         auto wire = serialize_peer_table(in);
-        CHECK(wire.size() >= 3);
-        auto out = deserialize_peer_table(wire.data(), wire.size());
+        CHECK(wire.has_value());
+        CHECK(wire && wire->size() >= 3);
+        auto out = wire
+            ? deserialize_peer_table(wire->data(), wire->size())
+            : std::nullopt;
         CHECK(out.has_value());
         if (out) {
             CHECK(out->size() == 2);
@@ -76,6 +79,55 @@ int main() {
         std::vector<uint8_t> bad_version = {0x01, 0x00, 0x00};
         CHECK(!deserialize_peer_table(bad_version.data(), bad_version.size()).has_value());
         CHECK(!deserialize_peer_table(nullptr, 0).has_value());
+    }
+
+    // ---- 2b. Peer-table resource limits are enforced ------------------------
+    {
+        const uint16_t excessive_peer_count = PEER_TABLE_MAX_PEERS + 1;
+        std::vector<uint8_t> excessive_peers = {
+            0x02,
+            static_cast<uint8_t>(excessive_peer_count >> 8),
+            static_cast<uint8_t>(excessive_peer_count & 0xFF)
+        };
+        CHECK(!deserialize_peer_table(
+            excessive_peers.data(), excessive_peers.size()).has_value());
+
+        std::vector<uint8_t> excessive_path(68, 0);
+        excessive_path[0] = 0x02;
+        excessive_path[2] = 0x01;
+        excessive_path[67] = PEER_TABLE_MAX_PATH_HOPS + 1;
+        CHECK(!deserialize_peer_table(
+            excessive_path.data(), excessive_path.size()).has_value());
+
+        std::vector<uint8_t> excessive_prefixes(70, 0);
+        excessive_prefixes[0] = 0x02;
+        excessive_prefixes[2] = 0x01;
+        excessive_prefixes[69] = PEER_TABLE_MAX_PREFIXES + 1;
+        CHECK(!deserialize_peer_table(
+            excessive_prefixes.data(), excessive_prefixes.size()).has_value());
+
+        std::vector<uint8_t> oversized(PEER_TABLE_MAX_WIRE_BYTES + 1, 0);
+        oversized[0] = 0x02;
+        CHECK(!deserialize_peer_table(
+            oversized.data(), oversized.size()).has_value());
+
+        std::vector<AdvertisedPeer> too_many_peers(
+            PEER_TABLE_MAX_PEERS + 1);
+        CHECK(!serialize_peer_table(too_many_peers).has_value());
+
+        AdvertisedPeer bounded;
+        bounded.path.resize(PEER_TABLE_MAX_PATH_HOPS);
+        bounded.prefixes.resize(PEER_TABLE_MAX_PREFIXES);
+        auto boundary_wire = serialize_peer_table({bounded});
+        CHECK(boundary_wire.has_value());
+        CHECK(boundary_wire && deserialize_peer_table(
+            boundary_wire->data(), boundary_wire->size()).has_value());
+
+        bounded.path.emplace_back();
+        CHECK(!serialize_peer_table({bounded}).has_value());
+        bounded.path.resize(PEER_TABLE_MAX_PATH_HOPS);
+        bounded.prefixes.emplace_back();
+        CHECK(!serialize_peer_table({bounded}).has_value());
     }
 
     // ---- 3. Merge learns new peers as untrusted relay-only -------------------

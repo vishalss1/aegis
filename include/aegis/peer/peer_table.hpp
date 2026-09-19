@@ -3,10 +3,16 @@
 #include "aegis/identity/identity.hpp"
 #include "aegis/peer/peer.hpp"
 #include "aegis/routing/routing.hpp"
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <utility>
 #include <vector>
+
+inline constexpr size_t PEER_TABLE_MAX_WIRE_BYTES = 60U * 1024U;
+inline constexpr uint16_t PEER_TABLE_MAX_PEERS = 128;
+inline constexpr uint8_t PEER_TABLE_MAX_PATH_HOPS = 8;
+inline constexpr uint8_t PEER_TABLE_MAX_PREFIXES = 16;
 
 // Peer table gossip message (TYPE_PEER_TABLE). Peers are advertised by NodeID
 // + public key + allowed prefixes — NEVER by endpoint. The receiving node must
@@ -36,7 +42,10 @@ struct AdvertisedPeer {
 //     [1]   flags (reserved)
 //     [1]   prefix_count
 //     per prefix: [4] prefix (big-endian value) + [1] prefix_length
-std::vector<uint8_t> serialize_peer_table(const std::vector<AdvertisedPeer>& peers);
+// Serialization fails rather than truncating counts that do not fit the
+// bounded wire format.
+std::optional<std::vector<uint8_t>> serialize_peer_table(
+    const std::vector<AdvertisedPeer>& peers);
 std::optional<std::vector<AdvertisedPeer>> deserialize_peer_table(
     const uint8_t* data, size_t len);
 
