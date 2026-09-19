@@ -39,6 +39,9 @@ public:
 
     void set_session_manager(SessionManager* session_manager);
 
+    // A non-empty public key is an identity binding and is immutable. An
+    // empty placeholder may be populated once, but later conflicting keys are
+    // ignored while non-identity metadata can still be refreshed.
     Peer& upsert(const NodeId& node_id, const Key& public_key,
                  std::optional<Endpoint> endpoint = std::nullopt,
                  bool trusted = false);

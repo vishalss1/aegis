@@ -103,6 +103,34 @@ int main() {
         CHECK(b->state == PeerState::Dead);
     }
 
+    // ---- 2b. Static identity keys are immutable after binding ---------------
+    {
+        PeerManager pm;
+        pm.upsert(bob.node_id, bob.keypair.public_key, ep_bob);
+
+        Endpoint ep_new = Endpoint::from_parts(192, 168, 1, 51, 51831);
+        Peer& existing = pm.upsert(
+            bob.node_id, charlie.keypair.public_key, ep_new);
+
+        CHECK(existing.public_key == bob.keypair.public_key);
+        CHECK(existing.endpoint.has_value());
+        CHECK(existing.endpoint->ip == ep_new.ip);
+        CHECK(existing.endpoint->port == ep_new.port);
+
+        // The unauthenticated v1 handshake currently creates an empty-key
+        // placeholder. It may acquire its first real binding, but that binding
+        // becomes immutable immediately.
+        NodeId placeholder_id = charlie.node_id;
+        pm.upsert(placeholder_id, Key{});
+        CHECK(pm.get_peer(placeholder_id)->public_key == Key{});
+        pm.upsert(placeholder_id, charlie.keypair.public_key);
+        CHECK(pm.get_peer(placeholder_id)->public_key ==
+              charlie.keypair.public_key);
+        pm.upsert(placeholder_id, alice.keypair.public_key);
+        CHECK(pm.get_peer(placeholder_id)->public_key ==
+              charlie.keypair.public_key);
+    }
+
     // ---- 3. Session lookup delegates to Session Manager ---------------------
     {
         SessionManager sm_a(alice);

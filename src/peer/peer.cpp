@@ -5,6 +5,14 @@
 
 PeerManager::PeerManager() = default;
 
+namespace {
+
+bool is_empty_key(const Key& key) {
+    return key == Key{};
+}
+
+}  // namespace
+
 void PeerManager::set_session_manager(SessionManager* session_manager) {
     std::lock_guard<std::mutex> lock(mtx_);
     session_manager_ = session_manager;
@@ -15,7 +23,8 @@ Peer& PeerManager::upsert(const NodeId& node_id, const Key& public_key,
     std::lock_guard<std::mutex> lock(mtx_);
     auto it = peers_.find(node_id);
     if (it != peers_.end()) {
-        it->second.public_key = public_key;
+        if (is_empty_key(it->second.public_key) && !is_empty_key(public_key))
+            it->second.public_key = public_key;
         if (endpoint) it->second.endpoint = endpoint;
         it->second.trusted = trusted;
         return it->second;
