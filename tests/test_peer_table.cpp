@@ -220,6 +220,29 @@ int main() {
             CHECK(route->type == NextHopType::Direct);
     }
 
+    // ---- 7. Forged NodeID/public-key bindings are rejected ------------------
+    {
+        PeerManager pm;
+        RoutingEngine re;
+
+        AdvertisedPeer forged;
+        forged.node_id = charlie.node_id;
+        forged.public_key = dave.keypair.public_key;
+        forged.prefixes.emplace_back(pt_ip(10, 66, 0, 0), 24);
+
+        size_t routes_installed = 99;
+        size_t learned = merge_peer_table(
+            pm, re, {forged}, bob.node_id, alice.node_id,
+            &routes_installed);
+
+        CHECK(learned == 0);
+        CHECK(routes_installed == 0);
+        CHECK(!pm.has_peer(charlie.node_id));
+        CHECK(pm.size() == 0);
+        CHECK(re.empty());
+        CHECK(!re.find_route(pt_ip(10, 66, 0, 1)).has_value());
+    }
+
     printf("--- peer table: %d/%d passed ---\n", passed, tests);
     return passed == tests ? 0 : 1;
 }
