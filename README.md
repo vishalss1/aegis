@@ -29,8 +29,9 @@ An experimental, user-space **encrypted overlay network** built in **C++** — e
 > [!WARNING]
 > Aegis is an experimental prototype and is not ready to protect sensitive or
 > production traffic. The current handshake does not authenticate static peer
-> identities, gossip does not yet enforce the NodeID/public-key binding, and
-> MTU, resource-exhaustion, and reliability protections are incomplete. See
+> identities. Gossip now enforces the NodeID/public-key binding at its merge
+> boundary, but route ownership, MTU, resource-exhaustion, and reliability
+> protections remain incomplete. See
 > [SECURITY.md](SECURITY.md) for the current guarantees and known limitations.
 
 ---
@@ -54,17 +55,17 @@ A VPN point-to-point tunnel is only the first application of this overlay. The m
 
 A few design choices that shaped how Aegis works.
 
-**NodeID, not IP, is the intended identity.** Every node derives a 32-byte `NodeID` as `BLAKE2b(PublicKey)`. The current peer-table merge path does not yet enforce this binding for received gossip, and the session handshake does not prove possession of the corresponding static private key.
+**NodeID, not IP, is the intended identity.** Every node derives a 32-byte `NodeID` as `BLAKE2b(PublicKey)`. Peer-table merge rejects a public key that does not hash to its advertised NodeID, and established non-empty peer keys are immutable through `upsert`. The session handshake still does not prove possession of the corresponding static private key.
 
 **Onion routing is a core requirement, not a stretch goal.** Each hop decrypts one `ChaCha20-Poly1305` layer keyed by `SHA256("aegis-onion-v1" ‖ X25519(our_priv, source_pub))`. The current framing exposes the source NodeID to every relay and does not pad length or timing, so it should not yet be treated as a complete anonymity system.
 
 **A mesh with no fixed entry point.** Nodes are provisioned with a list of bootstrap candidates via out-of-band config. Joining follows an availability-based policy — each candidate gets its own background connect loop with exponential backoff. The node comes up and starts routing immediately even if zero peers are reachable. Whichever candidate becomes available first is used; no node is a server.
 
-**Peer table gossip with IP-stripping.** Once a session exists, every node fans out its full peer table so the mesh converges on all members. Endpoints are omitted from gossip, which limits physical-address propagation. Current gossip does not authenticate advertised NodeID/public-key bindings, prefixes, or paths.
+**Peer table gossip with IP-stripping.** Once a session exists, every node fans out its full peer table so the mesh converges on all members. Endpoints are omitted from gossip, which limits physical-address propagation. Gossip validates advertised NodeID/public-key bindings, but does not authenticate prefix ownership, path origin, or the advertising member's honesty.
 
 **NetworkID gates sessions, not discovery.** A mismatched NetworkID is rejected before a session is created. NetworkID is currently sent in cleartext and must be treated as a mesh selector or bearer value, not peer authentication. LAN presence broadcasts are unauthenticated and network-agnostic.
 
-**Explicit typed layers, no raw byte buffers.** The Packet Engine converts between explicit internal representations at each stage — `IPPacket → EncryptedFrame → RelayPayload → UDPDatagram`. No module reaches past its own layer. This makes each component independently testable and future relay protocol changes local to one module.
+**Layered packet processing.** The Packet Engine separates IP parsing, session framing, relay wrapping, and UDP transport. Some current module boundaries still exchange raw byte buffers and parse fields with manual offsets; bounded typed codecs are planned before the handshake rewrite.
 
 **Rekeying without a new packet type.** Session rekeying is a fresh X25519 handshake with a new session ID — identical to initial connection. The prior session is retired into a 10-second grace window so in-flight packets under the old key still decrypt cleanly. The lower-NodeID peer drives rekeying every 120 seconds. Replay windows and sequence numbers restart per session ID.
 
@@ -172,7 +173,7 @@ A few design choices that shaped how Aegis works.
 
 | Feature | What It Does |
 |:--------|:-------------|
-| **NodeID Addressing** | Peers are addressed as `NodeID = BLAKE2b(PublicKey)`. Received gossip and the current handshake do not yet securely enforce that identity binding. |
+| **NodeID Addressing** | Peers are addressed as `NodeID = BLAKE2b(PublicKey)`. Received gossip enforces that binding; the current handshake does not authenticate it. |
 | **X25519 + ChaCha20-Poly1305** | Ephemeral X25519 derives session keys and ChaCha20-Poly1305 authenticates data frames. The handshake itself does not authenticate static identities or provide transcript key confirmation. |
 | **Multi-hop Onion Routing** | Each hop decrypts one layer and learns the next hop. Relays also receive the source NodeID, and unpadded packet size and timing remain visible. |
 | **Peer Table Gossip** | Full mesh convergence without a coordinator. Every new session triggers a fan-out of the peer table; a periodic 3-second gossip loop ensures far-end peers propagate across multi-hop chains. |
@@ -184,7 +185,7 @@ A few design choices that shaped how Aegis works.
 | **Endpoint Self-Healing** | LAN presences provide endpoint hints for configured peers. Broadcasts are unauthenticated, so these hints can be spoofed and must not yet be considered validated endpoints. |
 | **YAML Config Mode** | `--config <file>` — strict YAML subset parser. Validates all fields, rejects unknown keys. Auto-elevates via UAC (`ShellExecuteW "runas"`) when launched without Administrator rights. |
 | **Replay Protection** | Per-session sliding window of 2048 sequence numbers. Out-of-window and duplicate sequence numbers are silently discarded. |
-| **Explicit Typed Packet Layers** | `IPPacket → EncryptedFrame → RelayPayload → UDPDatagram`. No raw `uint8_t*` passed between modules — each layer owns only its representation. |
+| **Layered Packet Processing** | IP parsing, session framing, relay wrapping, and UDP transport are separate modules. Raw byte-buffer interfaces and manual offsets still exist and require bounded codec replacements. |
 
 ---
 
@@ -214,7 +215,8 @@ Endpoint propagation rule:
          Endpoints are NEVER sent in TYPE_PEER_TABLE messages.
          A node's real IP is never reachable from gossip alone —
          only from a live direct session that the node itself accepted.
-         NodeID/public-key binding is not yet verified during merge.
+         NodeID/public-key binding is verified during merge. Prefix and
+         path ownership are not authenticated.
 ```
 
 Keys are generated once at node startup (static X25519 keypair). Onion layer keys are static per `(source, hop)` pair and are not forward-secret. Adjacent session keys use fresh ephemeral DH, but the current handshake does not authenticate those ephemeral keys to the static peer identity. See [SECURITY.md](SECURITY.md) before relying on these properties.

@@ -30,10 +30,14 @@ The implementation currently provides the following limited properties:
 - Onion layers use ChaCha20-Poly1305 and a distinct static-DH-derived key for
   each source/hop pair.
 - Peer-table gossip omits physical endpoints.
+- Peer-table merge rejects public keys that do not hash to their advertised
+  NodeID, and peer upserts do not replace established non-empty identity keys.
+- Peer-table wire encoding and decoding bound the frame size, advertised peer
+  count, path length, and prefixes per peer.
 - NetworkID mismatches are rejected during the handshake.
 
 These properties do not compensate for the missing peer authentication and
-identity validation described below.
+route-origin authentication described below.
 
 ## Known Critical Limitations
 
@@ -55,15 +59,17 @@ Consequences:
 The planned replacement is a versioned Noise IK handshake with no downgrade to
 the existing format.
 
-### Gossip does not enforce identity binding
+### Gossip identity binding is enforced, but route ownership is not
 
-The identity model defines `NodeID = BLAKE2b(public_key)`, but peer-table merge
-does not currently verify that relationship. Existing peer entries may also
-have their public key replaced by an upsert.
+Peer-table merge now requires `NodeID = BLAKE2b(public_key)` before an entry can
+modify peer or route state. Established non-empty peer keys are immutable
+through `PeerManager::upsert`, closing the direct public-key substitution path.
 
-A malicious member can therefore advertise a victim NodeID with an attacker key
-and influence onion key selection and routing. Gossip entries, paths, prefixes,
-and table sizes are not yet protected by comprehensive resource limits.
+This does not prove that the advertising member owns a prefix or is telling the
+truth about a path. Explicit all-zero-key rejection, observable conflict
+reporting, structured merge results, and in-memory peer/route capacity limits
+also remain incomplete. Wire-level peer counts, path lengths, prefix counts,
+and decoded bytes are bounded.
 
 ### Onion forwarding has weaker privacy than the README previously claimed
 
@@ -80,7 +86,9 @@ static keys.
 
 There is no stateless retry cookie, handshake replay cache, strict session-table
 capacity, or per-source handshake rate limit. Peer, route, retired-session, and
-gossip-derived state are not comprehensively bounded or expired.
+gossip-derived state are not comprehensively bounded or expired. Peer-table
+wire limits prevent oversized gossip frames from allocating without bound, but
+do not cap the persistent peer or route tables.
 
 ### MTU and reliability are not managed
 
@@ -129,8 +137,8 @@ untrusted candidates until an authenticated handshake validates them.
 
 ## Operational Guidance
 
-Until the authenticated handshake, gossip identity binding, state limits, and
-MTU policy are implemented:
+Until the authenticated handshake, persistent state limits, and MTU policy are
+implemented:
 
 - Do not use Aegis for sensitive or production traffic.
 - Do not expose its UDP listener directly to the public Internet.
