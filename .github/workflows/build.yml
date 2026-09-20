@@ -65,7 +65,8 @@ jobs:
           cmake -B build `
             -DWINTUN_DIR="$($wintunDir.FullName)" `
             -DAEGIS_USE_OPENSSL=ON `
-            -DAEGIS_USE_LIBSODIUM=OFF
+            -DAEGIS_USE_LIBSODIUM=OFF `
+            -DAEGIS_WARNINGS_AS_ERRORS=ON
 
       - name: Build
         shell: pwsh
