@@ -66,9 +66,9 @@ modify peer or route state. Established non-empty peer keys are immutable
 through `PeerManager::upsert`, closing the direct public-key substitution path.
 
 This does not prove that the advertising member owns a prefix or is telling the
-truth about a path. Explicit all-zero-key rejection, observable conflict
-reporting, structured merge results, and in-memory peer/route capacity limits
-also remain incomplete. Wire-level peer counts, path lengths, prefix counts,
+truth about a path. All-zero public keys are rejected explicitly. Observable
+conflict reporting, structured merge results, and in-memory peer/route capacity
+limits remain incomplete. Wire-level peer counts, path lengths, prefix counts,
 and decoded bytes are bounded.
 
 ### Onion forwarding has weaker privacy than the README previously claimed

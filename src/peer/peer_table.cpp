@@ -122,10 +122,11 @@ size_t merge_peer_table(PeerManager& pm, RoutingEngine& re,
         if (p.node_id == self || p.node_id == sender)
             continue;
 
-        // NodeID is the hash of the static public key, not a label supplied by
-        // the advertiser. Reject the complete entry before it can affect peer
-        // or route state when that identity binding is invalid.
-        if (hash_public_key(p.public_key) != p.node_id)
+        // A zero X25519 key is not a usable peer identity, even when the
+        // advertiser supplies the NodeID that hashes from those zero bytes.
+        // Reject it explicitly before checking the normal identity binding.
+        if (p.public_key == Key{} ||
+            hash_public_key(p.public_key) != p.node_id)
             continue;
 
         bool is_new = !pm.has_peer(p.node_id);

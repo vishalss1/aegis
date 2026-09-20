@@ -56,8 +56,8 @@ std::optional<std::vector<AdvertisedPeer>> deserialize_peer_table(
 // `routes_installed` (optional out param) is incremented for every prefix that
 // produced a new route, so the caller can re-announce and push new knowledge
 // into the mesh without waiting for the next periodic gossip cycle. Entries
-// whose public key does not hash to their NodeID are rejected without changing
-// peer or route state.
+// whose public key is all zero or does not hash to their NodeID are rejected
+// without changing peer or route state.
 size_t merge_peer_table(PeerManager& pm, RoutingEngine& re,
                         const std::vector<AdvertisedPeer>& advertised,
                         const NodeId& sender, const NodeId& self,

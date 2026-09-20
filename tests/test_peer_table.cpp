@@ -295,6 +295,31 @@ int main() {
         CHECK(!re.find_route(pt_ip(10, 66, 0, 1)).has_value());
     }
 
+    // ---- 8. All-zero public keys are rejected explicitly -------------------
+    {
+        PeerManager pm;
+        RoutingEngine re;
+
+        AdvertisedPeer zero_key_peer;
+        zero_key_peer.public_key = Key{};
+        // This binding passes a hash-only check. The key itself must still be
+        // rejected because an all-zero X25519 public key is not a peer identity.
+        zero_key_peer.node_id = hash_public_key(zero_key_peer.public_key);
+        zero_key_peer.prefixes.emplace_back(pt_ip(10, 67, 0, 0), 24);
+
+        size_t routes_installed = 99;
+        size_t learned = merge_peer_table(
+            pm, re, {zero_key_peer}, bob.node_id, alice.node_id,
+            &routes_installed);
+
+        CHECK(learned == 0);
+        CHECK(routes_installed == 0);
+        CHECK(!pm.has_peer(zero_key_peer.node_id));
+        CHECK(pm.size() == 0);
+        CHECK(re.empty());
+        CHECK(!re.find_route(pt_ip(10, 67, 0, 1)).has_value());
+    }
+
     printf("--- peer table: %d/%d passed ---\n", passed, tests);
     return passed == tests ? 0 : 1;
 }
