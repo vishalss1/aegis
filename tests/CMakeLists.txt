@@ -58,6 +58,32 @@ target_include_directories(test_discovery PRIVATE ../include)
 target_link_libraries(test_discovery OpenSSL::Crypto ws2_32)
 add_test(NAME test_discovery COMMAND test_discovery)
 
+option(AEGIS_ENABLE_LIVE_DISCOVERY_TEST
+    "Build and register the timing-dependent LAN discovery integration test"
+    OFF)
+
+if(AEGIS_ENABLE_LIVE_DISCOVERY_TEST)
+    add_executable(test_discovery_live
+        test_discovery_live.cpp
+        ../src/discovery/discovery.cpp
+        ../src/session/session.cpp
+        ../src/identity/identity.cpp
+        ../src/crypto/x25519.cpp
+        ../src/crypto/chacha20poly1305.cpp
+        ../src/transport/transport.cpp
+        ../src/platform/platform.cpp
+        ../src/platform/logger.cpp
+    )
+    target_include_directories(test_discovery_live PRIVATE ../include)
+    target_link_libraries(test_discovery_live OpenSSL::Crypto ws2_32)
+    aegis_enable_warnings(test_discovery_live)
+    add_test(NAME integration_discovery_live COMMAND test_discovery_live)
+    set_tests_properties(integration_discovery_live PROPERTIES
+        LABELS "integration;network"
+        TIMEOUT 15
+    )
+endif()
+
 add_executable(test_config test_config.cpp ../src/config/config.cpp)
 target_include_directories(test_config PRIVATE ../include)
 add_test(NAME test_config COMMAND test_config)
