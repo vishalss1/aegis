@@ -40,7 +40,9 @@ PeerUpsertResult PeerManager::upsert(
             result = PeerUpsertResult::IdentityBound;
         }
         if (endpoint) it->second.endpoint = endpoint;
-        it->second.trusted = trusted;
+        // Trust is monotonic: observing a configured peer through untrusted
+        // gossip must never demote its local authorization status.
+        it->second.trusted = it->second.trusted || trusted;
         return result;
     }
     if (peers_.size() >= max_peers_)

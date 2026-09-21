@@ -69,9 +69,10 @@ This does not prove that the advertising member owns a prefix or is telling the
 truth about a path. All-zero public keys are rejected explicitly. Observable
 identity conflicts reject the complete peer update, return a distinct result,
 and emit a local security log. Persistent peer and route tables have hard
-capacity limits, while structured merge results and deterministic eviction
-remain incomplete. Wire-level peer counts, path lengths, prefix counts, and
-decoded bytes are bounded.
+capacity limits. Gossip merge reports accepted identities, malformed data,
+identity conflicts, capacity drops, and installed state separately.
+Deterministic eviction remains incomplete. Wire-level peer counts, path
+lengths, prefix counts, and decoded bytes are bounded.
 
 ### Onion forwarding has weaker privacy than the README previously claimed
 

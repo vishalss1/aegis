@@ -912,14 +912,18 @@ void Tunnel::handle_peer_table(const NodeId& sender, const uint8_t* data, size_t
                 sender[0], sender[1]);
         return;
     }
-    size_t routes_installed = 0;
-    size_t learned = merge_peer_table(peers_, routing_, *advertised, sender,
-                                      identity_.node_id, &routes_installed);
-    aegis_log( "[tunnel] peer table from %02x%02x...: %zu peer(s), %zu new\n",
-            sender[0], sender[1], advertised->size(), learned);
+    const auto stats = merge_peer_table(
+        peers_, routing_, *advertised, sender, identity_.node_id);
+    aegis_log(
+        "[tunnel] peer table from %02x%02x...: %zu advertised, %zu accepted, "
+        "%zu changed, %zu route(s), %zu malformed, %zu conflict(s), "
+        "%zu capacity drop(s)\n",
+        sender[0], sender[1], advertised->size(), stats.accepted,
+        stats.peers_changed, stats.routes_installed, stats.malformed,
+        stats.conflicting, stats.capacity_rejected);
     // Fan out any new knowledge (peers or routes) so the mesh converges without
     // waiting for the next periodic gossip cycle.
-    if (learned > 0 || routes_installed > 0)
+    if (stats.changed())
         announce_peer_table(sender);
 }
 

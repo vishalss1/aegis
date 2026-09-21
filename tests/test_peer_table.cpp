@@ -148,8 +148,15 @@ int main() {
         d.prefixes.emplace_back(pt_ip(10, 40, 0, 0), 24);
         advertised.push_back(d);
 
-        size_t learned = merge_peer_table(pm, re, advertised, bob.node_id, alice.node_id);
-        CHECK(learned == 2);
+        const auto stats = merge_peer_table(
+            pm, re, advertised, bob.node_id, alice.node_id);
+        CHECK(stats.accepted == 2);
+        CHECK(stats.peers_changed == 2);
+        CHECK(stats.routes_installed == 2);
+        CHECK(stats.malformed == 0);
+        CHECK(stats.conflicting == 0);
+        CHECK(stats.capacity_rejected == 0);
+        CHECK(stats.changed());
         CHECK(pm.size() == 2);
 
         const Peer* pc = pm.get_peer(charlie.node_id);
@@ -202,8 +209,12 @@ int main() {
         d.prefixes.emplace_back(pt_ip(10, 40, 0, 0), 24);
         advertised.push_back(d);
 
-        size_t learned = merge_peer_table(pm, re, advertised, bob.node_id, alice.node_id);
-        CHECK(learned == 1);            // peer itself is still learned
+        const auto stats = merge_peer_table(
+            pm, re, advertised, bob.node_id, alice.node_id);
+        CHECK(stats.accepted == 1);      // peer identity itself is still valid
+        CHECK(stats.peers_changed == 1);
+        CHECK(stats.routes_installed == 0);
+        CHECK(stats.malformed == 1);     // the advertised path is invalid
         CHECK(re.empty());              // but no routable path is installed
         CHECK(re.find_route(pt_ip(10, 40, 0, 9)).has_value() == false);
     }
@@ -220,8 +231,12 @@ int main() {
         advertised.push_back(c);
 
         merge_peer_table(pm, re, advertised, bob.node_id, alice.node_id);
-        size_t again = merge_peer_table(pm, re, advertised, bob.node_id, alice.node_id);
-        CHECK(again == 0);
+        const auto again = merge_peer_table(
+            pm, re, advertised, bob.node_id, alice.node_id);
+        CHECK(again.accepted == 1);
+        CHECK(again.peers_changed == 0);
+        CHECK(again.routes_installed == 0);
+        CHECK(!again.changed());
         CHECK(re.size() == 1);  // route refreshed, not duplicated
     }
 
@@ -239,8 +254,11 @@ int main() {
         advertised.push_back(self);
         advertised.push_back(sender);
 
-        size_t learned = merge_peer_table(pm, re, advertised, bob.node_id, alice.node_id);
-        CHECK(learned == 0);
+        const auto stats = merge_peer_table(
+            pm, re, advertised, bob.node_id, alice.node_id);
+        CHECK(stats.accepted == 0);
+        CHECK(stats.peers_changed == 0);
+        CHECK(stats.malformed == 0);
         CHECK(pm.size() == 0);
         CHECK(re.empty());
     }
@@ -282,13 +300,14 @@ int main() {
         forged.public_key = dave.keypair.public_key;
         forged.prefixes.emplace_back(pt_ip(10, 66, 0, 0), 24);
 
-        size_t routes_installed = 99;
-        size_t learned = merge_peer_table(
-            pm, re, {forged}, bob.node_id, alice.node_id,
-            &routes_installed);
+        const auto stats = merge_peer_table(
+            pm, re, {forged}, bob.node_id, alice.node_id);
 
-        CHECK(learned == 0);
-        CHECK(routes_installed == 0);
+        CHECK(stats.accepted == 0);
+        CHECK(stats.peers_changed == 0);
+        CHECK(stats.routes_installed == 0);
+        CHECK(stats.malformed == 1);
+        CHECK(stats.conflicting == 0);
         CHECK(!pm.has_peer(charlie.node_id));
         CHECK(pm.size() == 0);
         CHECK(re.empty());
@@ -307,13 +326,14 @@ int main() {
         zero_key_peer.node_id = hash_public_key(zero_key_peer.public_key);
         zero_key_peer.prefixes.emplace_back(pt_ip(10, 67, 0, 0), 24);
 
-        size_t routes_installed = 99;
-        size_t learned = merge_peer_table(
-            pm, re, {zero_key_peer}, bob.node_id, alice.node_id,
-            &routes_installed);
+        const auto stats = merge_peer_table(
+            pm, re, {zero_key_peer}, bob.node_id, alice.node_id);
 
-        CHECK(learned == 0);
-        CHECK(routes_installed == 0);
+        CHECK(stats.accepted == 0);
+        CHECK(stats.peers_changed == 0);
+        CHECK(stats.routes_installed == 0);
+        CHECK(stats.malformed == 1);
+        CHECK(stats.conflicting == 0);
         CHECK(!pm.has_peer(zero_key_peer.node_id));
         CHECK(pm.size() == 0);
         CHECK(re.empty());
@@ -329,25 +349,74 @@ int main() {
 
         PeerManager full_peers(/*max_peers=*/0);
         RoutingEngine routes;
-        size_t routes_installed = 99;
-        size_t learned = merge_peer_table(
-            full_peers, routes, {c}, bob.node_id, alice.node_id,
-            &routes_installed);
-        CHECK(learned == 0);
-        CHECK(routes_installed == 0);
+        const auto peer_capacity = merge_peer_table(
+            full_peers, routes, {c}, bob.node_id, alice.node_id);
+        CHECK(peer_capacity.accepted == 0);
+        CHECK(peer_capacity.peers_changed == 0);
+        CHECK(peer_capacity.routes_installed == 0);
+        CHECK(peer_capacity.capacity_rejected == 1);
         CHECK(full_peers.size() == 0);
         CHECK(routes.empty());
 
         PeerManager peers;
         RoutingEngine full_routes(/*max_routes=*/0);
-        routes_installed = 99;
-        learned = merge_peer_table(
-            peers, full_routes, {c}, bob.node_id, alice.node_id,
-            &routes_installed);
-        CHECK(learned == 1);
-        CHECK(routes_installed == 0);
+        const auto route_capacity = merge_peer_table(
+            peers, full_routes, {c}, bob.node_id, alice.node_id);
+        CHECK(route_capacity.accepted == 1);
+        CHECK(route_capacity.peers_changed == 1);
+        CHECK(route_capacity.routes_installed == 0);
+        CHECK(route_capacity.capacity_rejected == 1);
         CHECK(peers.has_peer(charlie.node_id));
         CHECK(full_routes.empty());
+    }
+
+    // ---- 10. Existing identity conflicts are reported -----------------------
+    {
+        PeerManager pm;
+        RoutingEngine re;
+
+        CHECK(pm.upsert(charlie.node_id, dave.keypair.public_key) ==
+              PeerUpsertResult::Inserted);
+
+        AdvertisedPeer c;
+        c.node_id = charlie.node_id;
+        c.public_key = charlie.keypair.public_key;
+        c.prefixes.emplace_back(pt_ip(10, 69, 0, 0), 24);
+
+        const auto stats = merge_peer_table(
+            pm, re, {c}, bob.node_id, alice.node_id);
+        CHECK(stats.accepted == 0);
+        CHECK(stats.peers_changed == 0);
+        CHECK(stats.routes_installed == 0);
+        CHECK(stats.malformed == 0);
+        CHECK(stats.conflicting == 1);
+        CHECK(stats.capacity_rejected == 0);
+        CHECK(!stats.changed());
+        CHECK(re.empty());
+    }
+
+    // ---- 11. Binding a placeholder is reported as changed state -------------
+    {
+        PeerManager pm;
+        RoutingEngine re;
+        CHECK(pm.upsert(charlie.node_id, Key{}) ==
+              PeerUpsertResult::Inserted);
+
+        AdvertisedPeer c;
+        c.node_id = charlie.node_id;
+        c.public_key = charlie.keypair.public_key;
+
+        const auto stats = merge_peer_table(
+            pm, re, {c}, bob.node_id, alice.node_id);
+        CHECK(stats.accepted == 1);
+        CHECK(stats.peers_changed == 1);
+        CHECK(stats.routes_installed == 0);
+        CHECK(stats.malformed == 0);
+        CHECK(stats.conflicting == 0);
+        CHECK(stats.capacity_rejected == 0);
+        CHECK(stats.changed());
+        CHECK(pm.get_peer(charlie.node_id)->public_key ==
+              charlie.keypair.public_key);
     }
 
     printf("--- peer table: %d/%d passed ---\n", passed, tests);

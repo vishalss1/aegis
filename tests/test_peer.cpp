@@ -132,6 +132,13 @@ int main() {
             CHECK(existing->endpoint->port == ep_new.port);
         }
 
+        CHECK(pm.upsert(alice.node_id, alice.keypair.public_key, ep_alice,
+                        /*trusted=*/true) == PeerUpsertResult::Inserted);
+        CHECK(pm.upsert(alice.node_id, alice.keypair.public_key,
+                        std::nullopt, /*trusted=*/false) ==
+              PeerUpsertResult::Updated);
+        CHECK(pm.get_peer(alice.node_id)->trusted);
+
         // The unauthenticated v1 handshake currently creates an empty-key
         // placeholder. It may acquire its first real binding, but that binding
         // becomes immutable immediately.

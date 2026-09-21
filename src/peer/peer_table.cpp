@@ -111,32 +111,44 @@ std::optional<std::vector<AdvertisedPeer>> deserialize_peer_table(
     return out;
 }
 
-size_t merge_peer_table(PeerManager& pm, RoutingEngine& re,
-                        const std::vector<AdvertisedPeer>& advertised,
-                        const NodeId& sender, const NodeId& self,
-                        size_t* routes_installed) {
-    size_t learned = 0;
-    if (routes_installed)
-        *routes_installed = 0;
+PeerTableMergeStats merge_peer_table(
+    PeerManager& pm, RoutingEngine& re,
+    const std::vector<AdvertisedPeer>& advertised,
+    const NodeId& sender, const NodeId& self) {
+    PeerTableMergeStats stats;
     for (const auto& p : advertised) {
         if (p.node_id == self || p.node_id == sender)
             continue;
+
+        if (p.path.size() > PEER_TABLE_MAX_PATH_HOPS ||
+            p.prefixes.size() > PEER_TABLE_MAX_PREFIXES) {
+            ++stats.malformed;
+            continue;
+        }
 
         // A zero X25519 key is not a usable peer identity, even when the
         // advertiser supplies the NodeID that hashes from those zero bytes.
         // Reject it explicitly before checking the normal identity binding.
         if (p.public_key == Key{} ||
-            hash_public_key(p.public_key) != p.node_id)
+            hash_public_key(p.public_key) != p.node_id) {
+            ++stats.malformed;
             continue;
-
-        bool is_new = !pm.has_peer(p.node_id);
-        if (is_new) {
-            const auto result = pm.upsert(
-                p.node_id, p.public_key, std::nullopt, false);
-            if (result == PeerUpsertResult::CapacityRejected)
-                continue;
-            is_new = result == PeerUpsertResult::Inserted;
         }
+
+        const auto peer_result = pm.upsert(
+            p.node_id, p.public_key, std::nullopt, false);
+        if (peer_result == PeerUpsertResult::IdentityConflict) {
+            ++stats.conflicting;
+            continue;
+        }
+        if (peer_result == PeerUpsertResult::CapacityRejected) {
+            ++stats.capacity_rejected;
+            continue;
+        }
+        ++stats.accepted;
+        if (peer_result == PeerUpsertResult::Inserted ||
+            peer_result == PeerUpsertResult::IdentityBound)
+            ++stats.peers_changed;
 
         // Candidate relay path to this peer: through the sender, then along the
         // advertiser's advertised hop list (which already ends with the peer).
@@ -155,8 +167,13 @@ size_t merge_peer_table(PeerManager& pm, RoutingEngine& re,
             for (const auto& hop : path)
                 if (hop == self || !seen.insert(hop).second) { path_ok = false; break; }
         }
+        bool malformed_routing = !path_ok;
 
         for (const auto& [prefix, prefix_length] : p.prefixes) {
+            if (prefix_length > 32) {
+                malformed_routing = true;
+                continue;
+            }
             bool skip = false;
             for (const auto& r : re.routes()) {
                 if (r.prefix == prefix && r.prefix_length == prefix_length) {
@@ -182,12 +199,14 @@ size_t merge_peer_table(PeerManager& pm, RoutingEngine& re,
             route.next_hop = sender;
             route.destination = p.node_id;
             route.path = path;
-            if (re.add_route(route) && routes_installed)
-                ++*routes_installed;
+            if (re.add_route(route))
+                ++stats.routes_installed;
+            else
+                ++stats.capacity_rejected;
         }
 
-        if (is_new)
-            ++learned;
+        if (malformed_routing)
+            ++stats.malformed;
     }
-    return learned;
+    return stats;
 }

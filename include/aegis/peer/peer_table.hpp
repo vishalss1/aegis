@@ -49,16 +49,30 @@ std::optional<std::vector<uint8_t>> serialize_peer_table(
 std::optional<std::vector<AdvertisedPeer>> deserialize_peer_table(
     const uint8_t* data, size_t len);
 
+// Merge counters are independent outcome dimensions. `accepted` counts peer
+// identities that passed validation, while malformed routing data or route
+// capacity rejection may still prevent some of that peer's routes from being
+// installed. `peers_changed` counts newly inserted identities and placeholders
+// that acquired their first key.
+struct PeerTableMergeStats {
+    size_t accepted = 0;
+    size_t peers_changed = 0;
+    size_t routes_installed = 0;
+    size_t malformed = 0;
+    size_t conflicting = 0;
+    size_t capacity_rejected = 0;
+
+    bool changed() const {
+        return peers_changed > 0 || routes_installed > 0;
+    }
+};
+
 // Merge advertised peers into the local tables. The sender of the gossip is
 // always the next hop toward everything it advertises, so every advertised
-// prefix becomes a Relay route via `sender`. Returns the number of newly
-// learned peers (existing peers are refreshed in place, not re-counted).
-// `routes_installed` (optional out param) is incremented for every prefix that
-// produced a new route, so the caller can re-announce and push new knowledge
-// into the mesh without waiting for the next periodic gossip cycle. Entries
-// whose public key is all zero or does not hash to their NodeID are rejected
-// without changing peer or route state.
-size_t merge_peer_table(PeerManager& pm, RoutingEngine& re,
-                        const std::vector<AdvertisedPeer>& advertised,
-                        const NodeId& sender, const NodeId& self,
-                        size_t* routes_installed = nullptr);
+// prefix becomes a Relay route via `sender`. Entries whose public key is all
+// zero or does not hash to their NodeID are rejected without changing peer or
+// route state. The returned statistics make every rejection class observable.
+PeerTableMergeStats merge_peer_table(
+    PeerManager& pm, RoutingEngine& re,
+    const std::vector<AdvertisedPeer>& advertised,
+    const NodeId& sender, const NodeId& self);
