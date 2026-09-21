@@ -22,11 +22,11 @@ enum class PeerState {
 };
 
 enum class PeerUpsertResult {
-    Inserted,
-    Updated,
-    IdentityBound,
-    IdentityConflict,
-    CapacityRejected
+    Inserted,          // A new peer record was created.
+    Updated,           // Existing non-identity fields were accepted.
+    IdentityBound,     // An empty-key placeholder acquired its first key.
+    IdentityConflict,  // A non-empty key differed from the existing binding.
+    CapacityRejected   // A new record would exceed the configured limit.
 };
 
 inline constexpr size_t PEER_MANAGER_MAX_PEERS = 256;
@@ -52,10 +52,14 @@ public:
 
     // A non-empty public key is an identity binding and is immutable. An empty
     // placeholder may be populated once. A conflicting non-empty key rejects
-    // the complete update and returns IdentityConflict.
+    // the complete update and returns IdentityConflict. Trust is monotonic.
+    // This method does not hash the key; network boundaries must first verify
+    // hash_public_key(public_key) == node_id.
     PeerUpsertResult upsert(const NodeId& node_id, const Key& public_key,
                             std::optional<Endpoint> endpoint = std::nullopt,
                             bool trusted = false);
+    // Inserts or replaces prevalidated local state. Returns false only when a
+    // new record would exceed capacity; callers own identity validation.
     bool add_peer(const Peer& peer);
     void remove_peer(const NodeId& node_id);
 

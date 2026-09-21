@@ -67,11 +67,14 @@ struct PeerTableMergeStats {
     }
 };
 
-// Merge advertised peers into the local tables. The sender of the gossip is
-// always the next hop toward everything it advertises, so every advertised
-// prefix becomes a Relay route via `sender`. Entries whose public key is all
-// zero or does not hash to their NodeID are rejected without changing peer or
-// route state. The returned statistics make every rejection class observable.
+// Merge advertised peers into the local tables. Self and sender entries are
+// ignored. Every other key must be nonzero and hash to its NodeID before any
+// state changes. Existing non-empty bindings are immutable; empty placeholders
+// may be bound once. Accepted peers are endpoint-less and cannot lose an
+// existing local trust designation. The sender is always the next hop toward
+// advertised prefixes, but invalid/looping paths and route-capacity failures do
+// not roll back an otherwise valid peer identity. The returned statistics make
+// each outcome observable.
 PeerTableMergeStats merge_peer_table(
     PeerManager& pm, RoutingEngine& re,
     const std::vector<AdvertisedPeer>& advertised,

@@ -39,6 +39,34 @@ The implementation currently provides the following limited properties:
 These properties do not compensate for the missing peer authentication and
 route-origin authentication described below.
 
+## Peer Identity Merge Contract
+
+The peer table uses a NodeID as the index for one static X25519 public key. At
+the gossip trust boundary, the following rules apply in order:
+
+1. Entries for the receiving node and the adjacent sender are ignored.
+2. The public key must be nonzero and its 32-byte BLAKE2b digest must equal the
+   advertised NodeID. Invalid bindings cannot modify peer or route state.
+3. A NodeID without a local entry may be inserted as an untrusted,
+   endpoint-less peer, subject to the 256-peer capacity limit.
+4. A legacy empty-key placeholder may acquire its first validated key exactly
+   once. A non-empty binding is immutable; a different key rejects the entire
+   peer update and its routes.
+5. Gossip cannot demote a locally trusted peer or supply a physical endpoint.
+6. Routes are considered only after the identity update succeeds. Invalid or
+   looping paths install no routes, direct routes are not downgraded, and the
+   routing table is capped at 2,048 entries.
+
+Peer-table frames are limited to 60 KiB, 128 advertised peers, eight path hops
+per peer, and 16 prefixes per peer. Merge results separately report accepted
+identities, changed peer bindings, installed routes, malformed data, identity
+conflicts, and capacity rejection.
+
+These checks bind a public key to its self-certifying NodeID only. They do not
+authenticate the adjacent session, establish prefix ownership, or prove that an
+advertised route exists. Those guarantees require the authenticated handshake
+and route-origin work described below.
+
 ## Known Critical Limitations
 
 ### Sessions do not authenticate peers
