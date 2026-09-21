@@ -18,16 +18,30 @@ void PeerManager::set_session_manager(SessionManager* session_manager) {
     session_manager_ = session_manager;
 }
 
-Peer& PeerManager::upsert(const NodeId& node_id, const Key& public_key,
-                          std::optional<Endpoint> endpoint, bool trusted) {
+PeerUpsertResult PeerManager::upsert(
+    const NodeId& node_id, const Key& public_key,
+    std::optional<Endpoint> endpoint, bool trusted) {
     std::lock_guard<std::mutex> lock(mtx_);
     auto it = peers_.find(node_id);
     if (it != peers_.end()) {
-        if (is_empty_key(it->second.public_key) && !is_empty_key(public_key))
+        const bool existing_key_empty = is_empty_key(it->second.public_key);
+        const bool incoming_key_empty = is_empty_key(public_key);
+        if (!existing_key_empty && !incoming_key_empty &&
+            it->second.public_key != public_key) {
+            std::fprintf(stderr,
+                "[peer] security: rejected conflicting identity key for "
+                "%02x%02x...\n", node_id[0], node_id[1]);
+            return PeerUpsertResult::IdentityConflict;
+        }
+
+        PeerUpsertResult result = PeerUpsertResult::Updated;
+        if (existing_key_empty && !incoming_key_empty) {
             it->second.public_key = public_key;
+            result = PeerUpsertResult::IdentityBound;
+        }
         if (endpoint) it->second.endpoint = endpoint;
         it->second.trusted = trusted;
-        return it->second;
+        return result;
     }
     Peer peer;
     peer.node_id = node_id;
@@ -35,8 +49,8 @@ Peer& PeerManager::upsert(const NodeId& node_id, const Key& public_key,
     peer.endpoint = endpoint;
     peer.trusted = trusted;
     peer.created_at = std::chrono::steady_clock::now();
-    auto res = peers_.emplace(node_id, peer);
-    return res.first->second;
+    peers_.emplace(node_id, peer);
+    return PeerUpsertResult::Inserted;
 }
 
 void PeerManager::add_peer(const Peer& peer) {

@@ -106,27 +106,45 @@ int main() {
     // ---- 2b. Static identity keys are immutable after binding ---------------
     {
         PeerManager pm;
-        pm.upsert(bob.node_id, bob.keypair.public_key, ep_bob);
+        CHECK(pm.upsert(bob.node_id, bob.keypair.public_key, ep_bob) ==
+              PeerUpsertResult::Inserted);
 
         Endpoint ep_new = Endpoint::from_parts(192, 168, 1, 51, 51831);
-        Peer& existing = pm.upsert(
-            bob.node_id, charlie.keypair.public_key, ep_new);
+        CHECK(pm.upsert(bob.node_id, charlie.keypair.public_key, ep_new) ==
+              PeerUpsertResult::IdentityConflict);
 
-        CHECK(existing.public_key == bob.keypair.public_key);
-        CHECK(existing.endpoint.has_value());
-        CHECK(existing.endpoint->ip == ep_new.ip);
-        CHECK(existing.endpoint->port == ep_new.port);
+        const Peer* existing = pm.get_peer(bob.node_id);
+        CHECK(existing != nullptr);
+        if (existing) {
+            CHECK(existing->public_key == bob.keypair.public_key);
+            CHECK(existing->endpoint.has_value());
+            CHECK(existing->endpoint->ip == ep_bob.ip);
+            CHECK(existing->endpoint->port == ep_bob.port);
+        }
+
+        CHECK(pm.upsert(bob.node_id, bob.keypair.public_key, ep_new) ==
+              PeerUpsertResult::Updated);
+        existing = pm.get_peer(bob.node_id);
+        CHECK(existing != nullptr);
+        if (existing) {
+            CHECK(existing->endpoint.has_value());
+            CHECK(existing->endpoint->ip == ep_new.ip);
+            CHECK(existing->endpoint->port == ep_new.port);
+        }
 
         // The unauthenticated v1 handshake currently creates an empty-key
         // placeholder. It may acquire its first real binding, but that binding
         // becomes immutable immediately.
         NodeId placeholder_id = charlie.node_id;
-        pm.upsert(placeholder_id, Key{});
+        CHECK(pm.upsert(placeholder_id, Key{}) ==
+              PeerUpsertResult::Inserted);
         CHECK(pm.get_peer(placeholder_id)->public_key == Key{});
-        pm.upsert(placeholder_id, charlie.keypair.public_key);
+        CHECK(pm.upsert(placeholder_id, charlie.keypair.public_key) ==
+              PeerUpsertResult::IdentityBound);
         CHECK(pm.get_peer(placeholder_id)->public_key ==
               charlie.keypair.public_key);
-        pm.upsert(placeholder_id, alice.keypair.public_key);
+        CHECK(pm.upsert(placeholder_id, alice.keypair.public_key) ==
+              PeerUpsertResult::IdentityConflict);
         CHECK(pm.get_peer(placeholder_id)->public_key ==
               charlie.keypair.public_key);
     }

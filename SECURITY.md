@@ -67,9 +67,10 @@ through `PeerManager::upsert`, closing the direct public-key substitution path.
 
 This does not prove that the advertising member owns a prefix or is telling the
 truth about a path. All-zero public keys are rejected explicitly. Observable
-conflict reporting, structured merge results, and in-memory peer/route capacity
-limits remain incomplete. Wire-level peer counts, path lengths, prefix counts,
-and decoded bytes are bounded.
+identity conflicts reject the complete peer update, return a distinct result,
+and emit a local security log. Structured merge results and in-memory
+peer/route capacity limits remain incomplete. Wire-level peer counts, path
+lengths, prefix counts, and decoded bytes are bounded.
 
 ### Onion forwarding has weaker privacy than the README previously claimed
 
