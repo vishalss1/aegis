@@ -320,6 +320,36 @@ int main() {
         CHECK(!re.find_route(pt_ip(10, 67, 0, 1)).has_value());
     }
 
+    // ---- 9. Persistent table capacity rejects state and counters ------------
+    {
+        AdvertisedPeer c;
+        c.node_id = charlie.node_id;
+        c.public_key = charlie.keypair.public_key;
+        c.prefixes.emplace_back(pt_ip(10, 68, 0, 0), 24);
+
+        PeerManager full_peers(/*max_peers=*/0);
+        RoutingEngine routes;
+        size_t routes_installed = 99;
+        size_t learned = merge_peer_table(
+            full_peers, routes, {c}, bob.node_id, alice.node_id,
+            &routes_installed);
+        CHECK(learned == 0);
+        CHECK(routes_installed == 0);
+        CHECK(full_peers.size() == 0);
+        CHECK(routes.empty());
+
+        PeerManager peers;
+        RoutingEngine full_routes(/*max_routes=*/0);
+        routes_installed = 99;
+        learned = merge_peer_table(
+            peers, full_routes, {c}, bob.node_id, alice.node_id,
+            &routes_installed);
+        CHECK(learned == 1);
+        CHECK(routes_installed == 0);
+        CHECK(peers.has_peer(charlie.node_id));
+        CHECK(full_routes.empty());
+    }
+
     printf("--- peer table: %d/%d passed ---\n", passed, tests);
     return passed == tests ? 0 : 1;
 }

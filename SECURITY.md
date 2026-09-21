@@ -68,9 +68,10 @@ through `PeerManager::upsert`, closing the direct public-key substitution path.
 This does not prove that the advertising member owns a prefix or is telling the
 truth about a path. All-zero public keys are rejected explicitly. Observable
 identity conflicts reject the complete peer update, return a distinct result,
-and emit a local security log. Structured merge results and in-memory
-peer/route capacity limits remain incomplete. Wire-level peer counts, path
-lengths, prefix counts, and decoded bytes are bounded.
+and emit a local security log. Persistent peer and route tables have hard
+capacity limits, while structured merge results and deterministic eviction
+remain incomplete. Wire-level peer counts, path lengths, prefix counts, and
+decoded bytes are bounded.
 
 ### Onion forwarding has weaker privacy than the README previously claimed
 
@@ -86,10 +87,10 @@ static keys.
 ### Handshake and table state are vulnerable to resource exhaustion
 
 There is no stateless retry cookie, handshake replay cache, strict session-table
-capacity, or per-source handshake rate limit. Peer, route, retired-session, and
-gossip-derived state are not comprehensively bounded or expired. Peer-table
-wire limits prevent oversized gossip frames from allocating without bound, but
-do not cap the persistent peer or route tables.
+capacity, or per-source handshake rate limit. Peer and route tables are capped,
+but retired-session and other gossip-derived state are not comprehensively
+bounded or expired. Peer-table wire limits also prevent oversized gossip frames
+from allocating without bound.
 
 ### MTU and reliability are not managed
 

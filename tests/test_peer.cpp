@@ -149,7 +149,38 @@ int main() {
               charlie.keypair.public_key);
     }
 
-    // ---- 3. Session lookup delegates to Session Manager ---------------------
+    // ---- 3. Capacity rejects growth but permits existing-peer updates --------
+    {
+        PeerManager pm(/*max_peers=*/2);
+        CHECK(pm.upsert(alice.node_id, alice.keypair.public_key) ==
+              PeerUpsertResult::Inserted);
+        CHECK(pm.upsert(bob.node_id, bob.keypair.public_key, ep_bob) ==
+              PeerUpsertResult::Inserted);
+        CHECK(pm.upsert(charlie.node_id, charlie.keypair.public_key) ==
+              PeerUpsertResult::CapacityRejected);
+        CHECK(pm.size() == 2);
+        CHECK(!pm.has_peer(charlie.node_id));
+
+        Endpoint ep_new = Endpoint::from_parts(192, 168, 1, 52, 51832);
+        CHECK(pm.upsert(bob.node_id, bob.keypair.public_key, ep_new) ==
+              PeerUpsertResult::Updated);
+        const Peer* updated = pm.get_peer(bob.node_id);
+        CHECK(updated != nullptr);
+        CHECK(updated && updated->endpoint.has_value());
+        CHECK(updated && updated->endpoint && updated->endpoint->ip == ep_new.ip);
+        CHECK(updated && updated->endpoint && updated->endpoint->port == ep_new.port);
+
+        Peer replacement = *pm.get_peer(alice.node_id);
+        replacement.trusted = true;
+        CHECK(pm.add_peer(replacement));
+        Peer extra;
+        extra.node_id = charlie.node_id;
+        extra.public_key = charlie.keypair.public_key;
+        CHECK(!pm.add_peer(extra));
+        CHECK(pm.size() == 2);
+    }
+
+    // ---- 4. Session lookup delegates to Session Manager ---------------------
     {
         SessionManager sm_a(alice);
         SessionManager sm_b(bob);
@@ -176,7 +207,7 @@ int main() {
         CHECK(!pm.get_session(unknown).has_value());
     }
 
-    // ---- 4. Stale peer detection with dead timeout --------------------------
+    // ---- 5. Stale peer detection with dead timeout --------------------------
     {
         PeerManager pm;
         pm.set_dead_timeout(std::chrono::milliseconds(1000));
@@ -196,7 +227,7 @@ int main() {
         CHECK(pm.stale_peers().empty());
     }
 
-    // ---- 5. Keepalive-needed detection --------------------------------------
+    // ---- 6. Keepalive-needed detection --------------------------------------
     {
         PeerManager pm;
         pm.set_keepalive_interval(std::chrono::milliseconds(1000));
@@ -217,7 +248,7 @@ int main() {
         CHECK(pm.peers_needing_keepalive().empty());
     }
 
-    // ---- 6. Step 15: mark_seen on an established peer advances keepalive -----
+    // ---- 7. Step 15: mark_seen on an established peer advances keepalive -----
     // The keep-alive sender relies on last_keepalive being advanced on EVERY
     // received packet, not just on the transition into Established — otherwise
     // a busy peer would keep receiving keep-alives forever. (Regression for

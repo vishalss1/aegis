@@ -2,7 +2,7 @@
 #include <algorithm>
 #include <cstdio>
 
-RoutingEngine::RoutingEngine() = default;
+RoutingEngine::RoutingEngine(size_t max_routes) : max_routes_(max_routes) {}
 
 bool RoutingEngine::add_route(const Route& route) {
     std::lock_guard<std::mutex> lock(mtx_);
@@ -22,10 +22,18 @@ bool RoutingEngine::add_route(const Route& route) {
     } else if (route.path.empty()) {
         return false;  // Direct routes must at least name their destination
     }
-    // One route per prefix — relearning a peer's path replaces the old entry.
-    std::erase_if(routes_, [&](const Route& r) {
+    // One route per prefix. Replacements remain possible at capacity because
+    // they do not increase persistent state.
+    auto existing = std::find_if(routes_.begin(), routes_.end(), [&](const Route& r) {
         return r.prefix == route.prefix && r.prefix_length == route.prefix_length;
     });
+    if (existing != routes_.end()) {
+        *existing = route;
+        return true;
+    }
+    if (routes_.size() >= max_routes_)
+        return false;
+
     routes_.push_back(route);
     return true;
 }

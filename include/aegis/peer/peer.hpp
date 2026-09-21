@@ -3,6 +3,7 @@
 #include "aegis/identity/identity.hpp"
 #include "aegis/transport/transport.hpp"
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <mutex>
@@ -24,8 +25,11 @@ enum class PeerUpsertResult {
     Inserted,
     Updated,
     IdentityBound,
-    IdentityConflict
+    IdentityConflict,
+    CapacityRejected
 };
+
+inline constexpr size_t PEER_MANAGER_MAX_PEERS = 256;
 
 struct Peer {
     NodeId node_id{};
@@ -42,7 +46,7 @@ struct Peer {
 
 class PeerManager {
 public:
-    PeerManager();
+    explicit PeerManager(size_t max_peers = PEER_MANAGER_MAX_PEERS);
 
     void set_session_manager(SessionManager* session_manager);
 
@@ -52,7 +56,7 @@ public:
     PeerUpsertResult upsert(const NodeId& node_id, const Key& public_key,
                             std::optional<Endpoint> endpoint = std::nullopt,
                             bool trusted = false);
-    void add_peer(const Peer& peer);
+    bool add_peer(const Peer& peer);
     void remove_peer(const NodeId& node_id);
 
     Peer* get_peer(const NodeId& node_id);
@@ -80,6 +84,7 @@ public:
 
 private:
     std::map<NodeId, Peer> peers_;
+    size_t max_peers_;
     SessionManager* session_manager_ = nullptr;
     std::chrono::milliseconds keepalive_interval_{25000};
     std::chrono::milliseconds dead_timeout_{180000};

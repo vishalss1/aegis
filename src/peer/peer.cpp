@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <cstdio>
 
-PeerManager::PeerManager() = default;
+PeerManager::PeerManager(size_t max_peers) : max_peers_(max_peers) {}
 
 namespace {
 
@@ -43,6 +43,9 @@ PeerUpsertResult PeerManager::upsert(
         it->second.trusted = trusted;
         return result;
     }
+    if (peers_.size() >= max_peers_)
+        return PeerUpsertResult::CapacityRejected;
+
     Peer peer;
     peer.node_id = node_id;
     peer.public_key = public_key;
@@ -53,9 +56,12 @@ PeerUpsertResult PeerManager::upsert(
     return PeerUpsertResult::Inserted;
 }
 
-void PeerManager::add_peer(const Peer& peer) {
+bool PeerManager::add_peer(const Peer& peer) {
     std::lock_guard<std::mutex> lock(mtx_);
+    if (!peers_.contains(peer.node_id) && peers_.size() >= max_peers_)
+        return false;
     peers_[peer.node_id] = peer;
+    return true;
 }
 
 void PeerManager::remove_peer(const NodeId& node_id) {

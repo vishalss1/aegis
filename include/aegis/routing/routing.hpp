@@ -1,6 +1,7 @@
 #pragma once
 
 #include "aegis/identity/identity.hpp"
+#include <cstddef>
 #include <cstdint>
 #include <mutex>
 #include <optional>
@@ -25,9 +26,11 @@ struct Route {
     std::vector<NodeId> path;
 };
 
+inline constexpr size_t ROUTING_MAX_ROUTES = 2048;
+
 class RoutingEngine {
 public:
-    RoutingEngine();
+    explicit RoutingEngine(size_t max_routes = ROUTING_MAX_ROUTES);
 
     bool add_route(const Route& route);
     void remove_route(const NodeId& peer_id);
@@ -45,5 +48,5 @@ public:
 private:
     mutable std::mutex mtx_;
     std::vector<Route> routes_;
+    size_t max_routes_;
 };
-

@@ -130,8 +130,13 @@ size_t merge_peer_table(PeerManager& pm, RoutingEngine& re,
             continue;
 
         bool is_new = !pm.has_peer(p.node_id);
-        if (is_new)
-            pm.upsert(p.node_id, p.public_key, std::nullopt, false);
+        if (is_new) {
+            const auto result = pm.upsert(
+                p.node_id, p.public_key, std::nullopt, false);
+            if (result == PeerUpsertResult::CapacityRejected)
+                continue;
+            is_new = result == PeerUpsertResult::Inserted;
+        }
 
         // Candidate relay path to this peer: through the sender, then along the
         // advertiser's advertised hop list (which already ends with the peer).
@@ -177,8 +182,7 @@ size_t merge_peer_table(PeerManager& pm, RoutingEngine& re,
             route.next_hop = sender;
             route.destination = p.node_id;
             route.path = path;
-            re.add_route(route);
-            if (routes_installed)
+            if (re.add_route(route) && routes_installed)
                 ++*routes_installed;
         }
 

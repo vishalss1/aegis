@@ -116,7 +116,23 @@ int main() {
         CHECK(*f == p2);
     }
 
-    // ---- 4. Loop avoidance is enforced on the hop path ----------------------
+    // ---- 4. New routes are rejected at capacity; replacements still work ----
+    {
+        RoutingEngine re(/*max_routes=*/2);
+        CHECK(re.add_route(make_direct(make_ip(10,10,0,1), 32, p1)));
+        CHECK(re.add_route(make_direct(make_ip(10,10,0,2), 32, p2)));
+        CHECK(!re.add_route(make_direct(make_ip(10,10,0,3), 32, d)));
+        CHECK(re.size() == 2);
+        CHECK(!re.find_route(make_ip(10,10,0,3)).has_value());
+
+        CHECK(re.add_route(make_direct(make_ip(10,10,0,1), 32, d)));
+        CHECK(re.size() == 2);
+        auto replaced = re.find_peer(make_ip(10,10,0,1));
+        CHECK(replaced.has_value());
+        CHECK(replaced && *replaced == d);
+    }
+
+    // ---- 5. Loop avoidance is enforced on the hop path ----------------------
     {
         NodeId A = make_id(10);
         NodeId D = make_id(12);
@@ -168,7 +184,7 @@ int main() {
         }
     }
 
-    // ---- 5. Self-relay rejected at insert -----------------------------------
+    // ---- 6. Self-relay rejected at insert -----------------------------------
     {
         RoutingEngine re;
         NodeId X = make_id(30);
@@ -176,7 +192,7 @@ int main() {
         CHECK(re.empty());
     }
 
-    // ---- 6. Route withdrawal through a dead peer ----------------------------
+    // ---- 7. Route withdrawal through a dead peer ----------------------------
     {
         RoutingEngine re;
         re.add_route(make_direct(make_ip(10,10,0,1), 32, p1));
@@ -227,4 +243,3 @@ int main() {
     printf("\n%d / %d passed\n", passed, tests);
     return (passed == tests) ? 0 : 1;
 }
-
