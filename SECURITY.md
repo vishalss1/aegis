@@ -28,6 +28,8 @@ The implementation currently provides the following limited properties:
 - Session keys are derived from fresh ephemeral X25519 keys.
 - Initiator-selected session IDs come from OpenSSL's operating-system-seeded
   CSPRNG and are checked against active and pending local sessions.
+- Newly created NetworkIDs come from the same checked CSPRNG and network
+  creation fails rather than falling back to predictable bytes.
 - Session data has a 2,048-packet replay window.
 - Onion layers use ChaCha20-Poly1305 and a distinct static-DH-derived key for
   each source/hop pair.

@@ -1,4 +1,5 @@
 #include "aegis/cli/commands.hpp"
+#include "aegis/crypto/random.hpp"
 #include "aegis/invite/invite.hpp"
 #include "aegis/platform/platform.hpp"
 #include "aegis/platform/logger.hpp"
@@ -188,7 +189,10 @@ static int cmd_config(const ParsedInput& input, CliContext& ctx) {
 
         // Generate network identity
         NetworkId nid{};
-        for (size_t i = 0; i < nid.size(); ++i) nid[i] = (uint8_t)(rand() % 256);
+        if (!secure_random_bytes(nid)) {
+            std::printf("Error: Secure NetworkID generation failed.\n");
+            return 1;
+        }
         ctx.identity.network_id = nid;
         ctx.identity.creator_node_id = ctx.identity.node_id;
 
