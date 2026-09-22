@@ -32,6 +32,8 @@ The implementation currently provides the following limited properties:
   creation fails rather than falling back to predictable bytes.
 - File-transfer IDs are non-zero values from the checked CSPRNG; a random
   generation failure aborts the transfer before any frame is sent.
+- STUN transaction IDs come from the checked CSPRNG; discovery fails closed
+  when secure randomness is unavailable.
 - Session data has a 2,048-packet replay window.
 - Onion layers use ChaCha20-Poly1305 and a distinct static-DH-derived key for
   each source/hop pair.

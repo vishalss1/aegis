@@ -1,9 +1,10 @@
 #include "aegis/stun/stun.hpp"
+#include "aegis/crypto/random.hpp"
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <array>
 #include <cstdio>
 #include <cstring>
-#include <random>
 
 static constexpr uint32_t STUN_MAGIC_COOKIE = 0x2112A442;
 
@@ -102,11 +103,14 @@ std::optional<Endpoint> stun_discover(
         return std::nullopt;
     }
 
-    uint8_t tx_id[12];
-    std::random_device rd;
-    for (int i = 0; i < 12; i++) tx_id[i] = (uint8_t)rd();
+    std::array<uint8_t, 12> tx_id{};
+    if (!secure_random_bytes(tx_id)) {
+        freeaddrinfo(res);
+        closesocket(sock);
+        return std::nullopt;
+    }
 
-    auto req = create_stun_binding_request(tx_id);
+    auto req = create_stun_binding_request(tx_id.data());
     if (sendto(sock, (const char*)req.data(), (int)req.size(), 0,
                res->ai_addr, (int)res->ai_addrlen) <= 0) {
         freeaddrinfo(res);
@@ -121,5 +125,5 @@ std::optional<Endpoint> stun_discover(
 
     if (r < 20) return std::nullopt;
 
-    return parse_stun_binding_response(buf, r, tx_id);
+    return parse_stun_binding_response(buf, r, tx_id.data());
 }
