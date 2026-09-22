@@ -23,6 +23,11 @@ target_include_directories(test_random PRIVATE ../include)
 target_link_libraries(test_random OpenSSL::Crypto)
 add_test(NAME test_random COMMAND test_random)
 
+add_executable(test_primitives test_primitives.cpp ../src/crypto/primitives.cpp)
+target_include_directories(test_primitives PRIVATE ../include)
+target_link_libraries(test_primitives OpenSSL::Crypto)
+add_test(NAME test_primitives COMMAND test_primitives)
+
 add_executable(test_aead test_aead.cpp ../src/crypto/chacha20poly1305.cpp)
 target_include_directories(test_aead PRIVATE ../include)
 target_link_libraries(test_aead OpenSSL::Crypto)
@@ -118,6 +123,7 @@ set(AEGIS_TEST_TARGETS
     test_transport
     test_crypto
     test_random
+    test_primitives
     test_aead
     test_identity
     test_tunnel
@@ -143,6 +149,7 @@ add_custom_target(check
     COMMAND test_transport
     COMMAND test_crypto
     COMMAND test_random
+    COMMAND test_primitives
     COMMAND test_aead
     COMMAND test_identity
     COMMAND test_tunnel

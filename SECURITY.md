@@ -34,6 +34,8 @@ The implementation currently provides the following limited properties:
   generation failure aborts the transfer before any frame is sent.
 - STUN transaction IDs come from the checked CSPRNG; discovery fails closed
   when secure randomness is unavailable.
+- Checked SHA-256/BLAKE2s transcript hashing, HKDF, and constant-time comparison
+  helpers are available for the authenticated handshake migration.
 - Session data has a 2,048-packet replay window.
 - Onion layers use ChaCha20-Poly1305 and a distinct static-DH-derived key for
   each source/hop pair.
