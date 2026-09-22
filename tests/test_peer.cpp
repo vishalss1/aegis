@@ -10,6 +10,13 @@
 static int tests  = 0;
 static int passed = 0;
 
+class ManualClock final : public ProtocolClock {
+public:
+    time_point current{};
+    time_point now() const noexcept override { return current; }
+    void advance(std::chrono::milliseconds duration) { current += duration; }
+};
+
 #define CHECK(cond) do { \
     tests++; \
     bool _ok = !!(cond); \
@@ -32,7 +39,8 @@ int main() {
 
     // ---- 1. Multi-peer table ops --------------------------------------------
     {
-        PeerManager pm;
+        ManualClock clock;
+        PeerManager pm(PEER_MANAGER_MAX_PEERS, clock);
 
         pm.upsert(alice.node_id, alice.keypair.public_key, ep_alice, /*trusted=*/true);
         pm.upsert(bob.node_id, bob.keypair.public_key, ep_bob);
@@ -216,14 +224,15 @@ int main() {
 
     // ---- 5. Stale peer detection with dead timeout --------------------------
     {
-        PeerManager pm;
+        ManualClock clock;
+        PeerManager pm(PEER_MANAGER_MAX_PEERS, clock);
         pm.set_dead_timeout(std::chrono::milliseconds(1000));
         pm.upsert(bob.node_id, bob.keypair.public_key, ep_bob);
         pm.mark_seen(bob.node_id);
 
         CHECK(pm.stale_peers().empty());
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+        clock.advance(std::chrono::milliseconds(1100));
 
         auto stale = pm.stale_peers();
         CHECK(stale.size() == 1);
@@ -236,14 +245,15 @@ int main() {
 
     // ---- 6. Keepalive-needed detection --------------------------------------
     {
-        PeerManager pm;
+        ManualClock clock;
+        PeerManager pm(PEER_MANAGER_MAX_PEERS, clock);
         pm.set_keepalive_interval(std::chrono::milliseconds(1000));
         pm.upsert(bob.node_id, bob.keypair.public_key, ep_bob);
         pm.mark_seen(bob.node_id);
 
         CHECK(pm.peers_needing_keepalive().empty());
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+        clock.advance(std::chrono::milliseconds(1100));
 
         auto need = pm.peers_needing_keepalive();
         CHECK(need.size() == 1);
@@ -251,7 +261,7 @@ int main() {
 
         // Marking last_keepalive fresh removes it from the list
         Peer* b = pm.get_peer(bob.node_id);
-        b->last_keepalive = std::chrono::steady_clock::now();
+        b->last_keepalive = clock.now();
         CHECK(pm.peers_needing_keepalive().empty());
     }
 
@@ -261,7 +271,8 @@ int main() {
     // a busy peer would keep receiving keep-alives forever. (Regression for
     // the mark_seen fix.)
     {
-        PeerManager pm;
+        ManualClock clock;
+        PeerManager pm(PEER_MANAGER_MAX_PEERS, clock);
         pm.set_keepalive_interval(std::chrono::milliseconds(1000));
         pm.upsert(bob.node_id, bob.keypair.public_key, ep_bob);
 
@@ -271,13 +282,13 @@ int main() {
 
         // ...then it must be advanced again by subsequent traffic even though
         // the peer was already Established.
-        std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+        clock.advance(std::chrono::milliseconds(1100));
         CHECK(pm.peers_needing_keepalive().size() == 1);
 
         pm.mark_seen(bob.node_id);  // already-established peer sends traffic
         CHECK(pm.peers_needing_keepalive().empty());
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+        clock.advance(std::chrono::milliseconds(1100));
         CHECK(pm.peers_needing_keepalive().size() == 1);
     }
 

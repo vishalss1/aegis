@@ -2,6 +2,7 @@
 
 #include "aegis/identity/identity.hpp"
 #include "aegis/transport/transport.hpp"
+#include "aegis/protocol/sources.hpp"
 #include <cstdint>
 #include <map>
 #include <mutex>
@@ -45,7 +46,8 @@ struct Presence {
 
 class Discovery {
 public:
-    Discovery() = default;
+    explicit Discovery(ProtocolClock& clock = system_protocol_clock())
+        : clock_(clock) {}
     ~Discovery();
 
     Discovery(const Discovery&) = delete;
@@ -72,6 +74,7 @@ public:
         const NodeId& self_node_id, int64_t observed_at_ms);
 
 private:
+    ProtocolClock& clock_;
     const Identity* identity_ = nullptr;
     Endpoint announced_endpoint_{};
     uint16_t discovery_port_ = DISCOVERY_PORT;

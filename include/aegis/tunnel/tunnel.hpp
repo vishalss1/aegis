@@ -7,6 +7,8 @@
 #include "aegis/transport/transport.hpp"
 #include "aegis/adapter/adapter.hpp"
 #include "aegis/discovery/discovery.hpp"
+#include "aegis/crypto/random.hpp"
+#include "aegis/protocol/sources.hpp"
 #include <array>
 #include <cstdint>
 #include <string>
@@ -58,6 +60,7 @@ struct TunnelConfig {
 class Tunnel {
 public:
     Tunnel();
+    Tunnel(ProtocolClock& clock, RandomSource& random);
     ~Tunnel();
 
     Tunnel(const Tunnel&) = delete;
@@ -116,6 +119,8 @@ private:
     std::string network_name_;
     NodeId creator_node_id_{};
     bool is_creator_ = false;
+    ProtocolClock& clock_;
+    RandomSource& random_;
     std::unique_ptr<SessionManager> session_manager_;
     PeerManager peers_;
     RoutingEngine routing_;

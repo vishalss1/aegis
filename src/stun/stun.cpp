@@ -76,7 +76,7 @@ std::optional<Endpoint> parse_stun_binding_response(
 
 std::optional<Endpoint> stun_discover(
     const std::string& stun_host, uint16_t stun_port,
-    uint16_t local_port, int timeout_ms) {
+    uint16_t local_port, int timeout_ms, RandomSource& random) {
 
     SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (sock == INVALID_SOCKET) return std::nullopt;
@@ -104,7 +104,7 @@ std::optional<Endpoint> stun_discover(
     }
 
     std::array<uint8_t, 12> tx_id{};
-    if (!secure_random_bytes(tx_id)) {
+    if (!random.fill(tx_id)) {
         freeaddrinfo(res);
         closesocket(sock);
         return std::nullopt;

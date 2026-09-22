@@ -119,7 +119,7 @@ void Discovery::announce_loop() {
 
 void Discovery::on_presence(const uint8_t* data, size_t len, Endpoint sender) {
     const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count();
+        clock_.now().time_since_epoch()).count();
     auto p = parse_received_presence(
         data, len, sender, identity_->node_id, now_ms);
     if (!p)

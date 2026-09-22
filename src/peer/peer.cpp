@@ -3,7 +3,8 @@
 #include <algorithm>
 #include <cstdio>
 
-PeerManager::PeerManager(size_t max_peers) : max_peers_(max_peers) {}
+PeerManager::PeerManager(size_t max_peers, ProtocolClock& clock)
+    : max_peers_(max_peers), clock_(clock) {}
 
 namespace {
 
@@ -53,7 +54,7 @@ PeerUpsertResult PeerManager::upsert(
     peer.public_key = public_key;
     peer.endpoint = endpoint;
     peer.trusted = trusted;
-    peer.created_at = std::chrono::steady_clock::now();
+    peer.created_at = clock_.now();
     peers_.emplace(node_id, peer);
     return PeerUpsertResult::Inserted;
 }
@@ -118,7 +119,7 @@ void PeerManager::mark_seen(const NodeId& node_id, std::optional<Endpoint> endpo
     auto it = peers_.find(node_id);
     if (it == peers_.end()) return;
     auto& peer = it->second;
-    auto now = std::chrono::steady_clock::now();
+    auto now = clock_.now();
     if (endpoint) peer.endpoint = endpoint;
     if (peer.state != PeerState::Established) {
         peer.connected_since = now;
@@ -152,7 +153,7 @@ void PeerManager::update_endpoint(const NodeId& node_id, const Endpoint& endpoin
     auto it = peers_.find(node_id);
     if (it == peers_.end()) return;
     it->second.endpoint = endpoint;
-    it->second.last_seen = std::chrono::steady_clock::now();
+    it->second.last_seen = clock_.now();
 }
 
 std::optional<Session*> PeerManager::get_session(const NodeId& node_id) const {
@@ -175,7 +176,7 @@ void PeerManager::set_dead_timeout(std::chrono::milliseconds timeout) {
 std::vector<Peer*> PeerManager::stale_peers() {
     std::lock_guard<std::mutex> lock(mtx_);
     std::vector<Peer*> stale;
-    auto now = std::chrono::steady_clock::now();
+    auto now = clock_.now();
     for (auto& [_, peer] : peers_) {
         if (peer.state == PeerState::Dead) continue;
         auto reference = (peer.last_seen != decltype(peer.last_seen){})
@@ -190,7 +191,7 @@ std::vector<Peer*> PeerManager::stale_peers() {
 std::vector<Peer*> PeerManager::peers_needing_keepalive() {
     std::lock_guard<std::mutex> lock(mtx_);
     std::vector<Peer*> result;
-    auto now = std::chrono::steady_clock::now();
+    auto now = clock_.now();
     for (auto& [_, peer] : peers_) {
         if (peer.state != PeerState::Established) continue;
         auto age = std::chrono::duration_cast<std::chrono::milliseconds>(now - peer.last_keepalive);

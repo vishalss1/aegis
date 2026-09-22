@@ -4,6 +4,16 @@
 #include <optional>
 #include <span>
 
+class RandomSource {
+public:
+    virtual ~RandomSource() = default;
+    [[nodiscard]] virtual bool fill(std::span<uint8_t> output) = 0;
+    [[nodiscard]] std::optional<uint32_t> u32();
+    [[nodiscard]] std::optional<uint64_t> u64();
+};
+
+RandomSource& system_random_source();
+
 // Fill a caller-owned buffer from OpenSSL's operating-system-seeded CSPRNG.
 // Returns false without producing a usable result when the request is too
 // large for RAND_bytes or OpenSSL reports a failure.

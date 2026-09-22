@@ -9,6 +9,13 @@
 static int tests  = 0;
 static int passed = 0;
 
+class ManualClock final : public ProtocolClock {
+public:
+    time_point current{};
+    time_point now() const noexcept override { return current; }
+    void advance(std::chrono::milliseconds duration) { current += duration; }
+};
+
 #define CHECK(cond) do { \
     tests++; \
     bool _ok = !!(cond); \
@@ -28,8 +35,9 @@ int main() {
 
     // ---- 1. Handshake round-trip: init -> resp -> keys established ----------
     {
-        SessionManager sm_a(alice);
-        SessionManager sm_b(bob);
+        ManualClock clock;
+        SessionManager sm_a(alice, clock);
+        SessionManager sm_b(bob, clock);
 
         uint32_t session_id = 0xABCD0001;
 
@@ -230,8 +238,9 @@ int main() {
 
     // ---- 7. Step 15: rekey via a fresh handshake -----------------------------
     {
-        SessionManager sm_a(alice);
-        SessionManager sm_b(bob);
+        ManualClock clock;
+        SessionManager sm_a(alice, clock);
+        SessionManager sm_b(bob, clock);
         sm_a.set_retired_grace(std::chrono::milliseconds(60));
         sm_b.set_retired_grace(std::chrono::milliseconds(60));
 
@@ -283,7 +292,7 @@ int main() {
 
         // After the grace window, purge drops the retired session: the old
         // in-flight frame must no longer decrypt (keys gone).
-        std::this_thread::sleep_for(std::chrono::milliseconds(120));
+        clock.advance(std::chrono::milliseconds(120));
         sm_b.purge_retired();
         auto dec_stale = sm_b.decrypt_data(in_flight->data(), in_flight->size());
         CHECK(!dec_stale.has_value());

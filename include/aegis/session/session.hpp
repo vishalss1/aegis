@@ -3,6 +3,7 @@
 #include "aegis/identity/identity.hpp"
 #include "aegis/crypto/chacha20poly1305.hpp"
 #include "aegis/packet/header.hpp"
+#include "aegis/protocol/sources.hpp"
 #include <array>
 #include <bitset>
 #include <chrono>
@@ -35,7 +36,9 @@ struct Session {
 
 class SessionManager {
 public:
-    SessionManager(const Identity& identity);
+    explicit SessionManager(
+        const Identity& identity,
+        ProtocolClock& clock = system_protocol_clock());
 
     SessionManager(const SessionManager&) = delete;
     SessionManager& operator=(const SessionManager&) = delete;
@@ -96,6 +99,7 @@ public:
 
 private:
     const Identity& identity_;
+    ProtocolClock& clock_;
     std::map<NodeId, Session> sessions_;
     std::map<uint32_t, NodeId> session_to_peer_;
 

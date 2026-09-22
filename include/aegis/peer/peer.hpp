@@ -2,6 +2,7 @@
 
 #include "aegis/identity/identity.hpp"
 #include "aegis/transport/transport.hpp"
+#include "aegis/protocol/sources.hpp"
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -46,7 +47,9 @@ struct Peer {
 
 class PeerManager {
 public:
-    explicit PeerManager(size_t max_peers = PEER_MANAGER_MAX_PEERS);
+    explicit PeerManager(
+        size_t max_peers = PEER_MANAGER_MAX_PEERS,
+        ProtocolClock& clock = system_protocol_clock());
 
     void set_session_manager(SessionManager* session_manager);
 
@@ -89,6 +92,7 @@ public:
 private:
     std::map<NodeId, Peer> peers_;
     size_t max_peers_;
+    ProtocolClock& clock_;
     SessionManager* session_manager_ = nullptr;
     std::chrono::milliseconds keepalive_interval_{25000};
     std::chrono::milliseconds dead_timeout_{180000};

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "aegis/transport/transport.hpp"
+#include "aegis/crypto/random.hpp"
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -16,4 +17,5 @@ std::optional<Endpoint> parse_stun_binding_response(
 // Connects to a STUN server via UDP, sends a Binding Request, and returns the public Endpoint.
 std::optional<Endpoint> stun_discover(
     const std::string& stun_host, uint16_t stun_port,
-    uint16_t local_port = 0, int timeout_ms = 2000);
+    uint16_t local_port = 0, int timeout_ms = 2000,
+    RandomSource& random = system_random_source());

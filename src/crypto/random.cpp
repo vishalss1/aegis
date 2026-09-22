@@ -3,17 +3,26 @@
 #include <limits>
 #include <openssl/rand.h>
 
-bool secure_random_bytes(std::span<uint8_t> output) {
-    if (output.empty())
-        return true;
-    if (output.size() > static_cast<size_t>(std::numeric_limits<int>::max()))
-        return false;
-    return RAND_bytes(output.data(), static_cast<int>(output.size())) == 1;
+namespace {
+class OpenSslRandomSource final : public RandomSource {
+public:
+    bool fill(std::span<uint8_t> output) override {
+        if (output.empty()) return true;
+        if (output.size() > static_cast<size_t>((std::numeric_limits<int>::max)()))
+            return false;
+        return RAND_bytes(output.data(), static_cast<int>(output.size())) == 1;
+    }
+};
+} // namespace
+
+RandomSource& system_random_source() {
+    static OpenSslRandomSource source;
+    return source;
 }
 
-std::optional<uint32_t> secure_random_u32() {
+std::optional<uint32_t> RandomSource::u32() {
     std::array<uint8_t, sizeof(uint32_t)> bytes{};
-    if (!secure_random_bytes(bytes))
+    if (!fill(bytes))
         return std::nullopt;
     return (static_cast<uint32_t>(bytes[0]) << 24) |
            (static_cast<uint32_t>(bytes[1]) << 16) |
@@ -21,13 +30,25 @@ std::optional<uint32_t> secure_random_u32() {
            static_cast<uint32_t>(bytes[3]);
 }
 
-std::optional<uint64_t> secure_random_u64() {
+std::optional<uint64_t> RandomSource::u64() {
     std::array<uint8_t, sizeof(uint64_t)> bytes{};
-    if (!secure_random_bytes(bytes))
+    if (!fill(bytes))
         return std::nullopt;
 
     uint64_t value = 0;
     for (const auto byte : bytes)
         value = (value << 8) | static_cast<uint64_t>(byte);
     return value;
+}
+
+bool secure_random_bytes(std::span<uint8_t> output) {
+    return system_random_source().fill(output);
+}
+
+std::optional<uint32_t> secure_random_u32() {
+    return system_random_source().u32();
+}
+
+std::optional<uint64_t> secure_random_u64() {
+    return system_random_source().u64();
 }

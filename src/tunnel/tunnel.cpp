@@ -11,7 +11,12 @@
 #include <algorithm>
 #include <fstream>
 
-Tunnel::Tunnel() = default;
+Tunnel::Tunnel()
+    : Tunnel(system_protocol_clock(), system_random_source()) {}
+
+Tunnel::Tunnel(ProtocolClock& clock, RandomSource& random)
+    : discovery_(clock), clock_(clock), random_(random),
+      peers_(PEER_MANAGER_MAX_PEERS, clock) {}
 
 Tunnel::~Tunnel() { stop(); }
 
@@ -38,7 +43,7 @@ bool Tunnel::start(const TunnelConfig& config, const std::string& adapter_name) 
     for (auto b : identity_.node_id) aegis_log( "%02x", b);
     aegis_log( "\n");
 
-    session_manager_ = std::make_unique<SessionManager>(identity_);
+    session_manager_ = std::make_unique<SessionManager>(identity_, clock_);
     peers_.set_session_manager(session_manager_.get());
 
     // Step 15 lifecycle: keep-alive and dead-detection intervals feed the
@@ -93,7 +98,8 @@ bool Tunnel::start(const TunnelConfig& config, const std::string& adapter_name) 
         std::string host = (colon != std::string::npos) ? server.substr(0, colon) : server;
         uint16_t port = (colon != std::string::npos) ? (uint16_t)std::atoi(server.c_str() + colon + 1) : 3478;
 
-        auto st_ep = stun_discover(host, port, config.listen_port);
+        auto st_ep = stun_discover(
+            host, port, config.listen_port, 2000, random_);
         if (st_ep) {
             stun_public_endpoint_ = st_ep;
             uint32_t ip_h = ntohl(st_ep->ip);
@@ -239,7 +245,7 @@ bool Tunnel::handshake_peer(const TunnelPeer& peer, bool force) {
     if (initiator) {
         std::optional<uint32_t> reserved_sid;
         for (int attempt = 0; attempt < 16 && !reserved_sid; ++attempt) {
-            const auto candidate = secure_random_u32();
+            const auto candidate = random_.u32();
             if (!candidate) {
                 aegis_log("[tunnel] secure session id generation failed\n");
                 return false;
@@ -476,7 +482,7 @@ void Tunnel::rekey_due() {
     auto interval = std::chrono::milliseconds(
         config_.rekey_interval_ms > 0 ? config_.rekey_interval_ms
                                       : REKEY_INTERVAL_MS);
-    auto now = std::chrono::steady_clock::now();
+    auto now = clock_.now();
     for (auto* peer : peers_.all_peers()) {
         if (peer->node_id == identity_.node_id)
             continue;
@@ -987,7 +993,7 @@ bool Tunnel::send_file(const std::string& filepath, const std::optional<NodeId>&
 
     uint64_t transfer_id = 0;
     for (int attempt = 0; attempt < 16 && transfer_id == 0; ++attempt) {
-        const auto candidate = secure_random_u64();
+        const auto candidate = random_.u64();
         if (!candidate) {
             aegis_log("[tunnel] secure file transfer id generation failed\n");
             return false;

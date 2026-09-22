@@ -19,8 +19,8 @@ static uint32_t bswap32(uint32_t x) {
 }
 #endif
 
-SessionManager::SessionManager(const Identity& identity)
-    : identity_(identity) {}
+SessionManager::SessionManager(const Identity& identity, ProtocolClock& clock)
+    : identity_(identity), clock_(clock) {}
 
 SecretBytes<32> SessionManager::sha256(
     const uint8_t* data, size_t len)
@@ -131,7 +131,7 @@ void SessionManager::derive_keys(
     // The session becomes active (and its rekey timer starts) only once both
     // sides have the derived keys. Time is captured here rather than at
     // create_session so a failed handshake never leaves a "fresh" timestamp.
-    session.established_at = std::chrono::steady_clock::now();
+    session.established_at = clock_.now();
 }
 
 void SessionManager::set_retired_grace(std::chrono::milliseconds grace) {
@@ -149,7 +149,7 @@ Session& SessionManager::create_session(
     auto it = sessions_.find(peer_id);
     if (it != sessions_.end() && it->second.established) {
         retired_[it->second.id] = { it->second,
-            std::chrono::steady_clock::now() + retired_grace_ };
+            clock_.now() + retired_grace_ };
         session_to_peer_.erase(it->second.id);
     }
 
@@ -216,7 +216,7 @@ void SessionManager::remove_session(const NodeId& peer_id) {
 
 void SessionManager::purge_retired() {
     std::lock_guard<std::mutex> lock(mtx_);
-    auto now = std::chrono::steady_clock::now();
+    auto now = clock_.now();
     for (auto it = retired_.begin(); it != retired_.end();) {
         if (it->second.expires <= now)
             it = retired_.erase(it);
