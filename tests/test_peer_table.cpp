@@ -51,6 +51,16 @@ int main() {
         auto wire = serialize_peer_table(in);
         CHECK(wire.has_value());
         CHECK(wire && wire->size() >= 3);
+        if (wire) {
+            CHECK((*wire)[0] == 0x02);
+            CHECK((*wire)[1] == 0x00 && (*wire)[2] == 0x02);
+            CHECK((*wire)[67] == 0x00);  // first peer has no path hops
+            CHECK((*wire)[68] == 0x00);  // reserved flags are canonical zero
+            CHECK((*wire)[69] == 0x02);  // two advertised prefixes
+            CHECK((*wire)[70] == 10 && (*wire)[71] == 30 &&
+                  (*wire)[72] == 0 && (*wire)[73] == 0);
+            CHECK((*wire)[74] == 24);
+        }
         auto out = wire
             ? deserialize_peer_table(wire->data(), wire->size())
             : std::nullopt;
@@ -78,6 +88,17 @@ int main() {
         CHECK(!deserialize_peer_table(truncated.data(), truncated.size()).has_value());
         std::vector<uint8_t> bad_version = {0x01, 0x00, 0x00};
         CHECK(!deserialize_peer_table(bad_version.data(), bad_version.size()).has_value());
+
+        std::vector<uint8_t> trailing = {0x02, 0x00, 0x00, 0xFF};
+        CHECK(!deserialize_peer_table(
+            trailing.data(), trailing.size()).has_value());
+
+        std::vector<uint8_t> nonzero_reserved(70, 0);
+        nonzero_reserved[0] = 0x02;
+        nonzero_reserved[2] = 0x01;
+        nonzero_reserved[68] = 0x01;
+        CHECK(!deserialize_peer_table(
+            nonzero_reserved.data(), nonzero_reserved.size()).has_value());
         CHECK(!deserialize_peer_table(nullptr, 0).has_value());
     }
 

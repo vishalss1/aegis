@@ -1,20 +1,9 @@
 #include "aegis/peer/peer_table.hpp"
-#include <cstring>
+#include "aegis/protocol/wire.hpp"
+#include <algorithm>
 #include <set>
 
 static constexpr uint8_t PEER_TABLE_VERSION = 2;
-
-static void put_u16(std::vector<uint8_t>& out, uint16_t v) {
-    out.push_back((uint8_t)(v >> 8));
-    out.push_back((uint8_t)(v & 0xFF));
-}
-
-static void put_u32(std::vector<uint8_t>& out, uint32_t v) {
-    out.push_back((uint8_t)(v >> 24));
-    out.push_back((uint8_t)(v >> 16));
-    out.push_back((uint8_t)(v >> 8));
-    out.push_back((uint8_t)(v));
-}
 
 std::optional<std::vector<uint8_t>> serialize_peer_table(
     const std::vector<AdvertisedPeer>& peers) {
@@ -35,23 +24,32 @@ std::optional<std::vector<uint8_t>> serialize_peer_table(
         encoded_size += peer_bytes;
     }
 
-    std::vector<uint8_t> out;
-    out.reserve(encoded_size);
-    out.push_back(PEER_TABLE_VERSION);
-    put_u16(out, (uint16_t)peers.size());
+    std::vector<uint8_t> out(encoded_size);
+    WireWriter writer(out);
+    if (!writer.write_u8(PEER_TABLE_VERSION) ||
+        !writer.write_u16(static_cast<uint16_t>(peers.size())))
+        return std::nullopt;
+
     for (const auto& p : peers) {
-        out.insert(out.end(), p.node_id.begin(), p.node_id.end());
-        out.insert(out.end(), p.public_key.begin(), p.public_key.end());
-        out.push_back((uint8_t)p.path.size());
-        for (const auto& hop : p.path)
-            out.insert(out.end(), hop.begin(), hop.end());
-        out.push_back(0);  // flags (reserved)
-        out.push_back((uint8_t)p.prefixes.size());
+        if (!writer.write_bytes(p.node_id) ||
+            !writer.write_bytes(p.public_key) ||
+            !writer.write_u8(static_cast<uint8_t>(p.path.size())))
+            return std::nullopt;
+        for (const auto& hop : p.path) {
+            if (!writer.write_bytes(hop))
+                return std::nullopt;
+        }
+        if (!writer.write_u8(0) ||  // flags (reserved)
+            !writer.write_u8(static_cast<uint8_t>(p.prefixes.size())))
+            return std::nullopt;
         for (const auto& [prefix, prefix_length] : p.prefixes) {
-            put_u32(out, prefix);
-            out.push_back(prefix_length);
+            if (!writer.write_u32(prefix) ||
+                !writer.write_u8(prefix_length))
+                return std::nullopt;
         }
     }
+    if (!writer.finished())
+        return std::nullopt;
     return out;
 }
 
@@ -59,55 +57,53 @@ std::optional<std::vector<AdvertisedPeer>> deserialize_peer_table(
     const uint8_t* data, size_t len) {
     if (!data || len < 3 || len > PEER_TABLE_MAX_WIRE_BYTES)
         return std::nullopt;
-    size_t off = 0;
-    if (data[off++] != PEER_TABLE_VERSION)
-        return std::nullopt;
-    uint16_t count = ((uint16_t)data[off] << 8) | data[off + 1];
-    off += 2;
-    if (count > PEER_TABLE_MAX_PEERS)
+    WireReader reader(std::span<const uint8_t>(data, len));
+    const auto version = reader.read_u8();
+    const auto count = reader.read_u16();
+    if (!version || *version != PEER_TABLE_VERSION || !count ||
+        *count > PEER_TABLE_MAX_PEERS)
         return std::nullopt;
 
     std::vector<AdvertisedPeer> out;
-    out.reserve(count);
-    for (uint16_t i = 0; i < count; ++i) {
-        if (off + 32 + 32 + 1 > len)
+    out.reserve(*count);
+    for (uint16_t i = 0; i < *count; ++i) {
+        const auto node_id = reader.read_bytes(32);
+        const auto public_key = reader.read_bytes(32);
+        const auto path_count = reader.read_u8();
+        if (!node_id || !public_key || !path_count ||
+            *path_count > PEER_TABLE_MAX_PATH_HOPS)
             return std::nullopt;
+
         AdvertisedPeer p;
-        std::memcpy(p.node_id.data(), data + off, 32);
-        off += 32;
-        std::memcpy(p.public_key.data(), data + off, 32);
-        off += 32;
-        uint8_t path_count = data[off++];
-        if (path_count > PEER_TABLE_MAX_PATH_HOPS)
-            return std::nullopt;
-        for (uint8_t j = 0; j < path_count; ++j) {
-            if (off + 32 > len)
+        std::copy(node_id->begin(), node_id->end(), p.node_id.begin());
+        std::copy(public_key->begin(), public_key->end(), p.public_key.begin());
+        p.path.reserve(*path_count);
+        for (uint8_t j = 0; j < *path_count; ++j) {
+            const auto encoded_hop = reader.read_bytes(32);
+            if (!encoded_hop)
                 return std::nullopt;
             NodeId hop{};
-            std::memcpy(hop.data(), data + off, 32);
-            off += 32;
+            std::copy(encoded_hop->begin(), encoded_hop->end(), hop.begin());
             p.path.push_back(hop);
         }
-        if (off + 2 > len)
+
+        const auto flags = reader.read_u8();
+        const auto prefix_count = reader.read_u8();
+        if (!flags || *flags != 0 || !prefix_count ||
+            *prefix_count > PEER_TABLE_MAX_PREFIXES)
             return std::nullopt;
-        off += 1;  // flags (reserved)
-        uint8_t prefix_count = data[off++];
-        if (prefix_count > PEER_TABLE_MAX_PREFIXES)
-            return std::nullopt;
-        for (uint8_t j = 0; j < prefix_count; ++j) {
-            if (off + 5 > len)
+        p.prefixes.reserve(*prefix_count);
+        for (uint8_t j = 0; j < *prefix_count; ++j) {
+            const auto prefix = reader.read_u32();
+            const auto prefix_length = reader.read_u8();
+            if (!prefix || !prefix_length || *prefix_length > 32)
                 return std::nullopt;
-            uint32_t prefix = ((uint32_t)data[off] << 24) |
-                              ((uint32_t)data[off + 1] << 16) |
-                              ((uint32_t)data[off + 2] << 8) | data[off + 3];
-            off += 4;
-            uint8_t prefix_length = data[off++];
-            if (prefix_length > 32)
-                return std::nullopt;
-            p.prefixes.emplace_back(prefix, prefix_length);
+            p.prefixes.emplace_back(*prefix, *prefix_length);
         }
         out.push_back(std::move(p));
     }
+    if (!reader.finished())
+        return std::nullopt;
     return out;
 }
 

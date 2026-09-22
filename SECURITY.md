@@ -58,9 +58,11 @@ the gossip trust boundary, the following rules apply in order:
    routing table is capped at 2,048 entries.
 
 Peer-table frames are limited to 60 KiB, 128 advertised peers, eight path hops
-per peer, and 16 prefixes per peer. Merge results separately report accepted
-identities, changed peer bindings, installed routes, malformed data, identity
-conflicts, and capacity rejection.
+per peer, and 16 prefixes per peer. The decoder requires complete frame
+consumption, canonical network-byte-order integers, and zero-valued reserved
+flags. Merge results separately report accepted identities, changed peer
+bindings, installed routes, malformed data, identity conflicts, and capacity
+rejection.
 
 These checks bind a public key to its self-certifying NodeID only. They do not
 authenticate the adjacent session, establish prefix ownership, or prove that an
