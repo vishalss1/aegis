@@ -26,6 +26,8 @@ The implementation currently provides the following limited properties:
 - Session payloads use ChaCha20-Poly1305 with the packet header as additional
   authenticated data.
 - Session keys are derived from fresh ephemeral X25519 keys.
+- Initiator-selected session IDs come from OpenSSL's operating-system-seeded
+  CSPRNG and are checked against active and pending local sessions.
 - Session data has a 2,048-packet replay window.
 - Onion layers use ChaCha20-Poly1305 and a distinct static-DH-derived key for
   each source/hop pair.

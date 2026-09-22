@@ -18,6 +18,11 @@ target_include_directories(test_crypto PRIVATE ../include)
 target_link_libraries(test_crypto OpenSSL::Crypto)
 add_test(NAME test_crypto COMMAND test_crypto)
 
+add_executable(test_random test_random.cpp ../src/crypto/random.cpp)
+target_include_directories(test_random PRIVATE ../include)
+target_link_libraries(test_random OpenSSL::Crypto)
+add_test(NAME test_random COMMAND test_random)
+
 add_executable(test_aead test_aead.cpp ../src/crypto/chacha20poly1305.cpp)
 target_include_directories(test_aead PRIVATE ../include)
 target_link_libraries(test_aead OpenSSL::Crypto)
@@ -102,7 +107,7 @@ target_include_directories(test_stun PRIVATE ../include)
 target_link_libraries(test_stun ws2_32)
 add_test(NAME test_stun COMMAND test_stun)
 
-add_executable(test_cli test_cli.cpp ../src/cli/input_parser.cpp ../src/cli/command_registry.cpp ../src/cli/commands.cpp ../src/cli/identity_store.cpp ../src/identity/identity.cpp ../src/crypto/x25519.cpp ../src/crypto/chacha20poly1305.cpp ../src/config/config.cpp ../src/invite/invite.cpp ../src/platform/platform.cpp ../src/platform/logger.cpp ../src/tunnel/tunnel.cpp ../src/peer/peer.cpp ../src/peer/peer_table.cpp ../src/session/session.cpp ../src/adapter/adapter.cpp ../src/packet/packet.cpp ../src/packet/relay.cpp ../src/routing/routing.cpp ../src/transport/transport.cpp ../src/discovery/discovery.cpp ../src/stun/stun.cpp)
+add_executable(test_cli test_cli.cpp ../src/cli/input_parser.cpp ../src/cli/command_registry.cpp ../src/cli/commands.cpp ../src/cli/identity_store.cpp ../src/identity/identity.cpp ../src/crypto/x25519.cpp ../src/crypto/chacha20poly1305.cpp ../src/crypto/random.cpp ../src/config/config.cpp ../src/invite/invite.cpp ../src/platform/platform.cpp ../src/platform/logger.cpp ../src/tunnel/tunnel.cpp ../src/peer/peer.cpp ../src/peer/peer_table.cpp ../src/session/session.cpp ../src/adapter/adapter.cpp ../src/packet/packet.cpp ../src/packet/relay.cpp ../src/routing/routing.cpp ../src/transport/transport.cpp ../src/discovery/discovery.cpp ../src/stun/stun.cpp)
 target_include_directories(test_cli PRIVATE ../include)
 target_link_libraries(test_cli OpenSSL::Crypto ws2_32 wintun iphlpapi)
 add_test(NAME test_cli COMMAND test_cli)
@@ -112,6 +117,7 @@ set(AEGIS_TEST_TARGETS
     test_wire
     test_transport
     test_crypto
+    test_random
     test_aead
     test_identity
     test_tunnel
@@ -136,6 +142,7 @@ add_custom_target(check
     COMMAND test_wire
     COMMAND test_transport
     COMMAND test_crypto
+    COMMAND test_random
     COMMAND test_aead
     COMMAND test_identity
     COMMAND test_tunnel

@@ -1,12 +1,12 @@
 #include "aegis/tunnel/tunnel.hpp"
 #include "aegis/packet/packet.hpp"
 #include "aegis/packet/relay.hpp"
+#include "aegis/crypto/random.hpp"
 #include "aegis/stun/stun.hpp"
 #include "aegis/platform/logger.hpp"
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
-#include <ctime>
 #include <chrono>
 #include <algorithm>
 #include <fstream>
@@ -24,18 +24,6 @@ struct IncomingFileTransfer {
 };
 static std::mutex g_ft_mtx;
 static std::map<uint64_t, IncomingFileTransfer> g_incoming_transfers;
-
-static uint32_t rand_session_id() {
-    // Unique per call within this process (multi-peer needs distinct ids for
-    // every session on a node) and time-mixed so concurrent nodes rarely
-    // collide. The old srand(time()) reseed produced identical ids for all
-    // handshakes started in the same second, corrupting session_to_peer_.
-    static std::atomic<uint32_t> counter{0};
-    uint32_t n = counter.fetch_add(1);
-    uint64_t t = (uint64_t)std::chrono::high_resolution_clock::now()
-                     .time_since_epoch().count();
-    return (uint32_t)((t >> 16) ^ (n * 0x9E3779B1u));
-}
 
 bool Tunnel::start(const TunnelConfig& config, const std::string& adapter_name) {
     config_ = config;
@@ -249,11 +237,34 @@ bool Tunnel::handshake_peer(const TunnelPeer& peer, bool force) {
             initiator ? "initiator" : "responder");
 
     if (initiator) {
-        uint32_t sid = rand_session_id();
-        {
+        std::optional<uint32_t> reserved_sid;
+        for (int attempt = 0; attempt < 16 && !reserved_sid; ++attempt) {
+            const auto candidate = secure_random_u32();
+            if (!candidate) {
+                aegis_log("[tunnel] secure session id generation failed\n");
+                return false;
+            }
+            if (*candidate == 0 ||
+                session_manager_->get_session_by_id(*candidate).has_value())
+                continue;
+
             std::lock_guard<std::mutex> lock(hs_mtx_);
-            pending_handshakes_[peer.node_id] = {peer.node_id, sid, false};
+            const bool pending_collision = std::any_of(
+                pending_handshakes_.begin(), pending_handshakes_.end(),
+                [&](const auto& entry) {
+                    return entry.second.session_id == *candidate;
+                });
+            if (!pending_collision) {
+                pending_handshakes_[peer.node_id] = {
+                    peer.node_id, *candidate, false};
+                reserved_sid = candidate;
+            }
         }
+        if (!reserved_sid) {
+            aegis_log("[tunnel] unable to reserve a unique session id\n");
+            return false;
+        }
+        const uint32_t sid = *reserved_sid;
 
         auto init_payload = session_manager_->create_handshake_init(sid);
         PacketHeader hdr{};
