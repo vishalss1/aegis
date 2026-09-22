@@ -985,7 +985,19 @@ bool Tunnel::send_file(const std::string& filepath, const std::optional<NodeId>&
     uint32_t total_chunks = (uint32_t)((file_size + CHUNK_SIZE - 1) / CHUNK_SIZE);
     if (total_chunks == 0) total_chunks = 1;
 
-    uint64_t transfer_id = (uint64_t)rand() << 32 | rand();
+    uint64_t transfer_id = 0;
+    for (int attempt = 0; attempt < 16 && transfer_id == 0; ++attempt) {
+        const auto candidate = secure_random_u64();
+        if (!candidate) {
+            aegis_log("[tunnel] secure file transfer id generation failed\n");
+            return false;
+        }
+        transfer_id = *candidate;
+    }
+    if (transfer_id == 0) {
+        aegis_log("[tunnel] unable to generate a non-zero file transfer id\n");
+        return false;
+    }
 
     std::vector<Peer*> established_peers;
     for (auto* p : peers_.all_peers()) {

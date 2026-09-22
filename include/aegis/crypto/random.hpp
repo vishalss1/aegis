@@ -12,3 +12,7 @@
 // Generate a uniformly random 32-bit value. Zero is a valid result; protocol
 // callers that reserve zero must reject it explicitly.
 [[nodiscard]] std::optional<uint32_t> secure_random_u32();
+
+// Generate a uniformly random 64-bit value. Zero is a valid result; protocol
+// callers that reserve zero must reject it explicitly.
+[[nodiscard]] std::optional<uint64_t> secure_random_u64();

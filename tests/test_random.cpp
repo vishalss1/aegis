@@ -30,6 +30,11 @@ int main() {
         CHECK(value.has_value());
     }
 
+    {
+        const auto value = secure_random_u64();
+        CHECK(value.has_value());
+    }
+
     std::printf("\n%d / %d passed\n", passed, tests);
     return passed == tests ? 0 : 1;
 }
