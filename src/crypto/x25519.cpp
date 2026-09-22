@@ -45,8 +45,8 @@ X25519KeyPair x25519_generate_keypair() {
     return kp;
 }
 
-std::optional<X25519Key> x25519_derive_shared_secret(
-    const X25519Key& my_private,
+std::optional<X25519SharedSecret> x25519_derive_shared_secret(
+    const X25519PrivateKey& my_private,
     const X25519Key& their_public
 ) {
     // Load our private key from raw bytes
@@ -101,7 +101,7 @@ std::optional<X25519Key> x25519_derive_shared_secret(
         return std::nullopt;
     }
 
-    X25519Key secret{};
+    X25519SharedSecret secret{};
     if (secret_len != X25519_KEY_SIZE) {
         fprintf(stderr, "[x25519] unexpected shared secret length: %zu\n", secret_len);
         EVP_PKEY_CTX_free(derive);

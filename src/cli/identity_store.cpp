@@ -20,7 +20,7 @@ Identity load_or_create_identity(const NetworkId& network_id, const std::string&
 
     std::ifstream in(file_path, std::ios::binary);
     if (in.is_open()) {
-        X25519Key priv{};
+        X25519PrivateKey priv{};
         in.read(reinterpret_cast<char*>(priv.data()), priv.size());
         if (in.gcount() == static_cast<std::streamsize>(priv.size())) {
             Identity id;

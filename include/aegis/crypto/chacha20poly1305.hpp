@@ -1,5 +1,6 @@
 #pragma once
 
+#include "aegis/crypto/secret.hpp"
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -8,7 +9,7 @@ static constexpr size_t CHACHA20_POLY1305_KEY_SIZE   = 32;
 static constexpr size_t CHACHA20_POLY1305_NONCE_SIZE  = 12;
 static constexpr size_t CHACHA20_POLY1305_TAG_SIZE    = 16;
 
-using ChaCha20Poly1305Key   = std::array<uint8_t, CHACHA20_POLY1305_KEY_SIZE>;
+using ChaCha20Poly1305Key   = SecretBytes<CHACHA20_POLY1305_KEY_SIZE>;
 using ChaCha20Poly1305Nonce = std::array<uint8_t, CHACHA20_POLY1305_NONCE_SIZE>;
 
 bool chacha20_poly1305_encrypt(

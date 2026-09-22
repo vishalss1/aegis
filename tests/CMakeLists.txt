@@ -28,6 +28,11 @@ target_include_directories(test_primitives PRIVATE ../include)
 target_link_libraries(test_primitives OpenSSL::Crypto)
 add_test(NAME test_primitives COMMAND test_primitives)
 
+add_executable(test_secret test_secret.cpp)
+target_include_directories(test_secret PRIVATE ../include)
+target_link_libraries(test_secret OpenSSL::Crypto)
+add_test(NAME test_secret COMMAND test_secret)
+
 add_executable(test_aead test_aead.cpp ../src/crypto/chacha20poly1305.cpp)
 target_include_directories(test_aead PRIVATE ../include)
 target_link_libraries(test_aead OpenSSL::Crypto)
@@ -55,6 +60,7 @@ add_test(NAME test_peer COMMAND test_peer)
 
 add_executable(test_routing test_routing.cpp ../src/routing/routing.cpp)
 target_include_directories(test_routing PRIVATE ../include)
+target_link_libraries(test_routing OpenSSL::Crypto)
 add_test(NAME test_routing COMMAND test_routing)
 
 add_executable(test_peer_table test_peer_table.cpp ../src/peer/peer_table.cpp ../src/peer/peer.cpp ../src/session/session.cpp ../src/identity/identity.cpp ../src/crypto/x25519.cpp ../src/crypto/chacha20poly1305.cpp ../src/routing/routing.cpp ../src/platform/logger.cpp)
@@ -100,6 +106,7 @@ endif()
 
 add_executable(test_config test_config.cpp ../src/config/config.cpp)
 target_include_directories(test_config PRIVATE ../include)
+target_link_libraries(test_config OpenSSL::Crypto)
 add_test(NAME test_config COMMAND test_config)
 
 add_executable(test_invite test_invite.cpp ../src/invite/invite.cpp ../src/identity/identity.cpp ../src/crypto/x25519.cpp)
@@ -124,6 +131,7 @@ set(AEGIS_TEST_TARGETS
     test_crypto
     test_random
     test_primitives
+    test_secret
     test_aead
     test_identity
     test_tunnel
@@ -150,6 +158,7 @@ add_custom_target(check
     COMMAND test_crypto
     COMMAND test_random
     COMMAND test_primitives
+    COMMAND test_secret
     COMMAND test_aead
     COMMAND test_identity
     COMMAND test_tunnel

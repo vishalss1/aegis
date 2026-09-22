@@ -36,6 +36,9 @@ The implementation currently provides the following limited properties:
   when secure randomness is unavailable.
 - Checked SHA-256/BLAKE2s transcript hashing, HKDF, and constant-time comparison
   helpers are available for the authenticated handshake migration.
+- Static and ephemeral private keys, DH outputs, session keys, derived onion
+  keys, and intermediate session KDF values use cleansing storage that erases
+  owned copies on destruction, overwrite, and move.
 - Session data has a 2,048-packet replay window.
 - Onion layers use ChaCha20-Poly1305 and a distinct static-DH-derived key for
   each source/hop pair.

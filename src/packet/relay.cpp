@@ -10,9 +10,9 @@ namespace {
 //     SHA256("aegis-onion-v1" || X25519(our_priv, hop_pub))
 // The same primitive the peer table is keyed on; a relay derives it with its
 // own private key and the source's public key.
-std::array<uint8_t, CHACHA20_POLY1305_KEY_SIZE> layer_key(
-    const X25519Key& my_priv, const Key& hop_pub) {
-    std::array<uint8_t, CHACHA20_POLY1305_KEY_SIZE> key{};
+ChaCha20Poly1305Key layer_key(
+    const X25519PrivateKey& my_priv, const Key& hop_pub) {
+    ChaCha20Poly1305Key key{};
     auto shared = x25519_derive_shared_secret(my_priv, hop_pub);
     if (!shared) return key;
 

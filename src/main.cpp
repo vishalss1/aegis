@@ -359,7 +359,7 @@ static int run_crypto_test() {
     X25519KeyPair bob   = x25519_generate_keypair();
 
     // Check keys are non-zero
-    auto key_all_zero = [](const X25519Key& k) {
+    auto key_all_zero = [](const auto& k) {
         for (auto b : k) if (b != 0) return false;
         return true;
     };

@@ -121,18 +121,18 @@ private:
         const X25519KeyPair& ephemeral) const;
 
     Session& create_session(const NodeId& peer_id, uint32_t session_id);
-    void derive_keys(Session& session, const X25519Key& shared_secret,
+    void derive_keys(Session& session, const X25519SharedSecret& shared_secret,
                      uint32_t session_id, bool initiator);
 
     bool check_replay(Session& session, uint64_t seq);
     void update_replay(Session& session, uint64_t seq);
 
-    static X25519Key derive_master_secret(
-        const X25519Key& our_priv, const X25519Key& their_pub);
+    static X25519SharedSecret derive_master_secret(
+        const X25519PrivateKey& our_priv, const X25519Key& their_pub);
 
-    static std::array<uint8_t, 32> sha256(
+    static SecretBytes<32> sha256(
         const uint8_t* data, size_t len);
-    static std::array<uint8_t, 32> sha256(
+    static SecretBytes<32> sha256(
         const uint8_t* d1, size_t l1,
         const uint8_t* d2, size_t l2);
 

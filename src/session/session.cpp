@@ -22,20 +22,20 @@ static uint32_t bswap32(uint32_t x) {
 SessionManager::SessionManager(const Identity& identity)
     : identity_(identity) {}
 
-std::array<uint8_t, 32> SessionManager::sha256(
+SecretBytes<32> SessionManager::sha256(
     const uint8_t* data, size_t len)
 {
-    std::array<uint8_t, 32> hash{};
+    SecretBytes<32> hash{};
     unsigned int out_len = 32;
     EVP_Digest(data, len, hash.data(), &out_len, EVP_sha256(), nullptr);
     return hash;
 }
 
-std::array<uint8_t, 32> SessionManager::sha256(
+SecretBytes<32> SessionManager::sha256(
     const uint8_t* d1, size_t l1,
     const uint8_t* d2, size_t l2)
 {
-    std::array<uint8_t, 32> hash{};
+    SecretBytes<32> hash{};
     unsigned int out_len = 32;
     EVP_MD_CTX* ctx = EVP_MD_CTX_new();
     if (ctx) {
@@ -91,19 +91,19 @@ std::vector<uint8_t> SessionManager::build_handshake_message(
     return msg;
 }
 
-X25519Key SessionManager::derive_master_secret(
-    const X25519Key& our_priv, const X25519Key& their_pub)
+X25519SharedSecret SessionManager::derive_master_secret(
+    const X25519PrivateKey& our_priv, const X25519Key& their_pub)
 {
     auto opt = x25519_derive_shared_secret(our_priv, their_pub);
     if (!opt) {
         aegis_log( "[session] derive_master_secret failed\n");
-        return X25519Key{};
+        return X25519SharedSecret{};
     }
     return *opt;
 }
 
 void SessionManager::derive_keys(
-    Session& session, const X25519Key& shared_secret,
+    Session& session, const X25519SharedSecret& shared_secret,
     uint32_t session_id, bool initiator)
 {
     // send_key = SHA-256(shared_secret || session_id_be || "send")
@@ -227,11 +227,12 @@ void SessionManager::purge_retired() {
 
 std::vector<uint8_t> SessionManager::create_handshake_init(uint32_t session_id) {
     X25519KeyPair ephemeral = x25519_generate_keypair();
+    auto message = build_handshake_message(session_id, ephemeral);
     {
         std::lock_guard<std::mutex> lock(mtx_);
-        ephemerals_[session_id] = ephemeral;
+        ephemerals_[session_id] = std::move(ephemeral);
     }
-    return build_handshake_message(session_id, ephemeral);
+    return message;
 }
 
 std::optional<std::vector<uint8_t>> SessionManager::handle_handshake_init(
@@ -275,7 +276,8 @@ std::optional<std::vector<uint8_t>> SessionManager::handle_handshake_init(
 
     X25519KeyPair ephemeral = x25519_generate_keypair();
 
-    X25519Key secret = derive_master_secret(ephemeral.private_key, peer_eph);
+    X25519SharedSecret secret = derive_master_secret(
+        ephemeral.private_key, peer_eph);
     if (std::all_of(secret.begin(), secret.end(), [](uint8_t b) { return b == 0; }))
         return std::nullopt;
 
@@ -338,7 +340,8 @@ bool SessionManager::handle_handshake_resp(
         return false;
     }
 
-    X25519Key secret = derive_master_secret(eit->second.private_key, peer_eph);
+    X25519SharedSecret secret = derive_master_secret(
+        eit->second.private_key, peer_eph);
     ephemerals_.erase(eit);
     if (std::all_of(secret.begin(), secret.end(), [](uint8_t b) { return b == 0; }))
         return false;
