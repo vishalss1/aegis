@@ -129,7 +129,7 @@ A few design choices that shaped how Aegis works.
          │  ┌───────────────┴───────────────────────┐   │
          │  │          Transport Layer              │   │
          │  │  Winsock UDP · keep-alives            │   │
-         │  │  Datagram I/O · background rx thread │   │
+         │  │  Datagram I/O · background rx thread  │   │
          │  └───────────────┬───────────────────────┘   │
          └───────────────────┼──────────────────────────┘
                              │ Encrypted UDP datagrams
