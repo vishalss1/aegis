@@ -124,6 +124,15 @@ private:
         uint32_t session_id,
         const X25519KeyPair& ephemeral) const;
 
+    struct HandshakeMessage {
+        uint32_t session_id = 0;
+        X25519Key ephemeral_public{};
+        NodeId node_id{};
+        NetworkId network_id{};
+    };
+    static std::optional<HandshakeMessage> parse_handshake_message(
+        const std::vector<uint8_t>& message);
+
     Session& create_session(const NodeId& peer_id, uint32_t session_id);
     void derive_keys(Session& session, const X25519SharedSecret& shared_secret,
                      uint32_t session_id, bool initiator);

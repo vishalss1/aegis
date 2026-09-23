@@ -41,6 +41,8 @@ The implementation currently provides the following limited properties:
   owned copies on destruction, overwrite, and move.
 - Session, peer-liveness, rekey, session-ID, and file-transfer-ID state accepts
   injected clocks and random sources for deterministic protocol tests.
+- Legacy handshake payloads use bounded network-byte-order codecs and reject
+  both truncated frames and trailing bytes before changing session state.
 - Session data has a 2,048-packet replay window.
 - Onion layers use ChaCha20-Poly1305 and a distinct static-DH-derived key for
   each source/hop pair.

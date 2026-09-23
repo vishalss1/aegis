@@ -80,6 +80,39 @@ int main() {
         CHECK((*sess_b)->send_key == (*sess_a)->recv_key);
     }
 
+    // ---- 1b. Handshake payloads require exact canonical lengths -------------
+    {
+        SessionManager sm_a(alice);
+        SessionManager sm_b(bob);
+        const uint32_t session_id = 0xABCD0009;
+        const auto init = sm_a.create_handshake_init(session_id);
+
+        auto short_init = init;
+        short_init.pop_back();
+        CHECK(!sm_b.handle_handshake_init(short_init, alice.node_id).has_value());
+        CHECK(!sm_b.get_session(alice.node_id).has_value());
+
+        auto trailing_init = init;
+        trailing_init.push_back(0);
+        CHECK(!sm_b.handle_handshake_init(trailing_init, alice.node_id).has_value());
+        CHECK(!sm_b.get_session(alice.node_id).has_value());
+
+        const auto response = sm_b.handle_handshake_init(init, alice.node_id);
+        CHECK(response.has_value());
+        if (response) {
+            auto short_response = *response;
+            short_response.pop_back();
+            CHECK(!sm_a.handle_handshake_resp(short_response, session_id));
+            CHECK(!sm_a.get_session(bob.node_id).has_value());
+
+            auto trailing_response = *response;
+            trailing_response.push_back(0);
+            CHECK(!sm_a.handle_handshake_resp(trailing_response, session_id));
+            CHECK(!sm_a.get_session(bob.node_id).has_value());
+            CHECK(sm_a.handle_handshake_resp(*response, session_id));
+        }
+    }
+
     // ---- 2. Encrypt/decrypt round-trip --------------------------------------
     {
         SessionManager sm_a(alice);

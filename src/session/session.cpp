@@ -1,5 +1,6 @@
 #include "aegis/session/session.hpp"
 #include "aegis/platform/logger.hpp"
+#include "aegis/protocol/wire.hpp"
 #include <openssl/evp.h>
 #include <cstdio>
 #include <cstring>
@@ -73,22 +74,36 @@ std::vector<uint8_t> SessionManager::build_handshake_message(
     uint32_t session_id,
     const X25519KeyPair& ephemeral) const
 {
-    std::vector<uint8_t> msg;
-    msg.reserve(HANDSHAKE_PAYLOAD_SIZE);
-
-    uint32_t sid_be = bswap32(session_id);
-    msg.insert(msg.end(), (uint8_t*)&sid_be, (uint8_t*)&sid_be + 4);
-
-    msg.insert(msg.end(), ephemeral.public_key.begin(),
-               ephemeral.public_key.end());
-
-    msg.insert(msg.end(), identity_.node_id.begin(),
-               identity_.node_id.end());
-
-    msg.insert(msg.end(), identity_.network_id.begin(),
-               identity_.network_id.end());
-
+    std::vector<uint8_t> msg(HANDSHAKE_PAYLOAD_SIZE);
+    WireWriter writer(msg);
+    if (!writer.write_u32(session_id) ||
+        !writer.write_bytes(ephemeral.public_key) ||
+        !writer.write_bytes(identity_.node_id) ||
+        !writer.write_bytes(identity_.network_id) || !writer.finished())
+        return {};
     return msg;
+}
+
+std::optional<SessionManager::HandshakeMessage>
+SessionManager::parse_handshake_message(
+    const std::vector<uint8_t>& message) {
+    WireReader reader(message);
+    HandshakeMessage parsed;
+    const auto session_id = reader.read_u32();
+    const auto ephemeral_public = reader.read_bytes(X25519_KEY_SIZE);
+    const auto node_id = reader.read_bytes(NODE_ID_SIZE);
+    const auto network_id = reader.read_bytes(NETWORK_ID_SIZE);
+    if (!session_id || !ephemeral_public || !node_id || !network_id ||
+        !reader.finished())
+        return std::nullopt;
+
+    parsed.session_id = *session_id;
+    std::copy(ephemeral_public->begin(), ephemeral_public->end(),
+              parsed.ephemeral_public.begin());
+    std::copy(node_id->begin(), node_id->end(), parsed.node_id.begin());
+    std::copy(network_id->begin(), network_id->end(),
+              parsed.network_id.begin());
+    return parsed;
 }
 
 X25519SharedSecret SessionManager::derive_master_secret(
@@ -240,21 +255,16 @@ std::optional<std::vector<uint8_t>> SessionManager::handle_handshake_init(
 {
     std::lock_guard<std::mutex> lock(mtx_);
 
-    if (message.size() < HANDSHAKE_PAYLOAD_SIZE) {
-        aegis_log( "[session] handle_handshake_init: short message (%zu)\n",
+    const auto parsed = parse_handshake_message(message);
+    if (!parsed) {
+        aegis_log( "[session] handle_handshake_init: invalid message (%zu)\n",
                 message.size());
         return std::nullopt;
     }
 
-    uint32_t session_id;
-    std::memcpy(&session_id, message.data(), 4);
-    session_id = bswap32(session_id);
-
-    X25519Key peer_eph{};
-    std::memcpy(peer_eph.data(), message.data() + 4, 32);
-
-    NodeId received_id{};
-    std::memcpy(received_id.data(), message.data() + 36, 32);
+    const uint32_t session_id = parsed->session_id;
+    const X25519Key& peer_eph = parsed->ephemeral_public;
+    const NodeId& received_id = parsed->node_id;
 
     if (received_id != sender_id) {
         aegis_log( "[session] handle_handshake_init: NodeID mismatch\n");
@@ -265,8 +275,7 @@ std::optional<std::vector<uint8_t>> SessionManager::handle_handshake_init(
     // any keys are derived or a session is created — a cross-network peer is
     // visible (discovery) but unreachable. This is what makes independent
     // meshes on a shared LAN stay isolated.
-    NetworkId peer_network{};
-    std::memcpy(peer_network.data(), message.data() + 68, NETWORK_ID_SIZE);
+    const NetworkId& peer_network = parsed->network_id;
     if (peer_network != identity_.network_id) {
         aegis_log( "[session] reject handshake init: network mismatch "
                         "(peer %02x%02x..., expected net %02x...)\n",
@@ -298,15 +307,14 @@ bool SessionManager::handle_handshake_resp(
 {
     std::lock_guard<std::mutex> lock(mtx_);
 
-    if (message.size() < HANDSHAKE_PAYLOAD_SIZE) {
-        aegis_log( "[session] handle_handshake_resp: short message (%zu)\n",
+    const auto parsed = parse_handshake_message(message);
+    if (!parsed) {
+        aegis_log( "[session] handle_handshake_resp: invalid message (%zu)\n",
                 message.size());
         return false;
     }
 
-    uint32_t resp_session_id;
-    std::memcpy(&resp_session_id, message.data(), 4);
-    resp_session_id = bswap32(resp_session_id);
+    const uint32_t resp_session_id = parsed->session_id;
 
     if (resp_session_id != session_id) {
         aegis_log( "[session] handle_handshake_resp: session_id mismatch "
@@ -314,17 +322,13 @@ bool SessionManager::handle_handshake_resp(
         return false;
     }
 
-    X25519Key peer_eph{};
-    std::memcpy(peer_eph.data(), message.data() + 4, 32);
-
-    NodeId peer_id{};
-    std::memcpy(peer_id.data(), message.data() + 36, 32);
+    const X25519Key& peer_eph = parsed->ephemeral_public;
+    const NodeId& peer_id = parsed->node_id;
 
     // Step 14: initiator-side gate. The responder gates first, so this should
     // never fire; kept as defense in depth so a forged/misconfigured response
     // from a different network can never establish a session.
-    NetworkId peer_network{};
-    std::memcpy(peer_network.data(), message.data() + 68, NETWORK_ID_SIZE);
+    const NetworkId& peer_network = parsed->network_id;
     if (peer_network != identity_.network_id) {
         aegis_log( "[session] reject handshake resp: network mismatch "
                         "(peer %02x%02x...)\n",
