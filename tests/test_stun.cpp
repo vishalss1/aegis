@@ -58,6 +58,35 @@ int main() {
         CHECK(ip_host == 0xC0A80132); // 192.168.1.50
     }
 
+    // Exact declared length and complete attribute validation are required.
+    {
+        auto trailing = resp;
+        trailing.push_back(0);
+        CHECK(!parse_stun_binding_response(
+            trailing.data(), trailing.size(), tx_id).has_value());
+
+        auto truncated = resp;
+        truncated.pop_back();
+        CHECK(!parse_stun_binding_response(
+            truncated.data(), truncated.size(), tx_id).has_value());
+
+        auto bad_declared_length = resp;
+        bad_declared_length[3] = 0x08;
+        CHECK(!parse_stun_binding_response(
+            bad_declared_length.data(), bad_declared_length.size(), tx_id).has_value());
+
+        auto malformed_after_valid = resp;
+        malformed_after_valid[3] = 0x10;
+        malformed_after_valid.insert(
+            malformed_after_valid.end(), {0x00, 0x01, 0x00, 0x08});
+        CHECK(!parse_stun_binding_response(
+            malformed_after_valid.data(), malformed_after_valid.size(), tx_id).has_value());
+
+        uint8_t wrong_tx_id[12] = {};
+        CHECK(!parse_stun_binding_response(
+            resp.data(), resp.size(), wrong_tx_id).has_value());
+    }
+
     platform_cleanup_winsock();
 
     printf("\n%d / %d passed\n", passed, tests);

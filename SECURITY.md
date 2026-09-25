@@ -45,6 +45,8 @@ The implementation currently provides the following limited properties:
   both truncated frames and trailing bytes before changing session state.
 - Common packet headers and discovery frames use the bounded codec; session
   frames reject noncanonical reserved/flag fields and oversized plaintext.
+- STUN requests and responses use bounded codecs with exact declared lengths;
+  the full padded attribute list is validated before accepting an address.
 - Session data has a 2,048-packet replay window.
 - Onion layers use ChaCha20-Poly1305 and a distinct static-DH-derived key for
   each source/hop pair.

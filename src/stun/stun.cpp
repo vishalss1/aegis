@@ -1,5 +1,6 @@
 #include "aegis/stun/stun.hpp"
 #include "aegis/crypto/random.hpp"
+#include "aegis/protocol/wire.hpp"
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <array>
@@ -9,18 +10,15 @@
 static constexpr uint32_t STUN_MAGIC_COOKIE = 0x2112A442;
 
 std::vector<uint8_t> create_stun_binding_request(const uint8_t transaction_id[12]) {
+    if (!transaction_id)
+        return {};
     std::vector<uint8_t> req(20, 0);
-    req[0] = 0x00; // Type: 0x0001 (Binding Request)
-    req[1] = 0x01;
-    req[2] = 0x00; // Length: 0
-    req[3] = 0x00;
-
-    req[4] = static_cast<uint8_t>((STUN_MAGIC_COOKIE >> 24) & 0xFFu);
-    req[5] = static_cast<uint8_t>((STUN_MAGIC_COOKIE >> 16) & 0xFFu);
-    req[6] = static_cast<uint8_t>((STUN_MAGIC_COOKIE >> 8) & 0xFFu);
-    req[7] = static_cast<uint8_t>(STUN_MAGIC_COOKIE & 0xFFu);
-
-    std::memcpy(req.data() + 8, transaction_id, 12);
+    WireWriter writer(req);
+    if (!writer.write_u16(0x0001) || !writer.write_u16(0) ||
+        !writer.write_u32(STUN_MAGIC_COOKIE) ||
+        !writer.write_bytes(std::span<const uint8_t>(transaction_id, 12)) ||
+        !writer.finished())
+        return {};
     return req;
 }
 
@@ -28,50 +26,61 @@ std::optional<Endpoint> parse_stun_binding_response(
     const uint8_t* data, size_t len, const uint8_t expected_tx_id[12]) {
     if (!data || len < 20) return std::nullopt;
 
-    // Check type: 0x0101 (Binding Response) or 0x0111 (Success Response)
-    uint16_t msg_type = ((uint16_t)data[0] << 8) | data[1];
-    if (msg_type != 0x0101 && msg_type != 0x0111) return std::nullopt;
+    WireReader reader(std::span<const uint8_t>(data, len));
+    const auto msg_type = reader.read_u16();
+    const auto msg_len = reader.read_u16();
+    const auto cookie = reader.read_u32();
+    const auto transaction_id = reader.read_bytes(12);
+    if (!msg_type || !msg_len || !cookie || !transaction_id ||
+        (*msg_type != 0x0101 && *msg_type != 0x0111) ||
+        *cookie != STUN_MAGIC_COOKIE || (*msg_len % 4) != 0 ||
+        len != 20u + static_cast<size_t>(*msg_len))
+        return std::nullopt;
+    if (expected_tx_id &&
+        std::memcmp(transaction_id->data(), expected_tx_id, 12) != 0)
+        return std::nullopt;
 
-    uint32_t cookie = ((uint32_t)data[4] << 24) | ((uint32_t)data[5] << 16) |
-                      ((uint32_t)data[6] << 8) | data[7];
-    if (cookie != STUN_MAGIC_COOKIE) return std::nullopt;
+    std::optional<Endpoint> mapped;
+    while (!reader.finished()) {
+        const auto attr_type = reader.read_u16();
+        const auto attr_len = reader.read_u16();
+        if (!attr_type || !attr_len)
+            return std::nullopt;
+        const auto value = reader.read_bytes(*attr_len);
+        if (!value)
+            return std::nullopt;
+        const size_t padded_len =
+            (static_cast<size_t>(*attr_len) + 3u) & ~size_t{3u};
+        if (!reader.read_bytes(padded_len - *attr_len))
+            return std::nullopt;
 
-    if (expected_tx_id && std::memcmp(data + 8, expected_tx_id, 12) != 0) return std::nullopt;
+        if (*attr_type != 0x0020)
+            continue;
 
-    uint16_t msg_len = ((uint16_t)data[2] << 8) | data[3];
-    if (len < 20 + msg_len) return std::nullopt;
-
-    size_t off = 20;
-    while (off + 4 <= 20 + msg_len) {
-        uint16_t attr_type = ((uint16_t)data[off] << 8) | data[off + 1];
-        uint16_t attr_len  = ((uint16_t)data[off + 2] << 8) | data[off + 3];
-        off += 4;
-
-        if (off + attr_len > len) break;
-
-        // XOR-MAPPED-ADDRESS attribute: 0x0020
-        if (attr_type == 0x0020 && attr_len >= 8) {
-            uint8_t family = data[off + 1];
-            if (family == 0x01) { // IPv4
-                uint16_t xor_port = ((uint16_t)data[off + 2] << 8) | data[off + 3];
-                uint32_t xor_ip   = ((uint32_t)data[off + 4] << 24) | ((uint32_t)data[off + 5] << 16) |
-                                    ((uint32_t)data[off + 6] << 8)  | data[off + 7];
-
-                uint16_t port = xor_port ^ (uint16_t)(STUN_MAGIC_COOKIE >> 16);
-                uint32_t ip   = xor_ip ^ STUN_MAGIC_COOKIE;
-
-                Endpoint ep;
-                ep.ip = htonl(ip);
-                ep.port = htons(port);
-                return ep;
-            }
+        WireReader address(*value);
+        const auto reserved = address.read_u8();
+        const auto family = address.read_u8();
+        const auto xor_port = address.read_u16();
+        if (!reserved || !family || !xor_port || *reserved != 0)
+            return std::nullopt;
+        if (*family == 0x02) {
+            if (*attr_len != 20)
+                return std::nullopt;
+            continue; // IPv6 discovery is not implemented yet.
         }
+        if (*family != 0x01 || *attr_len != 8 || mapped)
+            return std::nullopt;
+        const auto xor_ip = address.read_u32();
+        if (!xor_ip || !address.finished())
+            return std::nullopt;
 
-        // Align attribute to 4-byte boundary
-        off += (attr_len + 3) & ~3;
+        Endpoint endpoint;
+        endpoint.ip = htonl(*xor_ip ^ STUN_MAGIC_COOKIE);
+        endpoint.port = htons(
+            *xor_port ^ static_cast<uint16_t>(STUN_MAGIC_COOKIE >> 16));
+        mapped = endpoint;
     }
-
-    return std::nullopt;
+    return mapped;
 }
 
 std::optional<Endpoint> stun_discover(
