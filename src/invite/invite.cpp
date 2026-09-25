@@ -1,4 +1,6 @@
 #include "aegis/invite/invite.hpp"
+#include "aegis/protocol/wire.hpp"
+#include <algorithm>
 #include <cstring>
 #include <vector>
 
@@ -47,34 +49,26 @@ static std::optional<std::vector<uint8_t>> base64url_decode(const std::string& i
 }
 
 static const char INVITE_PREFIX[] = "AEGIS1:";
+static constexpr size_t INVITE_FIXED_SIZE = 108;
+static constexpr size_t INVITE_MAX_NAME_SIZE = 64;
+
 std::string encode_invite(const InvitePayload& payload) {
-    uint8_t name_len = (uint8_t)(std::min)(payload.network_name.size(), (size_t)64);
-    std::vector<uint8_t> buf;
-    buf.reserve(107 + 1 + name_len);
-
-    buf.insert(buf.end(), payload.network_id.begin(), payload.network_id.end());
-    buf.insert(buf.end(), payload.bootstrap_pubkey.begin(), payload.bootstrap_pubkey.end());
-    buf.insert(buf.end(), payload.creator_node_id.begin(), payload.creator_node_id.end());
-
-    buf.push_back((uint8_t)(payload.bootstrap_endpoint.ip >> 24));
-    buf.push_back((uint8_t)(payload.bootstrap_endpoint.ip >> 16));
-    buf.push_back((uint8_t)(payload.bootstrap_endpoint.ip >> 8));
-    buf.push_back((uint8_t)(payload.bootstrap_endpoint.ip));
-
-    buf.push_back((uint8_t)(payload.bootstrap_endpoint.port >> 8));
-    buf.push_back((uint8_t)(payload.bootstrap_endpoint.port));
-
-    buf.push_back((uint8_t)(payload.bootstrap_prefix >> 24));
-    buf.push_back((uint8_t)(payload.bootstrap_prefix >> 16));
-    buf.push_back((uint8_t)(payload.bootstrap_prefix >> 8));
-    buf.push_back((uint8_t)(payload.bootstrap_prefix));
-
-    buf.push_back(payload.bootstrap_prefix_len);
-
-    buf.push_back(name_len);
-    if (name_len > 0) {
-        buf.insert(buf.end(), payload.network_name.data(), payload.network_name.data() + name_len);
-    }
+    const uint8_t name_len = static_cast<uint8_t>((std::min)(
+        payload.network_name.size(), INVITE_MAX_NAME_SIZE));
+    std::vector<uint8_t> buf(INVITE_FIXED_SIZE + name_len);
+    WireWriter writer(buf);
+    const auto name = std::span<const uint8_t>(
+        reinterpret_cast<const uint8_t*>(payload.network_name.data()), name_len);
+    if (!writer.write_bytes(payload.network_id) ||
+        !writer.write_bytes(payload.bootstrap_pubkey) ||
+        !writer.write_bytes(payload.creator_node_id) ||
+        !writer.write_u32(payload.bootstrap_endpoint.ip) ||
+        !writer.write_u16(payload.bootstrap_endpoint.port) ||
+        !writer.write_u32(payload.bootstrap_prefix) ||
+        !writer.write_u8(payload.bootstrap_prefix_len) ||
+        !writer.write_u8(name_len) || !writer.write_bytes(name) ||
+        !writer.finished())
+        return {};
 
     return std::string(INVITE_PREFIX) + base64url_encode(buf.data(), buf.size());
 }
@@ -93,39 +87,41 @@ std::optional<InvitePayload> decode_invite(const std::string& invite_str) {
 
     std::string b64 = clean.substr(prefix_len);
     auto bytes = base64url_decode(b64);
-    if (!bytes || bytes->size() < 107) {
+    if (!bytes || bytes->size() < INVITE_FIXED_SIZE ||
+        base64url_encode(bytes->data(), bytes->size()) != b64) {
         return std::nullopt;
     }
 
     InvitePayload payload;
-    size_t off = 0;
+    WireReader reader(*bytes);
+    const auto network_id = reader.read_bytes(NETWORK_ID_SIZE);
+    const auto bootstrap_pubkey = reader.read_bytes(KEY_SIZE);
+    const auto creator_node_id = reader.read_bytes(NODE_ID_SIZE);
+    const auto endpoint_ip = reader.read_u32();
+    const auto endpoint_port = reader.read_u16();
+    const auto bootstrap_prefix = reader.read_u32();
+    const auto bootstrap_prefix_len = reader.read_u8();
+    const auto name_len = reader.read_u8();
+    if (!network_id || !bootstrap_pubkey || !creator_node_id || !endpoint_ip ||
+        !endpoint_port || !bootstrap_prefix || !bootstrap_prefix_len ||
+        !name_len || *bootstrap_prefix_len > 32 ||
+        *name_len > INVITE_MAX_NAME_SIZE)
+        return std::nullopt;
+    const auto name = reader.read_bytes(*name_len);
+    if (!name || !reader.finished())
+        return std::nullopt;
 
-    std::memcpy(payload.network_id.data(), bytes->data() + off, 32); off += 32;
-    std::memcpy(payload.bootstrap_pubkey.data(), bytes->data() + off, 32); off += 32;
-    std::memcpy(payload.creator_node_id.data(), bytes->data() + off, 32); off += 32;
-
-    payload.bootstrap_endpoint.ip =
-        ((uint32_t)(*bytes)[off] << 24) | ((uint32_t)(*bytes)[off + 1] << 16) |
-        ((uint32_t)(*bytes)[off + 2] << 8) | (uint32_t)(*bytes)[off + 3];
-    off += 4;
-
-    payload.bootstrap_endpoint.port =
-        ((uint16_t)(*bytes)[off] << 8) | (uint16_t)(*bytes)[off + 1];
-    off += 2;
-
-    payload.bootstrap_prefix =
-        ((uint32_t)(*bytes)[off] << 24) | ((uint32_t)(*bytes)[off + 1] << 16) |
-        ((uint32_t)(*bytes)[off + 2] << 8) | (uint32_t)(*bytes)[off + 3];
-    off += 4;
-
-    payload.bootstrap_prefix_len = (*bytes)[off++];
-
-    if (off < bytes->size()) {
-        uint8_t name_len = (*bytes)[off++];
-        if (off + name_len <= bytes->size() && name_len > 0) {
-            payload.network_name = std::string((const char*)bytes->data() + off, name_len);
-        }
-    }
+    std::copy(network_id->begin(), network_id->end(), payload.network_id.begin());
+    std::copy(bootstrap_pubkey->begin(), bootstrap_pubkey->end(),
+              payload.bootstrap_pubkey.begin());
+    std::copy(creator_node_id->begin(), creator_node_id->end(),
+              payload.creator_node_id.begin());
+    payload.bootstrap_endpoint.ip = *endpoint_ip;
+    payload.bootstrap_endpoint.port = *endpoint_port;
+    payload.bootstrap_prefix = *bootstrap_prefix;
+    payload.bootstrap_prefix_len = *bootstrap_prefix_len;
+    payload.network_name.assign(
+        reinterpret_cast<const char*>(name->data()), name->size());
 
     return payload;
 }

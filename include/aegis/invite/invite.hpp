@@ -13,7 +13,7 @@ struct InvitePayload {
     Endpoint    bootstrap_endpoint{};  // 6 bytes (4-byte IP, 2-byte port)
     uint32_t    bootstrap_prefix = 0;  // 4 bytes
     uint8_t     bootstrap_prefix_len = 0; // 1 byte
-    std::string network_name;          // variable length (up to 32 chars)
+    std::string network_name;          // variable length (up to 64 bytes)
 };
 
 std::string encode_invite(const InvitePayload& payload);

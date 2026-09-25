@@ -47,6 +47,8 @@ The implementation currently provides the following limited properties:
   frames reject noncanonical reserved/flag fields and oversized plaintext.
 - STUN requests and responses use bounded codecs with exact declared lengths;
   the full padded attribute list is validated before accepting an address.
+- AEGIS1 invite payloads use bounded codecs, canonical base64url, exact name
+  lengths, exact frame consumption, and valid IPv4 prefix lengths.
 - Session data has a 2,048-packet replay window.
 - Onion layers use ChaCha20-Poly1305 and a distinct static-DH-derived key for
   each source/hop pair.
