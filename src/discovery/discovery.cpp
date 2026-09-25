@@ -1,6 +1,5 @@
 #include "aegis/discovery/discovery.hpp"
 #include "aegis/packet/header.hpp"
-#include "aegis/session/session.hpp"
 #include "aegis/platform/logger.hpp"
 #include <cstdio>
 #include <cstring>
@@ -19,7 +18,7 @@ std::vector<uint8_t> Discovery::build_presence(const Identity& identity,
     hdr.session_id = 0;
     hdr.sequence_number = 0;
     hdr.payload_length = (uint32_t)DISCOVERY_PAYLOAD_SIZE;
-    auto hdr_bytes = SessionManager::serialize_header(hdr);
+    auto hdr_bytes = serialize_packet_header(hdr);
 
     std::vector<uint8_t> out;
     out.reserve(DISCOVERY_FRAME_SIZE);
@@ -33,9 +32,15 @@ std::vector<uint8_t> Discovery::build_presence(const Identity& identity,
 }
 
 std::optional<Presence> Discovery::parse_presence(const uint8_t* data, size_t len) {
-    if (len < DISCOVERY_FRAME_SIZE)
+    if (!data || len != DISCOVERY_FRAME_SIZE)
         return std::nullopt;
-    if (data[0] != PACKET_VERSION || data[1] != TYPE_DISCOVERY)
+    const auto header = parse_packet_header(
+        std::span<const uint8_t>(data, PACKET_HEADER_SIZE));
+    if (!header || header->version != PACKET_VERSION ||
+        header->packet_type != TYPE_DISCOVERY || header->flags != 0 ||
+        header->reserved != 0 || header->session_id != 0 ||
+        header->sequence_number != 0 ||
+        header->payload_length != DISCOVERY_PAYLOAD_SIZE)
         return std::nullopt;
 
     Presence p;

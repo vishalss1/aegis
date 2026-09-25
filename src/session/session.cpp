@@ -6,6 +6,7 @@
 #include <cstring>
 #include <algorithm>
 #include <cstdlib>
+#include <limits>
 
 #ifdef _MSC_VER
 #pragma warning(push)
@@ -50,24 +51,7 @@ SecretBytes<32> SessionManager::sha256(
 }
 
 std::array<uint8_t, 16> SessionManager::serialize_header(const PacketHeader& hdr) {
-    std::array<uint8_t, 16> buf{};
-    buf[0] = hdr.version;
-    buf[1] = hdr.packet_type;
-    buf[2] = hdr.flags;
-    buf[3] = hdr.reserved;
-    buf[4] = (uint8_t)(hdr.session_id >> 24);
-    buf[5] = (uint8_t)(hdr.session_id >> 16);
-    buf[6] = (uint8_t)(hdr.session_id >> 8);
-    buf[7] = (uint8_t)(hdr.session_id);
-    buf[8] = (uint8_t)(hdr.sequence_number >> 24);
-    buf[9] = (uint8_t)(hdr.sequence_number >> 16);
-    buf[10] = (uint8_t)(hdr.sequence_number >> 8);
-    buf[11] = (uint8_t)(hdr.sequence_number);
-    buf[12] = (uint8_t)(hdr.payload_length >> 24);
-    buf[13] = (uint8_t)(hdr.payload_length >> 16);
-    buf[14] = (uint8_t)(hdr.payload_length >> 8);
-    buf[15] = (uint8_t)(hdr.payload_length);
-    return buf;
+    return serialize_packet_header(hdr);
 }
 
 std::vector<uint8_t> SessionManager::build_handshake_message(
@@ -399,6 +383,9 @@ std::optional<std::vector<uint8_t>> SessionManager::encrypt_message(
     auto sess_opt = get_session(peer_id);
     if (!sess_opt)
         return std::nullopt;
+    if ((pt_len > 0 && !plaintext) || pt_len > 4096 ||
+        pt_len > static_cast<size_t>((std::numeric_limits<uint32_t>::max)()))
+        return std::nullopt;
 
     Session& sess = *sess_opt.value();
 
@@ -455,19 +442,14 @@ std::optional<SessionManager::DecryptedMessage> SessionManager::decrypt_message(
         return std::nullopt;
     }
 
-    PacketHeader hdr{};
-    hdr.version = data[0];
-    hdr.packet_type = data[1];
-    hdr.flags = data[2];
-    hdr.reserved = data[3];
-    hdr.session_id = ((uint32_t)data[4] << 24) | ((uint32_t)data[5] << 16) |
-                     ((uint32_t)data[6] << 8) | (uint32_t)data[7];
-    hdr.sequence_number = ((uint32_t)data[8] << 24) | ((uint32_t)data[9] << 16) |
-                          ((uint32_t)data[10] << 8) | (uint32_t)data[11];
-    hdr.payload_length = ((uint32_t)data[12] << 24) | ((uint32_t)data[13] << 16) |
-                         ((uint32_t)data[14] << 8) | (uint32_t)data[15];
+    const auto parsed_header = parse_packet_header(
+        std::span<const uint8_t>(data, PACKET_HEADER_SIZE));
+    if (!parsed_header)
+        return std::nullopt;
+    const PacketHeader& hdr = *parsed_header;
 
-    if (hdr.version != PACKET_VERSION) {
+    if (hdr.version != PACKET_VERSION || hdr.reserved != 0 ||
+        (hdr.flags & static_cast<uint8_t>(~PACKET_KNOWN_FLAGS)) != 0) {
         aegis_log( "[session] decrypt: bad header\n");
         return std::nullopt;
     }

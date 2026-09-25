@@ -155,6 +155,10 @@ int main() {
         auto dec2 = sm_a.decrypt_data(enc2->data(), enc2->size());
         CHECK(dec2.has_value());
         CHECK(std::memcmp(dec2->data(), reply, sizeof(reply)) == 0);
+
+        std::vector<uint8_t> oversized(4097, 0x5a);
+        CHECK(!sm_a.encrypt_data(
+            bob.node_id, oversized.data(), oversized.size()).has_value());
     }
 
     // ---- 3. Replay rejection ------------------------------------------------

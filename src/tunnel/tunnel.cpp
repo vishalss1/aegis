@@ -564,11 +564,16 @@ void Tunnel::refresh_endpoints_from_discovery() {
 }
 
 void Tunnel::rx_callback(const uint8_t* data, size_t len, Endpoint sender) {
-    if (len < 16) return;
+    if (!data || len < PACKET_HEADER_SIZE) return;
+    const auto header = parse_packet_header(
+        std::span<const uint8_t>(data, PACKET_HEADER_SIZE));
+    if (!header || header->version != PACKET_VERSION ||
+        header->reserved != 0 ||
+        (header->flags & static_cast<uint8_t>(~PACKET_KNOWN_FLAGS)) != 0)
+        return;
 
-    uint8_t type = data[1];
-    uint32_t sid = ((uint32_t)data[4] << 24) | ((uint32_t)data[5] << 16) |
-                   ((uint32_t)data[6] << 8) | (uint32_t)data[7];
+    const uint8_t type = header->packet_type;
+    const uint32_t sid = header->session_id;
 
     if (type == TYPE_DATA) {
         if (!running_) return;

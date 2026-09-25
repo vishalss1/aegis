@@ -43,6 +43,8 @@ The implementation currently provides the following limited properties:
   injected clocks and random sources for deterministic protocol tests.
 - Legacy handshake payloads use bounded network-byte-order codecs and reject
   both truncated frames and trailing bytes before changing session state.
+- Common packet headers and discovery frames use the bounded codec; session
+  frames reject noncanonical reserved/flag fields and oversized plaintext.
 - Session data has a 2,048-packet replay window.
 - Onion layers use ChaCha20-Poly1305 and a distinct static-DH-derived key for
   each source/hop pair.

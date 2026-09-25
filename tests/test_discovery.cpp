@@ -54,6 +54,15 @@ int main() {
         auto frame = Discovery::build_presence(alice, ep_alice);
         CHECK(!Discovery::parse_presence(frame.data(), frame.size() - 1).has_value());
 
+        auto trailing = frame;
+        trailing.push_back(0);
+        CHECK(!Discovery::parse_presence(trailing.data(), trailing.size()).has_value());
+
+        auto noncanonical = frame;
+        noncanonical[3] = 1;
+        CHECK(!Discovery::parse_presence(
+            noncanonical.data(), noncanonical.size()).has_value());
+
         std::vector<uint8_t> bad_type = frame;
         bad_type[1] = 0xFF;
         CHECK(!Discovery::parse_presence(bad_type.data(), bad_type.size()).has_value());

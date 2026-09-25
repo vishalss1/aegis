@@ -1,4 +1,5 @@
 #include "aegis/protocol/wire.hpp"
+#include "aegis/packet/header.hpp"
 #include <array>
 #include <cstdio>
 
@@ -99,6 +100,28 @@ int main() {
         CHECK(writer.finished());
         CHECK(reader.read_bytes(0).has_value());
         CHECK(reader.finished());
+    }
+
+    // ---- 6. Packet headers use the bounded canonical codec ------------------
+    {
+        const PacketHeader header{
+            PACKET_VERSION, TYPE_RELAY, FLAG_RELAY, 0,
+            UINT32_C(0x12345678), UINT32_C(0x90ABCDEF), 512};
+        const auto encoded = serialize_packet_header(header);
+        const auto decoded = parse_packet_header(encoded);
+        CHECK(decoded.has_value());
+        CHECK(decoded && decoded->version == header.version);
+        CHECK(decoded && decoded->packet_type == header.packet_type);
+        CHECK(decoded && decoded->flags == header.flags);
+        CHECK(decoded && decoded->reserved == 0);
+        CHECK(decoded && decoded->session_id == header.session_id);
+        CHECK(decoded && decoded->sequence_number == header.sequence_number);
+        CHECK(decoded && decoded->payload_length == header.payload_length);
+        CHECK(!parse_packet_header(
+            std::span<const uint8_t>(encoded).first(encoded.size() - 1)).has_value());
+        std::array<uint8_t, PACKET_HEADER_SIZE + 1> trailing{};
+        std::copy(encoded.begin(), encoded.end(), trailing.begin());
+        CHECK(!parse_packet_header(trailing).has_value());
     }
 
     std::printf("\n%d / %d passed\n", passed, tests);
