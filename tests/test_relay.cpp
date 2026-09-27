@@ -104,6 +104,13 @@ int main() {
         auto onion = build_onion(src.keypair, path, keys, packet, packet_len);
         CHECK(onion.has_value());
         if (!onion) return 1;
+
+        auto extended_blob = *onion;
+        extended_blob.push_back(0x00);
+        auto extended = peel_onion(b.keypair, src.keypair.public_key,
+                                   extended_blob.data(), extended_blob.size());
+        CHECK(!extended.has_value());
+
         onion->at(onion->size() - 1) ^= 0xFF;  // corrupt the outer tag
         auto tampered = peel_onion(b.keypair, src.keypair.public_key,
                                    onion->data(), onion->size());
@@ -113,7 +120,12 @@ int main() {
     // ---- 5. Too-short / malformed inputs ------------------------------------
     {
         uint8_t tiny[ONION_OVERHEAD - 1] = {};
-        CHECK(!peel_onion(b.keypair, src.keypair.public_key, tiny, sizeof(tiny)).has_value());
+        bool all_prefixes_rejected = true;
+        for (size_t length = 0; length < ONION_OVERHEAD; ++length) {
+            all_prefixes_rejected &= !peel_onion(
+                b.keypair, src.keypair.public_key, tiny, length).has_value();
+        }
+        CHECK(all_prefixes_rejected);
         CHECK(!peel_onion(b.keypair, src.keypair.public_key, nullptr, 0).has_value());
         std::vector<NodeId> empty;
         std::vector<Key> empty_keys;

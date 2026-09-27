@@ -1,8 +1,8 @@
 #include "aegis/packet/relay.hpp"
 #include "aegis/crypto/x25519.hpp"
+#include "aegis/protocol/wire.hpp"
 #include <openssl/evp.h>
 #include <atomic>
-#include <cstring>
 
 namespace {
 
@@ -69,10 +69,13 @@ std::optional<std::vector<uint8_t>> build_onion(
         if (i + 1 < path.size())
             next_hop = path[i + 1];
 
-        std::vector<uint8_t> plaintext;
-        plaintext.reserve(ONION_NEXT_HOP_SIZE + inner.size());
-        plaintext.insert(plaintext.end(), next_hop.begin(), next_hop.end());
-        plaintext.insert(plaintext.end(), inner.begin(), inner.end());
+        std::vector<uint8_t> plaintext(ONION_NEXT_HOP_SIZE + inner.size());
+        WireWriter plaintext_writer(plaintext);
+        if (!plaintext_writer.write_bytes(next_hop) ||
+            !plaintext_writer.write_bytes(inner) ||
+            !plaintext_writer.finished()) {
+            return std::nullopt;
+        }
 
         auto key = layer_key(self.private_key, path_pubkeys[i]);
         auto nonce = make_nonce((uint32_t)i);
@@ -84,11 +87,15 @@ std::optional<std::vector<uint8_t>> build_onion(
             return std::nullopt;
         }
 
-        std::vector<uint8_t> blob;
-        blob.reserve(ONION_NONCE_SIZE + ct.size() + ONION_TAG_SIZE);
-        blob.insert(blob.end(), nonce.begin(), nonce.end());
-        blob.insert(blob.end(), ct.begin(), ct.end());
-        blob.insert(blob.end(), tag.begin(), tag.end());
+        std::vector<uint8_t> blob(
+            ONION_NONCE_SIZE + ct.size() + ONION_TAG_SIZE);
+        WireWriter blob_writer(blob);
+        if (!blob_writer.write_bytes(nonce) ||
+            !blob_writer.write_bytes(ct) ||
+            !blob_writer.write_bytes(tag) ||
+            !blob_writer.finished()) {
+            return std::nullopt;
+        }
         inner = std::move(blob);
     }
     return inner;
@@ -101,23 +108,34 @@ std::optional<PeeledOnion> peel_onion(
     if (!blob || blob_len < ONION_OVERHEAD)
         return std::nullopt;
 
-    ChaCha20Poly1305Nonce nonce{};
-    std::memcpy(nonce.data(), blob, ONION_NONCE_SIZE);
     size_t ct_len = blob_len - ONION_NONCE_SIZE - ONION_TAG_SIZE;
-    const uint8_t* ct = blob + ONION_NONCE_SIZE;
-    const uint8_t* tag = ct + ct_len;
+    WireReader blob_reader(std::span<const uint8_t>(blob, blob_len));
+    const auto nonce_bytes = blob_reader.read_bytes(ONION_NONCE_SIZE);
+    const auto ciphertext = blob_reader.read_bytes(ct_len);
+    const auto tag = blob_reader.read_bytes(ONION_TAG_SIZE);
+    if (!nonce_bytes || !ciphertext || !tag || !blob_reader.finished())
+        return std::nullopt;
+
+    ChaCha20Poly1305Nonce nonce{};
+    std::copy(nonce_bytes->begin(), nonce_bytes->end(), nonce.begin());
 
     auto key = layer_key(self.private_key, source_public_key);
 
     PeeledOnion out;
     out.inner.resize(ct_len);
     if (!chacha20_poly1305_decrypt(key, nonce,
-            ct, ct_len, tag, out.inner.data())) {
+            ciphertext->data(), ciphertext->size(), tag->data(),
+            out.inner.data())) {
         return std::nullopt;
     }
-    if (out.inner.size() < ONION_NEXT_HOP_SIZE)
+
+    WireReader plaintext_reader(out.inner);
+    const auto next_hop = plaintext_reader.read_bytes(ONION_NEXT_HOP_SIZE);
+    const auto inner = plaintext_reader.read_bytes(plaintext_reader.remaining());
+    if (!next_hop || !inner || !plaintext_reader.finished())
         return std::nullopt;
-    std::memcpy(out.next_hop.data(), out.inner.data(), ONION_NEXT_HOP_SIZE);
-    out.inner.erase(out.inner.begin(), out.inner.begin() + ONION_NEXT_HOP_SIZE);
+    std::copy(next_hop->begin(), next_hop->end(), out.next_hop.begin());
+    out.inner.erase(out.inner.begin(),
+                    out.inner.begin() + ONION_NEXT_HOP_SIZE);
     return out;
 }
