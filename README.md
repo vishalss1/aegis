@@ -301,10 +301,15 @@ aegis/
 │   ├── stun/stun.cpp           # STUN client for WAN endpoint discovery
 │   ├── transport/transport.cpp
 │   └── tunnel/tunnel.cpp       # tx_loop, rx_loop, maintenance loop
-├── tests/                      # CTest unit test suite — 15 binaries
+├── tests/                      # CTest unit test suite — 21 binaries
 │   ├── test_packet.cpp
+│   ├── test_wire.cpp
+│   ├── test_handshake_v2.cpp
 │   ├── test_transport.cpp
 │   ├── test_crypto.cpp
+│   ├── test_random.cpp
+│   ├── test_primitives.cpp
+│   ├── test_secret.cpp
 │   ├── test_aead.cpp
 │   ├── test_identity.cpp
 │   ├── test_tunnel.cpp
@@ -316,7 +321,8 @@ aegis/
 │   ├── test_discovery.cpp
 │   ├── test_config.cpp
 │   ├── test_invite.cpp
-│   └── test_stun.cpp
+│   ├── test_stun.cpp
+│   └── test_cli.cpp
 │
 └── wintun/                     # Wintun SDK (include/ + bin/amd64/ + bin/x86/)
     ├── include/wintun.h
@@ -486,8 +492,13 @@ Unit test coverage:
 | Test Binary | What It Covers |
 |:------------|:---------------|
 | `test_packet` | IP packet parsing, encrypted frame construction, layer typing |
+| `test_wire` | Bounded network-byte-order readers/writers and atomic failure behavior |
+| `test_handshake_v2` | Canonical Noise IK INIT/RESP envelope framing and malformed-frame rejection |
 | `test_transport` | Winsock loopback — UDP send/receive, socket lifecycle |
 | `test_crypto` | X25519 keygen, shared secret derivation, determinism |
+| `test_random` | Checked random-source injection and CSPRNG generation |
+| `test_primitives` | SHA-256/BLAKE2s transcript hashes, HKDF vectors, constant-time comparison |
+| `test_secret` | Cleansing secret storage copy, move, overwrite, and destruction behavior |
 | `test_aead` | ChaCha20-Poly1305 RFC 8439 test vectors, tamper rejection |
 | `test_identity` | NodeID hashing, NetworkID equality, keypair round-trip |
 | `test_tunnel` | Nonce counter arithmetic, wire format round-trip, AEAD integration |
@@ -500,6 +511,7 @@ Unit test coverage:
 | `test_config` | YAML parsing, strict validation, unknown-key rejection, malformed value errors |
 | `test_invite` | AEGIS1 invite code encoding, decoding, validation, round-trip |
 | `test_stun` | RFC 5389 STUN Binding Request formatting, XOR-MAPPED-ADDRESS parsing |
+| `test_cli` | CLI parsing, command dispatch, and integrated command behavior |
 
 ---
 

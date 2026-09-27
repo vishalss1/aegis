@@ -67,6 +67,7 @@ set(AEGIS_SOURCES
     src/crypto/random.cpp
     src/tunnel/tunnel.cpp
     src/tunnel/tunnel_test.cpp
+    src/session/handshake_v2.cpp
     src/session/session.cpp
     src/transport/transport.cpp
     src/routing/routing.cpp

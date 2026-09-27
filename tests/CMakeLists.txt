@@ -7,6 +7,11 @@ add_executable(test_wire test_wire.cpp)
 target_include_directories(test_wire PRIVATE ../include)
 add_test(NAME test_wire COMMAND test_wire)
 
+add_executable(test_handshake_v2 test_handshake_v2.cpp ../src/session/handshake_v2.cpp)
+target_include_directories(test_handshake_v2 PRIVATE ../include)
+target_link_libraries(test_handshake_v2 OpenSSL::Crypto)
+add_test(NAME test_handshake_v2 COMMAND test_handshake_v2)
+
 add_executable(test_transport test_transport.cpp ../src/transport/transport.cpp ../src/platform/platform.cpp)
 target_include_directories(test_transport PRIVATE ../include)
 target_link_libraries(test_transport ws2_32)
@@ -127,6 +132,7 @@ add_test(NAME test_cli COMMAND test_cli)
 set(AEGIS_TEST_TARGETS
     test_packet
     test_wire
+    test_handshake_v2
     test_transport
     test_crypto
     test_random
@@ -154,6 +160,7 @@ endforeach()
 add_custom_target(check
     COMMAND test_packet
     COMMAND test_wire
+    COMMAND test_handshake_v2
     COMMAND test_transport
     COMMAND test_crypto
     COMMAND test_random
