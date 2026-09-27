@@ -65,7 +65,7 @@ A few design choices that shaped how Aegis works.
 
 **NetworkID gates sessions, not discovery.** A mismatched NetworkID is rejected before a session is created. NetworkID is currently sent in cleartext and must be treated as a mesh selector or bearer value, not peer authentication. LAN presence broadcasts are unauthenticated and network-agnostic.
 
-**Layered packet processing.** The Packet Engine separates IP parsing, session framing, relay wrapping, and UDP transport. Some current module boundaries still exchange raw byte buffers and parse fields with manual offsets; bounded typed codecs are planned before the handshake rewrite.
+**Layered packet processing.** The Packet Engine separates IP parsing, session framing, relay wrapping, and UDP transport. Shared packet headers, handshake payloads, discovery, gossip, STUN, invites, and onion layers use bounded typed codecs with exact-length validation. The legacy file-transfer framing is the remaining manual wire format and is scheduled for replacement by its reliable subprotocol.
 
 **Rekeying without a new packet type.** Session rekeying is a fresh X25519 handshake with a new session ID — identical to initial connection. The prior session is retired into a 10-second grace window so in-flight packets under the old key still decrypt cleanly. The lower-NodeID peer drives rekeying every 120 seconds. Replay windows and sequence numbers restart per session ID.
 
@@ -185,7 +185,7 @@ A few design choices that shaped how Aegis works.
 | **Endpoint Self-Healing** | LAN presences provide endpoint hints for configured peers. Broadcasts are unauthenticated, so these hints can be spoofed and must not yet be considered validated endpoints. |
 | **YAML Config Mode** | `--config <file>` — strict YAML subset parser. Validates all fields, rejects unknown keys. Auto-elevates via UAC (`ShellExecuteW "runas"`) when launched without Administrator rights. |
 | **Replay Protection** | Per-session sliding window of 2048 sequence numbers. Out-of-window and duplicate sequence numbers are silently discarded. |
-| **Layered Packet Processing** | IP parsing, session framing, relay wrapping, and UDP transport are separate modules. Raw byte-buffer interfaces and manual offsets still exist and require bounded codec replacements. |
+| **Layered Packet Processing** | IP parsing, session framing, relay wrapping, and UDP transport are separate modules. Current shared framing uses bounded codecs and exact-length validation; legacy file-transfer framing remains deferred to its dedicated redesign. |
 
 ---
 

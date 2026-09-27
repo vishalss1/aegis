@@ -36,6 +36,9 @@ The implementation currently provides the following limited properties:
   when secure randomness is unavailable.
 - Checked SHA-256/BLAKE2s transcript hashing, HKDF, and constant-time comparison
   helpers are available for the authenticated handshake migration.
+- Security-critical OpenSSL digest and public-key extraction results are
+  checked; failures abort before installing session or onion keys or accepting
+  a persisted identity.
 - Static and ephemeral private keys, DH outputs, session keys, derived onion
   keys, and intermediate session KDF values use cleansing storage that erases
   owned copies on destruction, overwrite, and move.
@@ -43,15 +46,16 @@ The implementation currently provides the following limited properties:
   injected clocks and random sources for deterministic protocol tests.
 - Legacy handshake payloads use bounded network-byte-order codecs and reject
   both truncated frames and trailing bytes before changing session state.
-- Common packet headers and discovery frames use the bounded codec; session
-  frames reject noncanonical reserved/flag fields and oversized plaintext.
+- Common packet headers and complete discovery presence payloads use the
+  bounded codec and canonical network byte order; session frames reject
+  noncanonical reserved/flag fields and oversized plaintext.
 - STUN requests and responses use bounded codecs with exact declared lengths;
   the full padded attribute list is validated before accepting an address.
 - AEGIS1 invite payloads use bounded codecs, canonical base64url, exact name
   lengths, exact frame consumption, and valid IPv4 prefix lengths.
 - Session data has a 2,048-packet replay window.
-- Onion layers use ChaCha20-Poly1305 and a distinct static-DH-derived key for
-  each source/hop pair.
+- Onion layers use bounded envelope/plaintext framing, ChaCha20-Poly1305, and a
+  distinct static-DH-derived key for each source/hop pair.
 - Peer-table gossip omits physical endpoints.
 - Peer-table merge rejects public keys that do not hash to their advertised
   NodeID, and peer upserts do not replace established non-empty identity keys.
