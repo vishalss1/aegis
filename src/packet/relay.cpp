@@ -10,22 +10,27 @@ namespace {
 //     SHA256("aegis-onion-v1" || X25519(our_priv, hop_pub))
 // The same primitive the peer table is keyed on; a relay derives it with its
 // own private key and the source's public key.
-ChaCha20Poly1305Key layer_key(
+std::optional<ChaCha20Poly1305Key> layer_key(
     const X25519PrivateKey& my_priv, const Key& hop_pub) {
     ChaCha20Poly1305Key key{};
     auto shared = x25519_derive_shared_secret(my_priv, hop_pub);
-    if (!shared) return key;
+    if (!shared)
+        return std::nullopt;
 
     const char label[] = "aegis-onion-v1";
-    unsigned int out_len = (unsigned int)key.size();
     EVP_MD_CTX* ctx = EVP_MD_CTX_new();
-    if (ctx) {
-        EVP_DigestInit_ex(ctx, EVP_sha256(), nullptr);
-        EVP_DigestUpdate(ctx, label, sizeof(label) - 1);
-        EVP_DigestUpdate(ctx, shared->data(), shared->size());
-        EVP_DigestFinal_ex(ctx, key.data(), &out_len);
-        EVP_MD_CTX_free(ctx);
-    }
+    if (!ctx)
+        return std::nullopt;
+
+    unsigned int out_len = 0;
+    const bool hashed = EVP_DigestInit_ex(ctx, EVP_sha256(), nullptr) == 1 &&
+        EVP_DigestUpdate(ctx, label, sizeof(label) - 1) == 1 &&
+        EVP_DigestUpdate(ctx, shared->data(), shared->size()) == 1 &&
+        EVP_DigestFinal_ex(ctx, key.data(), &out_len) == 1 &&
+        out_len == key.size();
+    EVP_MD_CTX_free(ctx);
+    if (!hashed)
+        return std::nullopt;
     return key;
 }
 
@@ -78,11 +83,13 @@ std::optional<std::vector<uint8_t>> build_onion(
         }
 
         auto key = layer_key(self.private_key, path_pubkeys[i]);
+        if (!key)
+            return std::nullopt;
         auto nonce = make_nonce((uint32_t)i);
 
         std::vector<uint8_t> ct(plaintext.size());
         std::array<uint8_t, ONION_TAG_SIZE> tag{};
-        if (!chacha20_poly1305_encrypt(key, nonce,
+        if (!chacha20_poly1305_encrypt(*key, nonce,
                 plaintext.data(), plaintext.size(), ct.data(), tag.data())) {
             return std::nullopt;
         }
@@ -120,10 +127,12 @@ std::optional<PeeledOnion> peel_onion(
     std::copy(nonce_bytes->begin(), nonce_bytes->end(), nonce.begin());
 
     auto key = layer_key(self.private_key, source_public_key);
+    if (!key)
+        return std::nullopt;
 
     PeeledOnion out;
     out.inner.resize(ct_len);
-    if (!chacha20_poly1305_decrypt(key, nonce,
+    if (!chacha20_poly1305_decrypt(*key, nonce,
             ciphertext->data(), ciphertext->size(), tag->data(),
             out.inner.data())) {
         return std::nullopt;

@@ -24,29 +24,24 @@ static uint32_t bswap32(uint32_t x) {
 SessionManager::SessionManager(const Identity& identity, ProtocolClock& clock)
     : identity_(identity), clock_(clock) {}
 
-SecretBytes<32> SessionManager::sha256(
-    const uint8_t* data, size_t len)
-{
-    SecretBytes<32> hash{};
-    unsigned int out_len = 32;
-    EVP_Digest(data, len, hash.data(), &out_len, EVP_sha256(), nullptr);
-    return hash;
-}
-
-SecretBytes<32> SessionManager::sha256(
+std::optional<SecretBytes<32>> SessionManager::sha256(
     const uint8_t* d1, size_t l1,
     const uint8_t* d2, size_t l2)
 {
     SecretBytes<32> hash{};
-    unsigned int out_len = 32;
     EVP_MD_CTX* ctx = EVP_MD_CTX_new();
-    if (ctx) {
-        EVP_DigestInit_ex(ctx, EVP_sha256(), nullptr);
-        EVP_DigestUpdate(ctx, d1, l1);
-        EVP_DigestUpdate(ctx, d2, l2);
-        EVP_DigestFinal_ex(ctx, hash.data(), &out_len);
-        EVP_MD_CTX_free(ctx);
-    }
+    if (!ctx)
+        return std::nullopt;
+
+    unsigned int out_len = 0;
+    const bool hashed = EVP_DigestInit_ex(ctx, EVP_sha256(), nullptr) == 1 &&
+        EVP_DigestUpdate(ctx, d1, l1) == 1 &&
+        EVP_DigestUpdate(ctx, d2, l2) == 1 &&
+        EVP_DigestFinal_ex(ctx, hash.data(), &out_len) == 1 &&
+        out_len == hash.size();
+    EVP_MD_CTX_free(ctx);
+    if (!hashed)
+        return std::nullopt;
     return hash;
 }
 
@@ -101,7 +96,7 @@ X25519SharedSecret SessionManager::derive_master_secret(
     return *opt;
 }
 
-void SessionManager::derive_keys(
+bool SessionManager::derive_keys(
     Session& session, const X25519SharedSecret& shared_secret,
     uint32_t session_id, bool initiator)
 {
@@ -113,15 +108,24 @@ void SessionManager::derive_keys(
 
     auto k1 = sha256(shared_secret.data(), shared_secret.size(),
                      (const uint8_t*)&sid_be, 4);
-    auto k1b = sha256(k1.data(), k1.size(),
+    if (!k1)
+        return false;
+    auto k1b = sha256(k1->data(), k1->size(),
                       (const uint8_t*)label_send, 4);
-    std::memcpy(session.send_key.data(), k1b.data(), 32);
+    if (!k1b)
+        return false;
 
     auto k2 = sha256(shared_secret.data(), shared_secret.size(),
                      (const uint8_t*)&sid_be, 4);
-    auto k2b = sha256(k2.data(), k2.size(),
+    if (!k2)
+        return false;
+    auto k2b = sha256(k2->data(), k2->size(),
                       (const uint8_t*)label_recv, 4);
-    std::memcpy(session.recv_key.data(), k2b.data(), 32);
+    if (!k2b)
+        return false;
+
+    std::copy(k1b->begin(), k1b->end(), session.send_key.begin());
+    std::copy(k2b->begin(), k2b->end(), session.recv_key.begin());
 
     if (!initiator) {
         std::swap(session.send_key, session.recv_key);
@@ -131,6 +135,7 @@ void SessionManager::derive_keys(
     // sides have the derived keys. Time is captured here rather than at
     // create_session so a failed handshake never leaves a "fresh" timestamp.
     session.established_at = clock_.now();
+    return true;
 }
 
 void SessionManager::set_retired_grace(std::chrono::milliseconds grace) {
@@ -274,8 +279,16 @@ std::optional<std::vector<uint8_t>> SessionManager::handle_handshake_init(
     if (std::all_of(secret.begin(), secret.end(), [](uint8_t b) { return b == 0; }))
         return std::nullopt;
 
+    Session derived{};
+    if (!derive_keys(derived, secret, session_id, false)) {
+        aegis_log("[session] responder key derivation failed\n");
+        return std::nullopt;
+    }
+
     Session& sess = create_session(sender_id, session_id);
-    derive_keys(sess, secret, session_id, false);
+    sess.send_key = std::move(derived.send_key);
+    sess.recv_key = std::move(derived.recv_key);
+    sess.established_at = derived.established_at;
     sess.established = true;
 
     aegis_log( "[session] session %08x established with ",
@@ -334,8 +347,16 @@ bool SessionManager::handle_handshake_resp(
     if (std::all_of(secret.begin(), secret.end(), [](uint8_t b) { return b == 0; }))
         return false;
 
+    Session derived{};
+    if (!derive_keys(derived, secret, session_id, true)) {
+        aegis_log("[session] initiator key derivation failed\n");
+        return false;
+    }
+
     Session& sess = create_session(peer_id, session_id);
-    derive_keys(sess, secret, session_id, true);
+    sess.send_key = std::move(derived.send_key);
+    sess.recv_key = std::move(derived.recv_key);
+    sess.established_at = derived.established_at;
     sess.established = true;
 
     aegis_log( "[session] session %08x established with ",

@@ -30,12 +30,15 @@ Identity load_or_create_identity(const NetworkId& network_id, const std::string&
                 EVP_PKEY_X25519, nullptr, priv.data(), priv.size());
             if (pkey) {
                 size_t len = KEY_SIZE;
-                EVP_PKEY_get_raw_public_key(pkey, id.keypair.public_key.data(), &len);
+                const int extracted = EVP_PKEY_get_raw_public_key(
+                    pkey, id.keypair.public_key.data(), &len);
                 EVP_PKEY_free(pkey);
+                if (extracted == 1 && len == KEY_SIZE) {
+                    id.node_id = hash_public_key(id.keypair.public_key);
+                    id.network_id = network_id;
+                    return id;
+                }
             }
-            id.node_id = hash_public_key(id.keypair.public_key);
-            id.network_id = network_id;
-            return id;
         }
     }
 
