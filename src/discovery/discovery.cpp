@@ -1,8 +1,9 @@
 #include "aegis/discovery/discovery.hpp"
 #include "aegis/packet/header.hpp"
 #include "aegis/platform/logger.hpp"
+#include "aegis/protocol/wire.hpp"
+#include <algorithm>
 #include <cstdio>
-#include <cstring>
 #include <chrono>
 
 Discovery::~Discovery() { stop(); }
@@ -20,22 +21,28 @@ std::vector<uint8_t> Discovery::build_presence(const Identity& identity,
     hdr.payload_length = (uint32_t)DISCOVERY_PAYLOAD_SIZE;
     auto hdr_bytes = serialize_packet_header(hdr);
 
-    std::vector<uint8_t> out;
-    out.reserve(DISCOVERY_FRAME_SIZE);
-    out.insert(out.end(), hdr_bytes.begin(), hdr_bytes.end());
-    out.insert(out.end(), identity.node_id.begin(), identity.node_id.end());
-    out.insert(out.end(), identity.network_id.begin(), identity.network_id.end());
-    out.insert(out.end(), identity.creator_node_id.begin(), identity.creator_node_id.end());
-    out.insert(out.end(), (const uint8_t*)&endpoint.ip, (const uint8_t*)&endpoint.ip + 4);
-    out.insert(out.end(), (const uint8_t*)&endpoint.port, (const uint8_t*)&endpoint.port + 2);
+    std::vector<uint8_t> out(DISCOVERY_FRAME_SIZE);
+    WireWriter writer(out);
+    const bool encoded = writer.write_bytes(hdr_bytes) &&
+        writer.write_bytes(identity.node_id) &&
+        writer.write_bytes(identity.network_id) &&
+        writer.write_bytes(identity.creator_node_id) &&
+        writer.write_u32(ntohl(endpoint.ip)) &&
+        writer.write_u16(ntohs(endpoint.port)) && writer.finished();
+    if (!encoded)
+        return {};
     return out;
 }
 
 std::optional<Presence> Discovery::parse_presence(const uint8_t* data, size_t len) {
     if (!data || len != DISCOVERY_FRAME_SIZE)
         return std::nullopt;
-    const auto header = parse_packet_header(
-        std::span<const uint8_t>(data, PACKET_HEADER_SIZE));
+    WireReader reader(std::span<const uint8_t>(data, len));
+    const auto header_bytes = reader.read_bytes(PACKET_HEADER_SIZE);
+    if (!header_bytes)
+        return std::nullopt;
+
+    const auto header = parse_packet_header(*header_bytes);
     if (!header || header->version != PACKET_VERSION ||
         header->packet_type != TYPE_DISCOVERY || header->flags != 0 ||
         header->reserved != 0 || header->session_id != 0 ||
@@ -43,12 +50,23 @@ std::optional<Presence> Discovery::parse_presence(const uint8_t* data, size_t le
         header->payload_length != DISCOVERY_PAYLOAD_SIZE)
         return std::nullopt;
 
+    const auto node_id = reader.read_bytes(NODE_ID_SIZE);
+    const auto network_id = reader.read_bytes(NETWORK_ID_SIZE);
+    const auto creator_node_id = reader.read_bytes(NODE_ID_SIZE);
+    const auto endpoint_ip = reader.read_u32();
+    const auto endpoint_port = reader.read_u16();
+    if (!node_id || !network_id || !creator_node_id || !endpoint_ip ||
+        !endpoint_port || !reader.finished()) {
+        return std::nullopt;
+    }
+
     Presence p;
-    std::memcpy(p.node_id.data(), data + 16, NODE_ID_SIZE);
-    std::memcpy(p.network_id.data(), data + 48, NETWORK_ID_SIZE);
-    std::memcpy(p.creator_node_id.data(), data + 80, NODE_ID_SIZE);
-    std::memcpy(&p.endpoint.ip, data + 112, 4);
-    std::memcpy(&p.endpoint.port, data + 116, 2);
+    std::copy(node_id->begin(), node_id->end(), p.node_id.begin());
+    std::copy(network_id->begin(), network_id->end(), p.network_id.begin());
+    std::copy(creator_node_id->begin(), creator_node_id->end(),
+              p.creator_node_id.begin());
+    p.endpoint.ip = htonl(*endpoint_ip);
+    p.endpoint.port = htons(*endpoint_port);
     return p;
 }
 

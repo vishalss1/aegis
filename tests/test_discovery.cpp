@@ -34,6 +34,10 @@ int main() {
     {
         auto frame = Discovery::build_presence(alice, ep_alice);
         CHECK(frame.size() == DISCOVERY_FRAME_SIZE);
+        CHECK(frame[112] == 10 && frame[113] == 10 &&
+              frame[114] == 0 && frame[115] == 1);
+        CHECK(frame[116] == static_cast<uint8_t>(45120 >> 8) &&
+              frame[117] == static_cast<uint8_t>(45120));
 
         auto p = Discovery::parse_presence(frame.data(), frame.size());
         CHECK(p.has_value());
@@ -52,6 +56,7 @@ int main() {
     // ---- 2. Malformed input is rejected -------------------------------------
     {
         auto frame = Discovery::build_presence(alice, ep_alice);
+        CHECK(!Discovery::parse_presence(nullptr, frame.size()).has_value());
         CHECK(!Discovery::parse_presence(frame.data(), frame.size() - 1).has_value());
 
         auto trailing = frame;
