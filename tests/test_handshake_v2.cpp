@@ -23,6 +23,48 @@ int main() {
     for (size_t i = 0; i < init.noise_message.size(); ++i)
         init.noise_message[i] = static_cast<uint8_t>(i);
 
+    const auto prologue =
+        make_handshake_v2_prologue(init.network_id, init.session_id);
+    CHECK(prologue.has_value());
+    if (!prologue)
+        return 1;
+    CHECK(prologue->size() == HANDSHAKE_V2_PROLOGUE_SIZE);
+
+    size_t offset = 0;
+    CHECK((*prologue)[offset++] == HANDSHAKE_V2_PROLOGUE_DOMAIN.size());
+    CHECK(std::equal(HANDSHAKE_V2_PROLOGUE_DOMAIN.begin(),
+                     HANDSHAKE_V2_PROLOGUE_DOMAIN.end(),
+                     prologue->begin() + offset));
+    offset += HANDSHAKE_V2_PROLOGUE_DOMAIN.size();
+    CHECK((*prologue)[offset++] == HANDSHAKE_V2_NOISE_PROTOCOL.size());
+    CHECK(std::equal(HANDSHAKE_V2_NOISE_PROTOCOL.begin(),
+                     HANDSHAKE_V2_NOISE_PROTOCOL.end(),
+                     prologue->begin() + offset));
+    offset += HANDSHAKE_V2_NOISE_PROTOCOL.size();
+    CHECK((*prologue)[offset++] == HANDSHAKE_V2_VERSION);
+    CHECK(std::equal(init.network_id.begin(), init.network_id.end(),
+                     prologue->begin() + offset));
+    offset += init.network_id.size();
+    CHECK((*prologue)[offset] == 0x01 && (*prologue)[offset + 1] == 0x02 &&
+          (*prologue)[offset + 2] == 0x03 &&
+          (*prologue)[offset + 3] == 0x04);
+    offset += 4;
+    CHECK((*prologue)[offset++] == HANDSHAKE_V2_INITIATOR_ROLE);
+    CHECK((*prologue)[offset++] == HANDSHAKE_V2_RESPONDER_ROLE);
+    CHECK((*prologue)[offset] == HANDSHAKE_V2_VERSION &&
+          (*prologue)[offset + 1] == HANDSHAKE_V2_INIT_TYPE &&
+          (*prologue)[offset + 2] == HANDSHAKE_V2_FLAGS &&
+          (*prologue)[offset + 7] == 0x00 &&
+          (*prologue)[offset + 8] == 0x80);
+    offset += HANDSHAKE_V2_HEADER_SIZE;
+    CHECK((*prologue)[offset] == HANDSHAKE_V2_VERSION &&
+          (*prologue)[offset + 1] == HANDSHAKE_V2_RESPONSE_TYPE &&
+          (*prologue)[offset + 2] == HANDSHAKE_V2_FLAGS &&
+          (*prologue)[offset + 7] == 0x00 &&
+          (*prologue)[offset + 8] == 0x30);
+    offset += HANDSHAKE_V2_HEADER_SIZE;
+    CHECK(offset == prologue->size());
+
     const auto encoded_init = serialize_handshake_v2_init(init);
     CHECK(encoded_init.has_value());
     if (!encoded_init)
@@ -108,6 +150,7 @@ int main() {
 
     init.session_id = 0;
     response.session_id = 0;
+    CHECK(!make_handshake_v2_prologue(init.network_id, 0).has_value());
     CHECK(!serialize_handshake_v2_init(init).has_value());
     CHECK(!serialize_handshake_v2_response(response).has_value());
 

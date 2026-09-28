@@ -18,6 +18,7 @@ add_test(NAME test_noise_dependency COMMAND test_noise_dependency)
 
 add_executable(test_noise_ik
     test_noise_ik.cpp
+    ../src/session/handshake_v2.cpp
     ../src/session/noise_ik.cpp
 )
 target_include_directories(test_noise_ik PRIVATE ../include)

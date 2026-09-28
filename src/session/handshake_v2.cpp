@@ -30,7 +30,51 @@ bool read_header(WireReader& reader, uint8_t expected_type,
     return true;
 }
 
+bool write_prologue_header(WireWriter& writer, uint8_t type,
+                           uint32_t session_id, uint16_t payload_length) {
+    return writer.write_u8(HANDSHAKE_V2_VERSION) &&
+        writer.write_u8(type) && writer.write_u8(HANDSHAKE_V2_FLAGS) &&
+        writer.write_u32(session_id) && writer.write_u16(payload_length);
+}
+
 } // namespace
+
+std::optional<HandshakeV2Prologue> make_handshake_v2_prologue(
+    const NetworkId& network_id, uint32_t session_id) {
+    static_assert(HANDSHAKE_V2_PROLOGUE_DOMAIN.size() <= UINT8_MAX);
+    static_assert(HANDSHAKE_V2_NOISE_PROTOCOL.size() <= UINT8_MAX);
+    if (session_id == 0)
+        return std::nullopt;
+
+    HandshakeV2Prologue prologue{};
+    WireWriter writer(prologue);
+    if (!writer.write_u8(static_cast<uint8_t>(
+            HANDSHAKE_V2_PROLOGUE_DOMAIN.size())) ||
+        !writer.write_bytes(std::span<const uint8_t>(
+            reinterpret_cast<const uint8_t*>(
+                HANDSHAKE_V2_PROLOGUE_DOMAIN.data()),
+            HANDSHAKE_V2_PROLOGUE_DOMAIN.size())) ||
+        !writer.write_u8(static_cast<uint8_t>(
+            HANDSHAKE_V2_NOISE_PROTOCOL.size())) ||
+        !writer.write_bytes(std::span<const uint8_t>(
+            reinterpret_cast<const uint8_t*>(
+                HANDSHAKE_V2_NOISE_PROTOCOL.data()),
+            HANDSHAKE_V2_NOISE_PROTOCOL.size())) ||
+        !writer.write_u8(HANDSHAKE_V2_VERSION) ||
+        !writer.write_bytes(network_id) || !writer.write_u32(session_id) ||
+        !writer.write_u8(HANDSHAKE_V2_INITIATOR_ROLE) ||
+        !writer.write_u8(HANDSHAKE_V2_RESPONDER_ROLE) ||
+        !write_prologue_header(
+            writer, HANDSHAKE_V2_INIT_TYPE, session_id,
+            static_cast<uint16_t>(HANDSHAKE_V2_INIT_PAYLOAD_SIZE)) ||
+        !write_prologue_header(
+            writer, HANDSHAKE_V2_RESPONSE_TYPE, session_id,
+            static_cast<uint16_t>(HANDSHAKE_V2_RESPONSE_PAYLOAD_SIZE)) ||
+        !writer.finished()) {
+        return std::nullopt;
+    }
+    return prologue;
+}
 
 std::optional<std::array<uint8_t, HANDSHAKE_V2_INIT_FRAME_SIZE>>
 serialize_handshake_v2_init(const HandshakeV2InitFrame& frame) {

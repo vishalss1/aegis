@@ -79,6 +79,34 @@ public:
     bool fill(std::span<uint8_t>) override { return false; }
 };
 
+bool changed_prologue_fails(
+    const X25519PrivateKey& initiator_static,
+    const X25519PrivateKey& responder_static,
+    const X25519Key& responder_public,
+    std::span<const uint8_t> initiator_ephemeral,
+    std::span<const uint8_t> responder_ephemeral,
+    const HandshakeV2Prologue& canonical,
+    size_t changed_offset) {
+    auto changed = canonical;
+    changed[changed_offset] ^= 0x01;
+
+    FixedRandom initiator_random(initiator_ephemeral);
+    FixedRandom responder_random(responder_ephemeral);
+    auto initiator = NoiseIkHandshake::create_initiator(
+        initiator_static, responder_public, canonical, initiator_random);
+    auto responder = NoiseIkHandshake::create_responder(
+        responder_static, changed, responder_random);
+    if (!initiator || !responder)
+        return false;
+
+    HandshakeV2InitNoise message{};
+    const auto written = initiator->write_message({}, message);
+    if (!written || written.bytes != message.size())
+        return false;
+    const auto read = responder->read_message(message, {});
+    return read.error == NoiseIkError::authentication_failed;
+}
+
 } // namespace
 
 int main() {
@@ -189,6 +217,65 @@ int main() {
     CHECK(empty_second_write);
     CHECK(empty_second_write.bytes == HANDSHAKE_V2_RESPONSE_NOISE_SIZE);
     CHECK(empty_initiator->read_message(empty_second, {}));
+
+    NetworkId network_id{};
+    for (size_t index = 0; index < network_id.size(); ++index)
+        network_id[index] = static_cast<uint8_t>(0x40 + index);
+    const auto canonical = make_handshake_v2_prologue(
+        network_id, 0x01020304);
+    CHECK(canonical.has_value());
+    if (!canonical)
+        return 1;
+
+    const size_t domain_offset = 1;
+    const size_t protocol_offset =
+        domain_offset + HANDSHAKE_V2_PROLOGUE_DOMAIN.size() + 1;
+    const size_t version_offset =
+        protocol_offset + HANDSHAKE_V2_NOISE_PROTOCOL.size();
+    const size_t network_offset = version_offset + 1;
+    const size_t session_offset = network_offset + NETWORK_ID_SIZE;
+    const size_t initiator_role_offset = session_offset + 4;
+    const size_t responder_role_offset = initiator_role_offset + 1;
+    const size_t init_header_offset = responder_role_offset + 1;
+    const size_t response_header_offset =
+        init_header_offset + HANDSHAKE_V2_HEADER_SIZE;
+
+    CHECK(changed_prologue_fails(
+        initiator_static, responder_static, responder_public,
+        initiator_ephemeral, responder_ephemeral, *canonical,
+        domain_offset));
+    CHECK(changed_prologue_fails(
+        initiator_static, responder_static, responder_public,
+        initiator_ephemeral, responder_ephemeral, *canonical,
+        protocol_offset));
+    CHECK(changed_prologue_fails(
+        initiator_static, responder_static, responder_public,
+        initiator_ephemeral, responder_ephemeral, *canonical,
+        version_offset));
+    CHECK(changed_prologue_fails(
+        initiator_static, responder_static, responder_public,
+        initiator_ephemeral, responder_ephemeral, *canonical,
+        network_offset));
+    CHECK(changed_prologue_fails(
+        initiator_static, responder_static, responder_public,
+        initiator_ephemeral, responder_ephemeral, *canonical,
+        session_offset));
+    CHECK(changed_prologue_fails(
+        initiator_static, responder_static, responder_public,
+        initiator_ephemeral, responder_ephemeral, *canonical,
+        initiator_role_offset));
+    CHECK(changed_prologue_fails(
+        initiator_static, responder_static, responder_public,
+        initiator_ephemeral, responder_ephemeral, *canonical,
+        responder_role_offset));
+    CHECK(changed_prologue_fails(
+        initiator_static, responder_static, responder_public,
+        initiator_ephemeral, responder_ephemeral, *canonical,
+        init_header_offset + 1));
+    CHECK(changed_prologue_fails(
+        initiator_static, responder_static, responder_public,
+        initiator_ephemeral, responder_ephemeral, *canonical,
+        response_header_offset + 1));
 
     FailingRandom failing_random;
     CHECK(NoiseIkHandshake::create_initiator(
