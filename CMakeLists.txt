@@ -68,6 +68,7 @@ set(AEGIS_SOURCES
     src/tunnel/tunnel.cpp
     src/tunnel/tunnel_test.cpp
     src/session/handshake_v2.cpp
+    src/session/noise_ik.cpp
     src/session/session.cpp
     src/transport/transport.cpp
     src/routing/routing.cpp
@@ -115,7 +116,7 @@ add_custom_command(TARGET aegis POST_BUILD
 # OpenSSL EVP (decided per CLAUDE.md)
 find_package(OpenSSL REQUIRED)
 add_subdirectory(third_party/noise-c)
-target_link_libraries(aegis PRIVATE OpenSSL::Crypto)
+target_link_libraries(aegis PRIVATE OpenSSL::Crypto NoiseC::Protocol)
 target_compile_definitions(aegis PRIVATE AEGIS_USE_OPENSSL)
 
 # Tests

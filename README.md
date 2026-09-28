@@ -256,7 +256,7 @@ One pipeline. Must be green on every push to `master` and on every pull request.
 | **OS Elevation** | Windows UAC — `ShellExecuteW "runas"` |
 | **Configuration** | Custom strict YAML subset parser (no external YAML dependency) |
 | **CI/CD** | GitHub Actions, `windows-latest`, Chocolatey, CMake |
-| **Testing** | CTest unit suite — 22 independent test binaries |
+| **Testing** | CTest unit suite — 23 independent test binaries |
 
 Security-relevant pins and integration constraints are recorded in
 [DEPENDENCIES.md](DEPENDENCIES.md). Noise-C is selected there for handshake v2
@@ -305,11 +305,12 @@ aegis/
 │   ├── stun/stun.cpp           # STUN client for WAN endpoint discovery
 │   ├── transport/transport.cpp
 │   └── tunnel/tunnel.cpp       # tx_loop, rx_loop, maintenance loop
-├── tests/                      # CTest unit test suite — 22 binaries
+├── tests/                      # CTest unit test suite — 23 binaries
 │   ├── test_packet.cpp
 │   ├── test_wire.cpp
 │   ├── test_handshake_v2.cpp
 │   ├── test_noise_dependency.cpp
+│   ├── test_noise_ik.cpp
 │   ├── test_transport.cpp
 │   ├── test_crypto.cpp
 │   ├── test_random.cpp
@@ -500,6 +501,7 @@ Unit test coverage:
 | `test_wire` | Bounded network-byte-order readers/writers and atomic failure behavior |
 | `test_handshake_v2` | Canonical Noise IK INIT/RESP envelope framing and malformed-frame rejection |
 | `test_noise_dependency` | Pinned Noise-C suite availability and unsupported-algorithm confinement |
+| `test_noise_ik` | Aegis Noise IK wrapper, injected randomness failure, and independent Cacophony known-answer vector |
 | `test_transport` | Winsock loopback — UDP send/receive, socket lifecycle |
 | `test_crypto` | X25519 keygen, shared secret derivation, determinism |
 | `test_random` | Checked random-source injection and CSPRNG generation |

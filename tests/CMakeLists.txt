@@ -16,6 +16,14 @@ add_executable(test_noise_dependency test_noise_dependency.cpp)
 target_link_libraries(test_noise_dependency NoiseC::Protocol)
 add_test(NAME test_noise_dependency COMMAND test_noise_dependency)
 
+add_executable(test_noise_ik
+    test_noise_ik.cpp
+    ../src/session/noise_ik.cpp
+)
+target_include_directories(test_noise_ik PRIVATE ../include)
+target_link_libraries(test_noise_ik NoiseC::Protocol OpenSSL::Crypto)
+add_test(NAME test_noise_ik COMMAND test_noise_ik)
+
 add_executable(test_transport test_transport.cpp ../src/transport/transport.cpp ../src/platform/platform.cpp)
 target_include_directories(test_transport PRIVATE ../include)
 target_link_libraries(test_transport ws2_32)
@@ -138,6 +146,7 @@ set(AEGIS_TEST_TARGETS
     test_wire
     test_handshake_v2
     test_noise_dependency
+    test_noise_ik
     test_transport
     test_crypto
     test_random
@@ -167,6 +176,7 @@ add_custom_target(check
     COMMAND test_wire
     COMMAND test_handshake_v2
     COMMAND test_noise_dependency
+    COMMAND test_noise_ik
     COMMAND test_transport
     COMMAND test_crypto
     COMMAND test_random
