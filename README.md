@@ -256,7 +256,11 @@ One pipeline. Must be green on every push to `master` and on every pull request.
 | **OS Elevation** | Windows UAC — `ShellExecuteW "runas"` |
 | **Configuration** | Custom strict YAML subset parser (no external YAML dependency) |
 | **CI/CD** | GitHub Actions, `windows-latest`, Chocolatey, CMake |
-| **Testing** | CTest unit suite — 13 independent test binaries |
+| **Testing** | CTest unit suite — 21 independent test binaries |
+
+Security-relevant pins and integration constraints are recorded in
+[DEPENDENCIES.md](DEPENDENCIES.md). Noise-C is selected there for handshake v2
+but is not active until its vendored wrapper and vector gate pass.
 
 ---
 
