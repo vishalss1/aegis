@@ -1,4 +1,5 @@
 set(NOISE_C_SOURCES
+    src/protocol/aegis.c
     src/protocol/cipherstate.c
     src/protocol/dhstate.c
     src/protocol/errors.c

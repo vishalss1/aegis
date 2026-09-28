@@ -5,4 +5,6 @@ third_party/noise-c/src/backend/** -whitespace
 third_party/noise-c/src/crypto/** -whitespace
 third_party/noise-c/src/protocol/*.c -whitespace
 third_party/noise-c/src/protocol/internal.h -whitespace
-third_party/noise-c/src/protocol/unsupported.c whitespace
+third_party/noise-c/include/noise/protocol/aegis.h !whitespace
+third_party/noise-c/src/protocol/aegis.c !whitespace
+third_party/noise-c/src/protocol/unsupported.c !whitespace

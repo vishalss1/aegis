@@ -1,6 +1,7 @@
 #include "aegis/session/noise_ik.hpp"
 #include "aegis/crypto/secret.hpp"
 #include <noise/protocol.h>
+#include <noise/protocol/aegis.h>
 #include <utility>
 #include <vector>
 
@@ -205,4 +206,46 @@ NoiseIkHandshake::handshake_hash() const {
     if (error != NOISE_ERROR_NONE)
         return std::nullopt;
     return hash;
+}
+
+std::optional<NoiseIkSplitResult> NoiseIkHandshake::split() {
+    if (!impl_ || !impl_->state)
+        return std::nullopt;
+
+    const auto remote = remote_static_public_key();
+    const auto hash = handshake_hash();
+    if (!remote || !hash)
+        return std::nullopt;
+
+    NoiseCipherState* send = nullptr;
+    NoiseCipherState* receive = nullptr;
+    if (noise_handshakestate_split(
+            impl_->state, &send, &receive) != NOISE_ERROR_NONE ||
+        !send || !receive) {
+        if (send)
+            noise_cipherstate_free(send);
+        if (receive)
+            noise_cipherstate_free(receive);
+        return std::nullopt;
+    }
+
+    NoiseIkSplitResult result;
+    result.remote_static_public_key = *remote;
+    result.handshake_hash = *hash;
+    const bool exported =
+        aegis_noise_cipherstate_export_key(
+            send, result.send_key.data(), result.send_key.size()) ==
+            NOISE_ERROR_NONE &&
+        aegis_noise_cipherstate_export_key(
+            receive, result.receive_key.data(), result.receive_key.size()) ==
+            NOISE_ERROR_NONE;
+
+    noise_cipherstate_free(send);
+    noise_cipherstate_free(receive);
+    noise_handshakestate_free(impl_->state);
+    impl_->state = nullptr;
+
+    if (!exported)
+        return std::nullopt;
+    return result;
 }

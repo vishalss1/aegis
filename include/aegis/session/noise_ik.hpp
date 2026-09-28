@@ -1,5 +1,6 @@
 #pragma once
 
+#include "aegis/crypto/chacha20poly1305.hpp"
 #include "aegis/crypto/random.hpp"
 #include "aegis/crypto/x25519.hpp"
 #include <array>
@@ -27,6 +28,13 @@ struct NoiseIkOperationResult {
     [[nodiscard]] explicit operator bool() const noexcept {
         return error == NoiseIkError::none;
     }
+};
+
+struct NoiseIkSplitResult {
+    X25519Key remote_static_public_key{};
+    std::array<uint8_t, NOISE_IK_HASH_SIZE> handshake_hash{};
+    ChaCha20Poly1305Key send_key;
+    ChaCha20Poly1305Key receive_key;
 };
 
 // A narrow ownership and policy boundary around the pinned Noise-C library.
@@ -63,6 +71,11 @@ public:
     [[nodiscard]] std::optional<X25519Key> remote_static_public_key() const;
     [[nodiscard]] std::optional<std::array<uint8_t, NOISE_IK_HASH_SIZE>>
     handshake_hash() const;
+
+    // Splits role-correct local send/receive keys, copies all authenticated
+    // results into Aegis-owned storage, and immediately destroys the complete
+    // Noise-C handshake and cipher state. May succeed only once.
+    [[nodiscard]] std::optional<NoiseIkSplitResult> split();
 
 private:
     struct Impl;

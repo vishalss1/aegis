@@ -27,13 +27,16 @@ date:   2023-12-07
 ```
 
 The reduced snapshot lives in `third_party/noise-c`; its `UPSTREAM.md` records
-the retained source scope and the one Aegis compatibility source. It builds as
+the retained source scope and the Aegis compatibility sources. It builds as
 the offline `NoiseC::Protocol` target. The dependency smoke test permits only
 the retained 25519/ChaChaPoly/BLAKE2s algorithms and confirms that excluded
 Curve448 and AES-GCM variants cannot instantiate. The Aegis wrapper exposes
 only the IK pattern, obtains every ephemeral private key through the checked
 `RandomSource` interface, and is gated against the independent Cacophony IK
 known-answer vector published with the pinned upstream revision.
+After a successful handshake, the wrapper copies the role-correct split keys,
+authenticated remote static key, and handshake hash into Aegis-owned cleansing
+storage, then immediately destroys every Noise-C handshake and cipher state.
 
 Noise-C supports the required `Noise_IK_25519_ChaChaPoly_BLAKE2s` suite. Its
 published documentation identifies Noise revision 30, while Aegis treats the

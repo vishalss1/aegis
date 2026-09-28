@@ -501,7 +501,7 @@ Unit test coverage:
 | `test_wire` | Bounded network-byte-order readers/writers and atomic failure behavior |
 | `test_handshake_v2` | Canonical Noise IK INIT/RESP envelope framing and malformed-frame rejection |
 | `test_noise_dependency` | Pinned Noise-C suite availability and unsupported-algorithm confinement |
-| `test_noise_ik` | Noise IK wrapper, Cacophony vector, checked randomness, exact message sizes, and transcript-context binding |
+| `test_noise_ik` | Noise IK vectors, transcript binding, directional transport split, and post-split state destruction |
 | `test_transport` | Winsock loopback — UDP send/receive, socket lifecycle |
 | `test_crypto` | X25519 keygen, shared secret derivation, determinism |
 | `test_random` | Checked random-source injection and CSPRNG generation |

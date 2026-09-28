@@ -17,10 +17,12 @@ This is a reduced source snapshot for
 - the upstream SHA-256 utility used only by Noise-C's public-key fingerprint
   helper (not as an enabled handshake hash backend).
 
-`src/protocol/unsupported.c` is the only Aegis-authored compatibility source in
-the snapshot. It makes constructors for unretained algorithms return null, so
-the generic upstream factories link without accidentally exposing algorithms
-outside the selected suite.
+The snapshot has two Aegis-authored compatibility sources. `unsupported.c`
+makes constructors for unretained algorithms return null, so the generic
+upstream factories link without accidentally exposing algorithms outside the
+selected suite. `aegis.c` and its `aegis.h` declaration provide a narrow,
+ChaChaPoly-only export hook that copies split keys out of the pinned reference
+backend before all Noise-C state is destroyed.
 
 The snapshot intentionally excludes Autotools files, examples, tools, upstream
 tests, signing support, AES-GCM, Curve448, NewHope, BLAKE2b, and optional SHA-2

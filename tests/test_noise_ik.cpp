@@ -192,6 +192,31 @@ int main() {
     CHECK(responder->handshake_hash().has_value());
     CHECK(initiator->handshake_hash() == responder->handshake_hash());
 
+    const auto vector_initiator_split = initiator->split();
+    const auto vector_responder_split = responder->split();
+    CHECK(vector_initiator_split.has_value());
+    CHECK(vector_responder_split.has_value());
+    if (!vector_initiator_split || !vector_responder_split)
+        return 1;
+    CHECK(vector_initiator_split->send_key ==
+          vector_responder_split->receive_key);
+
+    const auto transport_vector_plaintext =
+        from_hex("462e20412e20486179656b");
+    const auto expected_transport_ciphertext = from_hex(
+        "2c256ed08fcd08c2980f954ee4beaccb61c9581340f5dd2fd1cf3b");
+    ChaCha20Poly1305Nonce vector_nonce{};
+    std::vector<uint8_t> actual_transport_ciphertext(
+        transport_vector_plaintext.size() + CHACHA20_POLY1305_TAG_SIZE);
+    CHECK(chacha20_poly1305_encrypt(
+        vector_initiator_split->send_key, vector_nonce,
+        transport_vector_plaintext.data(), transport_vector_plaintext.size(),
+        actual_transport_ciphertext.data(),
+        actual_transport_ciphertext.data() +
+            transport_vector_plaintext.size()));
+    CHECK(bytes_equal(actual_transport_ciphertext,
+                      expected_transport_ciphertext));
+
     FixedRandom empty_initiator_random(initiator_ephemeral);
     FixedRandom empty_responder_random(responder_ephemeral);
     auto empty_initiator = NoiseIkHandshake::create_initiator(
@@ -217,6 +242,60 @@ int main() {
     CHECK(empty_second_write);
     CHECK(empty_second_write.bytes == HANDSHAKE_V2_RESPONSE_NOISE_SIZE);
     CHECK(empty_initiator->read_message(empty_second, {}));
+
+    const auto expected_initiator_public =
+        empty_responder->remote_static_public_key();
+    const auto initiator_split = empty_initiator->split();
+    const auto responder_split = empty_responder->split();
+    CHECK(initiator_split.has_value());
+    CHECK(responder_split.has_value());
+    if (!initiator_split || !responder_split)
+        return 1;
+    CHECK(initiator_split->remote_static_public_key == responder_public);
+    CHECK(expected_initiator_public.has_value());
+    CHECK(expected_initiator_public &&
+          responder_split->remote_static_public_key ==
+              *expected_initiator_public);
+    CHECK(initiator_split->handshake_hash ==
+          responder_split->handshake_hash);
+    CHECK(initiator_split->send_key == responder_split->receive_key);
+    CHECK(initiator_split->receive_key == responder_split->send_key);
+    CHECK(!(initiator_split->send_key == initiator_split->receive_key));
+
+    const std::array<uint8_t, 8> transport_plaintext = {
+        0x41, 0x65, 0x67, 0x69, 0x73, 0x20, 0x49, 0x4b};
+    const std::array<uint8_t, 4> transport_aad = {0x02, 0x01, 0x00, 0x00};
+    ChaCha20Poly1305Nonce transport_nonce{};
+    std::array<uint8_t, transport_plaintext.size()> ciphertext{};
+    std::array<uint8_t, CHACHA20_POLY1305_TAG_SIZE> tag{};
+    std::array<uint8_t, transport_plaintext.size()> decrypted{};
+    CHECK(chacha20_poly1305_encrypt(
+        initiator_split->send_key, transport_nonce,
+        transport_plaintext.data(), transport_plaintext.size(),
+        ciphertext.data(), tag.data(), transport_aad.data(),
+        transport_aad.size()));
+    CHECK(chacha20_poly1305_decrypt(
+        responder_split->receive_key, transport_nonce,
+        ciphertext.data(), ciphertext.size(), tag.data(), decrypted.data(),
+        transport_aad.data(), transport_aad.size()));
+    CHECK(decrypted == transport_plaintext);
+
+    ciphertext.fill(0);
+    tag.fill(0);
+    decrypted.fill(0);
+    CHECK(chacha20_poly1305_encrypt(
+        responder_split->send_key, transport_nonce,
+        transport_plaintext.data(), transport_plaintext.size(),
+        ciphertext.data(), tag.data(), transport_aad.data(),
+        transport_aad.size()));
+    CHECK(chacha20_poly1305_decrypt(
+        initiator_split->receive_key, transport_nonce,
+        ciphertext.data(), ciphertext.size(), tag.data(), decrypted.data(),
+        transport_aad.data(), transport_aad.size()));
+    CHECK(decrypted == transport_plaintext);
+    CHECK(!empty_initiator->split().has_value());
+    CHECK(!empty_initiator->handshake_hash().has_value());
+    CHECK(!empty_initiator->remote_static_public_key().has_value());
 
     NetworkId network_id{};
     for (size_t index = 0; index < network_id.size(); ++index)
