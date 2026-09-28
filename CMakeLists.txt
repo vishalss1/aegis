@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 project(aegis
     VERSION 0.1.0
     DESCRIPTION "Aegis — Windows-native secure overlay network mesh"
-    LANGUAGES CXX
+    LANGUAGES C CXX
 )
 
 set(CMAKE_CXX_STANDARD 20)
@@ -114,6 +114,7 @@ add_custom_command(TARGET aegis POST_BUILD
 
 # OpenSSL EVP (decided per CLAUDE.md)
 find_package(OpenSSL REQUIRED)
+add_subdirectory(third_party/noise-c)
 target_link_libraries(aegis PRIVATE OpenSSL::Crypto)
 target_compile_definitions(aegis PRIVATE AEGIS_USE_OPENSSL)
 

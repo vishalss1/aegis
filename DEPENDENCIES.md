@@ -15,7 +15,7 @@ resolves the installed package with `find_package(OpenSSL REQUIRED)`.
 The Wintun SDK is supplied out of tree through `WINTUN_DIR`. Its headers and
 runtime DLL are intentionally not committed to this repository.
 
-## Noise-C (selected, not active)
+## Noise-C (vendored, not session-active)
 
 Handshake v2 will use a reviewed repository-local snapshot of the MIT-licensed
 [Noise-C reference implementation](https://github.com/rweather/noise-c), pinned
@@ -25,6 +25,13 @@ to this exact upstream revision:
 commit: cfe25410979a87391bb9ac8d4d4bef64e9f268c6
 date:   2023-12-07
 ```
+
+The reduced snapshot lives in `third_party/noise-c`; its `UPSTREAM.md` records
+the retained source scope and the one Aegis compatibility source. It builds as
+the offline `NoiseC::Protocol` target. The dependency smoke test permits only
+the retained 25519/ChaChaPoly/BLAKE2s algorithms and confirms that excluded
+Curve448 and AES-GCM variants cannot instantiate. The future Aegis wrapper is
+responsible for exposing only the IK pattern.
 
 Noise-C supports the required `Noise_IK_25519_ChaChaPoly_BLAKE2s` suite. Its
 published documentation identifies Noise revision 30, while Aegis treats the

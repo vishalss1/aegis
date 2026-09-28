@@ -1,0 +1,8 @@
+# Preserve the pinned upstream Noise-C snapshot byte-for-byte, including its
+# historical whitespace. Locally authored integration files remain checked.
+third_party/noise-c/include/** -whitespace
+third_party/noise-c/src/backend/** -whitespace
+third_party/noise-c/src/crypto/** -whitespace
+third_party/noise-c/src/protocol/*.c -whitespace
+third_party/noise-c/src/protocol/internal.h -whitespace
+third_party/noise-c/src/protocol/unsupported.c whitespace
