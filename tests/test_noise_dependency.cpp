@@ -23,6 +23,15 @@ int main() {
         NOISE_ROLE_INITIATOR) == NOISE_ERROR_NONE);
     CHECK(initiator != nullptr);
     if (initiator) {
+        NoiseProtocolId protocol{};
+        CHECK(noise_handshakestate_get_protocol_id(
+                  initiator, &protocol) == NOISE_ERROR_NONE);
+        CHECK(protocol.prefix_id == NOISE_PREFIX_STANDARD);
+        CHECK(protocol.pattern_id == NOISE_PATTERN_IK);
+        CHECK(protocol.dh_id == NOISE_DH_CURVE25519);
+        CHECK(protocol.cipher_id == NOISE_CIPHER_CHACHAPOLY);
+        CHECK(protocol.hash_id == NOISE_HASH_BLAKE2s);
+        CHECK(protocol.hybrid_id == 0);
         CHECK(noise_handshakestate_get_role(initiator) ==
               NOISE_ROLE_INITIATOR);
         CHECK(noise_handshakestate_needs_local_keypair(initiator) != 0);

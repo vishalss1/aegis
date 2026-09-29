@@ -27,10 +27,11 @@ date:   2023-12-07
 ```
 
 The reduced snapshot lives in `third_party/noise-c`; its `UPSTREAM.md` records
-the retained source scope and the Aegis compatibility sources. It builds as
-the offline `NoiseC::Protocol` target. The dependency smoke test permits only
-the retained 25519/ChaChaPoly/BLAKE2s algorithms and confirms that excluded
-Curve448 and AES-GCM variants cannot instantiate. The Aegis wrapper exposes
+the retained source scope and the Aegis compatibility sources, while
+`REVISION_REVIEW.md` records the completed revision-30-to-34 source review. It
+builds as the offline `NoiseC::Protocol` target. The dependency smoke test
+permits only the retained 25519/ChaChaPoly/BLAKE2s algorithms and confirms that
+excluded Curve448 and AES-GCM variants cannot instantiate. The Aegis wrapper exposes
 only the IK pattern, obtains every ephemeral private key through the checked
 `RandomSource` interface, and is gated against the independent Cacophony IK
 known-answer vector published with the pinned upstream revision.
@@ -41,9 +42,9 @@ storage, then immediately destroys every Noise-C handshake and cipher state.
 Noise-C supports the required `Noise_IK_25519_ChaChaPoly_BLAKE2s` suite. Its
 published documentation identifies Noise revision 30, while Aegis treats the
 [Noise revision-34 specification](https://noiseprotocol.org/noise.html) as
-normative. The dependency must therefore remain inactive until the selected IK
-behavior passes official known-answer vectors and a source review of relevant
-revision-31-through-34 changes.
+normative. The selected IK behavior now passes the independent known-answer
+gate and the source review of relevant revision-31-through-34 changes; no
+compatibility patch was required for the fundamental, non-PSK IK exchange.
 
 Integration requirements:
 
@@ -61,5 +62,5 @@ Integration requirements:
   never expose fallback or handshake-v1 negotiation.
 
 The active Session Manager continues to use the legacy handshake until the
-vendored wrapper, official vector, deterministic round trip, and negative tests
-all pass the warning-as-error build and full CTest suite.
+reviewed wrapper is integrated with the session state machine and the remaining
+integration attack tests pass the warning-as-error build and full CTest suite.

@@ -32,3 +32,5 @@ compiled-file manifest is `NOISE_C_SOURCES` in `CMakeLists.txt`.
 
 Do not update individual upstream files. Import a reviewed commit as one change,
 update this manifest and `DEPENDENCIES.md`, and rerun the official vector gate.
+The compatibility assessment against Noise revisions 31 through 34 is recorded
+in `REVISION_REVIEW.md` and must be repeated for any dependency update.
