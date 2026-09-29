@@ -79,6 +79,30 @@ public:
     bool fill(std::span<uint8_t>) override { return false; }
 };
 
+struct NoiseIkPair {
+    std::unique_ptr<NoiseIkHandshake> initiator;
+    std::unique_ptr<NoiseIkHandshake> responder;
+};
+
+NoiseIkPair make_handshake_pair(
+    const X25519PrivateKey& initiator_static,
+    const X25519PrivateKey& responder_static,
+    const X25519Key& expected_responder,
+    std::span<const uint8_t> initiator_ephemeral,
+    std::span<const uint8_t> responder_ephemeral,
+    std::span<const uint8_t> initiator_prologue,
+    std::span<const uint8_t> responder_prologue) {
+    FixedRandom initiator_random(initiator_ephemeral);
+    FixedRandom responder_random(responder_ephemeral);
+    return {
+        NoiseIkHandshake::create_initiator(
+            initiator_static, expected_responder, initiator_prologue,
+            initiator_random),
+        NoiseIkHandshake::create_responder(
+            responder_static, responder_prologue, responder_random),
+    };
+}
+
 bool changed_prologue_fails(
     const X25519PrivateKey& initiator_static,
     const X25519PrivateKey& responder_static,
@@ -228,6 +252,8 @@ int main() {
     CHECK(empty_responder != nullptr);
     if (!empty_initiator || !empty_responder)
         return 1;
+    CHECK(!empty_initiator->remote_static_public_key().has_value());
+    CHECK(!empty_responder->remote_static_public_key().has_value());
 
     HandshakeV2InitNoise empty_first{};
     const auto empty_first_write = empty_initiator->write_message(
@@ -242,6 +268,7 @@ int main() {
     CHECK(empty_second_write);
     CHECK(empty_second_write.bytes == HANDSHAKE_V2_RESPONSE_NOISE_SIZE);
     CHECK(empty_initiator->read_message(empty_second, {}));
+    CHECK(empty_initiator->remote_static_public_key().has_value());
 
     const auto expected_initiator_public =
         empty_responder->remote_static_public_key();
@@ -355,6 +382,118 @@ int main() {
         initiator_static, responder_static, responder_public,
         initiator_ephemeral, responder_ephemeral, *canonical,
         response_header_offset + 1));
+
+    auto repeated = make_handshake_pair(
+        initiator_static, responder_static, responder_public,
+        initiator_ephemeral, responder_ephemeral, *canonical, *canonical);
+    CHECK(repeated.initiator != nullptr && repeated.responder != nullptr);
+    if (!repeated.initiator || !repeated.responder)
+        return 1;
+    HandshakeV2InitNoise repeated_message{};
+    CHECK(repeated.initiator->write_message({}, repeated_message));
+    CHECK(repeated.initiator->write_message({}, repeated_message).error ==
+          NoiseIkError::invalid_state);
+    CHECK(!repeated.initiator->split().has_value());
+    CHECK(repeated.responder->read_message(repeated_message, {}));
+    CHECK(repeated.responder->read_message(repeated_message, {}).error ==
+          NoiseIkError::invalid_state);
+    CHECK(!repeated.responder->split().has_value());
+
+    auto reordered = make_handshake_pair(
+        initiator_static, responder_static, responder_public,
+        initiator_ephemeral, responder_ephemeral, *canonical, *canonical);
+    CHECK(reordered.initiator != nullptr && reordered.responder != nullptr);
+    if (!reordered.initiator || !reordered.responder)
+        return 1;
+    HandshakeV2ResponseNoise reordered_response{};
+    CHECK(!reordered.responder->read_message(reordered_response, {}));
+    CHECK(!reordered.responder->split().has_value());
+    CHECK(reordered.initiator->read_message(reordered_response, {}).error ==
+          NoiseIkError::invalid_state);
+    CHECK(!reordered.initiator->split().has_value());
+
+    auto truncated = make_handshake_pair(
+        initiator_static, responder_static, responder_public,
+        initiator_ephemeral, responder_ephemeral, *canonical, *canonical);
+    CHECK(truncated.initiator != nullptr && truncated.responder != nullptr);
+    if (!truncated.initiator || !truncated.responder)
+        return 1;
+    HandshakeV2InitNoise truncated_message{};
+    CHECK(truncated.initiator->write_message({}, truncated_message));
+    const auto truncated_read = truncated.responder->read_message(
+        std::span<const uint8_t>(truncated_message).first(
+            truncated_message.size() - 1), {});
+    CHECK(!truncated_read);
+    CHECK(!truncated.responder->remote_static_public_key().has_value());
+    CHECK(!truncated.responder->split().has_value());
+
+    auto tampered = make_handshake_pair(
+        initiator_static, responder_static, responder_public,
+        initiator_ephemeral, responder_ephemeral, *canonical, *canonical);
+    CHECK(tampered.initiator != nullptr && tampered.responder != nullptr);
+    if (!tampered.initiator || !tampered.responder)
+        return 1;
+    HandshakeV2InitNoise tampered_message{};
+    CHECK(tampered.initiator->write_message({}, tampered_message));
+    tampered_message.back() ^= 0x01;
+    CHECK(tampered.responder->read_message(tampered_message, {}).error ==
+          NoiseIkError::authentication_failed);
+    CHECK(!tampered.responder->remote_static_public_key().has_value());
+    CHECK(!tampered.responder->split().has_value());
+
+    auto invalid_public = make_handshake_pair(
+        initiator_static, responder_static, responder_public,
+        initiator_ephemeral, responder_ephemeral, *canonical, *canonical);
+    CHECK(invalid_public.initiator != nullptr &&
+          invalid_public.responder != nullptr);
+    if (!invalid_public.initiator || !invalid_public.responder)
+        return 1;
+    HandshakeV2InitNoise invalid_public_message{};
+    CHECK(invalid_public.initiator->write_message(
+        {}, invalid_public_message));
+    std::fill_n(invalid_public_message.begin(), X25519_KEY_SIZE, 0);
+    CHECK(invalid_public.responder->read_message(
+        invalid_public_message, {}).error ==
+        NoiseIkError::authentication_failed);
+    CHECK(!invalid_public.responder->remote_static_public_key().has_value());
+    CHECK(!invalid_public.responder->split().has_value());
+
+    CHECK(expected_initiator_public.has_value());
+    if (!expected_initiator_public)
+        return 1;
+    auto wrong_responder = make_handshake_pair(
+        initiator_static, responder_static, *expected_initiator_public,
+        initiator_ephemeral, responder_ephemeral, *canonical, *canonical);
+    CHECK(wrong_responder.initiator != nullptr &&
+          wrong_responder.responder != nullptr);
+    if (!wrong_responder.initiator || !wrong_responder.responder)
+        return 1;
+    HandshakeV2InitNoise wrong_responder_message{};
+    CHECK(wrong_responder.initiator->write_message(
+        {}, wrong_responder_message));
+    CHECK(wrong_responder.responder->read_message(
+        wrong_responder_message, {}).error ==
+        NoiseIkError::authentication_failed);
+    CHECK(!wrong_responder.responder->remote_static_public_key().has_value());
+    CHECK(!wrong_responder.responder->split().has_value());
+
+    auto tampered_response = make_handshake_pair(
+        initiator_static, responder_static, responder_public,
+        initiator_ephemeral, responder_ephemeral, *canonical, *canonical);
+    CHECK(tampered_response.initiator != nullptr &&
+          tampered_response.responder != nullptr);
+    if (!tampered_response.initiator || !tampered_response.responder)
+        return 1;
+    HandshakeV2InitNoise response_init{};
+    HandshakeV2ResponseNoise response_message{};
+    CHECK(tampered_response.initiator->write_message({}, response_init));
+    CHECK(tampered_response.responder->read_message(response_init, {}));
+    CHECK(tampered_response.responder->write_message({}, response_message));
+    response_message.back() ^= 0x01;
+    CHECK(tampered_response.initiator->read_message(
+        response_message, {}).error == NoiseIkError::authentication_failed);
+    CHECK(!tampered_response.initiator->remote_static_public_key().has_value());
+    CHECK(!tampered_response.initiator->split().has_value());
 
     FailingRandom failing_random;
     CHECK(NoiseIkHandshake::create_initiator(

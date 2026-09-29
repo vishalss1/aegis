@@ -32,10 +32,14 @@ NoiseIkError map_noise_error(int error) {
 struct NoiseIkHandshake::Impl {
     NoiseHandshakeState* state = nullptr;
 
-    ~Impl() {
-        if (state)
+    void reset() {
+        if (state) {
             noise_handshakestate_free(state);
+            state = nullptr;
+        }
     }
+
+    ~Impl() { reset(); }
 };
 
 NoiseIkHandshake::NoiseIkHandshake(std::unique_ptr<Impl> impl)
@@ -130,8 +134,12 @@ std::unique_ptr<NoiseIkHandshake> NoiseIkHandshake::create(
 NoiseIkOperationResult NoiseIkHandshake::write_message(
     std::span<const uint8_t> payload,
     std::span<uint8_t> output) {
-    if (!impl_ || !impl_->state || output.empty())
+    if (!impl_ || !impl_->state)
         return {NoiseIkError::invalid_argument, 0};
+    if (output.empty()) {
+        impl_->reset();
+        return {NoiseIkError::buffer_too_small, 0};
+    }
 
     NoiseBuffer message_buffer;
     noise_buffer_set_output(message_buffer, output.data(), output.size());
@@ -147,17 +155,25 @@ NoiseIkOperationResult NoiseIkHandshake::write_message(
 
     const int error = noise_handshakestate_write_message(
         impl_->state, &message_buffer, payload_pointer);
-    if (error == NOISE_ERROR_INVALID_LENGTH)
-        return {NoiseIkError::buffer_too_small, 0};
-    return {map_noise_error(error),
-            error == NOISE_ERROR_NONE ? message_buffer.size : 0};
+    if (error == NOISE_ERROR_NONE)
+        return {NoiseIkError::none, message_buffer.size};
+
+    const NoiseIkError mapped = error == NOISE_ERROR_INVALID_LENGTH
+        ? NoiseIkError::buffer_too_small
+        : map_noise_error(error);
+    impl_->reset();
+    return {mapped, 0};
 }
 
 NoiseIkOperationResult NoiseIkHandshake::read_message(
     std::span<const uint8_t> message,
     std::span<uint8_t> payload_output) {
-    if (!impl_ || !impl_->state || message.empty())
+    if (!impl_ || !impl_->state)
         return {NoiseIkError::invalid_argument, 0};
+    if (message.empty()) {
+        impl_->reset();
+        return {NoiseIkError::invalid_argument, 0};
+    }
 
     std::vector<uint8_t> mutable_message(message.begin(), message.end());
     NoiseBuffer message_buffer;
@@ -173,14 +189,26 @@ NoiseIkOperationResult NoiseIkHandshake::read_message(
 
     const int error = noise_handshakestate_read_message(
         impl_->state, &message_buffer, &payload_buffer);
-    if (error == NOISE_ERROR_INVALID_LENGTH)
-        return {NoiseIkError::buffer_too_small, 0};
-    return {map_noise_error(error),
-            error == NOISE_ERROR_NONE ? payload_buffer.size : 0};
+    if (error == NOISE_ERROR_NONE)
+        return {NoiseIkError::none, payload_buffer.size};
+
+    const NoiseIkError mapped = error == NOISE_ERROR_INVALID_LENGTH
+        ? NoiseIkError::buffer_too_small
+        : map_noise_error(error);
+    impl_->reset();
+    return {mapped, 0};
 }
 
 std::optional<X25519Key> NoiseIkHandshake::remote_static_public_key() const {
     if (!impl_ || !impl_->state)
+        return std::nullopt;
+    const int role = noise_handshakestate_get_role(impl_->state);
+    const int action = noise_handshakestate_get_action(impl_->state);
+    const bool authenticated =
+        action == NOISE_ACTION_SPLIT || action == NOISE_ACTION_COMPLETE ||
+        (role == NOISE_ROLE_RESPONDER &&
+         action == NOISE_ACTION_WRITE_MESSAGE);
+    if (!authenticated)
         return std::nullopt;
     NoiseDHState* remote =
         noise_handshakestate_get_remote_public_key_dh(impl_->state);
@@ -226,6 +254,7 @@ std::optional<NoiseIkSplitResult> NoiseIkHandshake::split() {
             noise_cipherstate_free(send);
         if (receive)
             noise_cipherstate_free(receive);
+        impl_->reset();
         return std::nullopt;
     }
 
@@ -242,8 +271,7 @@ std::optional<NoiseIkSplitResult> NoiseIkHandshake::split() {
 
     noise_cipherstate_free(send);
     noise_cipherstate_free(receive);
-    noise_handshakestate_free(impl_->state);
-    impl_->state = nullptr;
+    impl_->reset();
 
     if (!exported)
         return std::nullopt;
