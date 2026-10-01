@@ -540,6 +540,7 @@ void Tunnel::maintenance_loop() {
 
         // 3) Garbage-collect sessions retired by a rekey.
         session_manager_->purge_retired();
+        session_manager_->purge_incomplete_handshakes();
 
         // 4) Fold same-network presence broadcasts into known peers' endpoints.
         //    Runs after keep-alives so a peer that just moved IPs has its new

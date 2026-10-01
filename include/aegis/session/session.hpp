@@ -97,6 +97,15 @@ public:
     // the tunnel's maintenance loop; safe to call from anywhere.
     void purge_retired();
 
+    // Incomplete initiator handshakes retain Noise ephemeral state only until
+    // this deadline (15 s by default). Maintenance and handshake entry points
+    // purge expired state before it can participate in collision handling.
+    void purge_incomplete_handshakes();
+    void set_handshake_timeout(std::chrono::milliseconds timeout);
+    std::chrono::milliseconds handshake_timeout() const {
+        return handshake_timeout_;
+    }
+
     // Step 15: how long a rekeyed-away session keeps decrypting in-flight
     // packets (default 10 s). Tests shorten this so the purge path is
     // exercisable without sleeping through the production grace window.
@@ -127,7 +136,11 @@ private:
         NodeId expected_peer_id{};
         X25519Key expected_peer_static{};
         std::unique_ptr<NoiseIkHandshake> handshake;
+        std::chrono::steady_clock::time_point expires{};
     };
+    static constexpr std::chrono::seconds HANDSHAKE_TIMEOUT =
+        std::chrono::seconds(15);
+    std::chrono::milliseconds handshake_timeout_{HANDSHAKE_TIMEOUT};
     std::map<uint32_t, PendingInitiator> pending_initiators_;
     std::mutex mtx_;
 
@@ -135,6 +148,8 @@ private:
     void install_noise_keys(
         Session& session, NoiseIkSplitResult&& split,
         bool initiated_locally);
+    void purge_incomplete_handshakes_locked(
+        std::chrono::steady_clock::time_point now);
 
     bool check_replay(Session& session, uint64_t seq);
     void update_replay(Session& session, uint64_t seq);

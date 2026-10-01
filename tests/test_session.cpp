@@ -569,6 +569,49 @@ int main() {
         CHECK((*higher_session)->id == lower_rekey_id);
     }
 
+    // ---- 11. Incomplete initiator handshakes expire ------------------------
+    {
+        ManualClock clock;
+        SessionManager sm_i(alice, clock);
+        SessionManager sm_r(bob, clock);
+        sm_i.set_handshake_timeout(std::chrono::milliseconds(50));
+        CHECK(sm_i.handshake_timeout() == std::chrono::milliseconds(50));
+
+        const uint32_t expired_id = 0xAC005000;
+        auto init = sm_i.create_handshake_init(
+            expired_id, bob.node_id, bob.keypair.public_key);
+        auto response = sm_r.handle_handshake_init(*init, expired_id);
+        CHECK(init.has_value());
+        CHECK(response.has_value());
+
+        clock.advance(std::chrono::milliseconds(51));
+        sm_i.purge_incomplete_handshakes();
+        CHECK(!sm_i.handle_handshake_resp(
+            response->message, expired_id));
+        CHECK(!sm_i.get_session(bob.node_id).has_value());
+
+        // Entry points also purge lazily. Reusing the expired session ID
+        // creates fresh Noise state, so a response to the old INIT cannot
+        // complete the replacement attempt.
+        SessionManager sm_lazy_i(alice, clock);
+        SessionManager sm_lazy_r(bob, clock);
+        sm_lazy_i.set_handshake_timeout(std::chrono::milliseconds(50));
+        const uint32_t reused_id = 0xAC005001;
+        auto old_init = sm_lazy_i.create_handshake_init(
+            reused_id, bob.node_id, bob.keypair.public_key);
+        auto old_response = sm_lazy_r.handle_handshake_init(
+            *old_init, reused_id);
+        CHECK(old_response.has_value());
+        clock.advance(std::chrono::milliseconds(51));
+        auto replacement_init = sm_lazy_i.create_handshake_init(
+            reused_id, bob.node_id, bob.keypair.public_key);
+        CHECK(replacement_init.has_value());
+        CHECK(*replacement_init != *old_init);
+        CHECK(!sm_lazy_i.handle_handshake_resp(
+            old_response->message, reused_id));
+        CHECK(!sm_lazy_i.get_session(bob.node_id).has_value());
+    }
+
     printf("\n%d / %d passed\n", passed, tests);
     return (passed == tests) ? 0 : 1;
 }

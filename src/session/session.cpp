@@ -126,6 +126,29 @@ void SessionManager::purge_retired() {
     }
 }
 
+void SessionManager::purge_incomplete_handshakes_locked(
+    std::chrono::steady_clock::time_point now) {
+    for (auto it = pending_initiators_.begin();
+         it != pending_initiators_.end();) {
+        if (it->second.expires <= now)
+            it = pending_initiators_.erase(it);
+        else
+            ++it;
+    }
+}
+
+void SessionManager::purge_incomplete_handshakes() {
+    std::lock_guard<std::mutex> lock(mtx_);
+    purge_incomplete_handshakes_locked(clock_.now());
+}
+
+void SessionManager::set_handshake_timeout(
+    std::chrono::milliseconds timeout) {
+    std::lock_guard<std::mutex> lock(mtx_);
+    handshake_timeout_ = (std::max)(timeout, std::chrono::milliseconds::zero());
+    purge_incomplete_handshakes_locked(clock_.now());
+}
+
 std::optional<std::vector<uint8_t>> SessionManager::create_handshake_init(
     uint32_t session_id, const NodeId& expected_peer_id,
     const X25519Key& expected_peer_static) {
@@ -161,12 +184,15 @@ std::optional<std::vector<uint8_t>> SessionManager::create_handshake_init(
         return std::nullopt;
 
     std::lock_guard<std::mutex> lock(mtx_);
+    const auto now = clock_.now();
+    purge_incomplete_handshakes_locked(now);
     if (pending_initiators_.contains(session_id) ||
         session_to_peer_.contains(session_id) || retired_.contains(session_id)) {
         return std::nullopt;
     }
     pending_initiators_[session_id] = {
-        expected_peer_id, expected_peer_static, std::move(handshake)};
+        expected_peer_id, expected_peer_static, std::move(handshake),
+        now + handshake_timeout_};
     return std::vector<uint8_t>(encoded->begin(), encoded->end());
 }
 
@@ -181,6 +207,7 @@ SessionManager::handle_handshake_init(
     }
     {
         std::lock_guard<std::mutex> lock(mtx_);
+        purge_incomplete_handshakes_locked(clock_.now());
         if (session_to_peer_.contains(frame->session_id) ||
             retired_.contains(frame->session_id) ||
             pending_initiators_.contains(frame->session_id)) {
@@ -206,6 +233,7 @@ SessionManager::handle_handshake_init(
 
     {
         std::lock_guard<std::mutex> lock(mtx_);
+        purge_incomplete_handshakes_locked(clock_.now());
         const bool local_has_priority = identity_.node_id < peer_id;
         const auto active = sessions_.find(peer_id);
         const bool active_local_initiation =
@@ -237,6 +265,7 @@ SessionManager::handle_handshake_init(
         return std::nullopt;
 
     std::lock_guard<std::mutex> lock(mtx_);
+    purge_incomplete_handshakes_locked(clock_.now());
     if (session_to_peer_.contains(frame->session_id) ||
         retired_.contains(frame->session_id) ||
         pending_initiators_.contains(frame->session_id)) {
@@ -256,6 +285,7 @@ bool SessionManager::handle_handshake_resp(
     const std::vector<uint8_t>& message, uint32_t session_id) {
     const auto frame = parse_handshake_v2_response(message);
     std::lock_guard<std::mutex> lock(mtx_);
+    purge_incomplete_handshakes_locked(clock_.now());
     auto pending = pending_initiators_.find(session_id);
     if (pending == pending_initiators_.end())
         return false;

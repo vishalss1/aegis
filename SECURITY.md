@@ -68,6 +68,8 @@ The implementation currently provides the following limited properties:
 - NetworkID mismatches are rejected during the handshake.
 - If both peers initiate concurrently, the lower-NodeID initiation wins; the
   losing pending state is destroyed so both peers converge on one session ID.
+- Incomplete initiator handshakes expire after 15 seconds; maintenance and
+  handshake entry points destroy expired Noise state.
 
 These properties do not provide membership authorization or route-origin
 authentication.
@@ -144,11 +146,11 @@ static keys.
 
 ### Handshake and table state are vulnerable to resource exhaustion
 
-There is no stateless retry cookie, handshake replay cache, strict session-table
-capacity, or per-source handshake rate limit. Peer and route tables are capped,
-but retired-session and other gossip-derived state are not comprehensively
-bounded or expired. Peer-table wire limits also prevent oversized gossip frames
-from allocating without bound.
+There is no stateless retry cookie, handshake replay cache, strict handshake or
+session-table capacity, or per-source handshake rate limit. Incomplete
+initiator state has a 15-second TTL, and peer and route tables are capped, but
+retired-session and other state are not comprehensively bounded. Peer-table
+wire limits also prevent oversized gossip frames from allocating without bound.
 
 ### MTU and reliability are not managed
 
