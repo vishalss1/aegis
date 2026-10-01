@@ -26,6 +26,7 @@ struct Session {
     std::bitset<2048> recv_window{};
     NodeId peer_id{};
     bool established = false;
+    bool initiated_locally = false;
     // When the session's keys were established. Rekey (step 15) replaces a
     // session once it has lived past the rekey interval, so the age lives on
     // the session itself (a peer's connected_since is not reset by rekey).
@@ -131,7 +132,9 @@ private:
     std::mutex mtx_;
 
     Session& create_session(const NodeId& peer_id, uint32_t session_id);
-    void install_noise_keys(Session& session, NoiseIkSplitResult&& split);
+    void install_noise_keys(
+        Session& session, NoiseIkSplitResult&& split,
+        bool initiated_locally);
 
     bool check_replay(Session& session, uint64_t seq);
     void update_replay(Session& session, uint64_t seq);

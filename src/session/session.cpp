@@ -27,11 +27,13 @@ std::array<uint8_t, 16> SessionManager::serialize_header(const PacketHeader& hdr
 }
 
 void SessionManager::install_noise_keys(
-    Session& session, NoiseIkSplitResult&& split) {
+    Session& session, NoiseIkSplitResult&& split,
+    bool initiated_locally) {
     session.send_key = std::move(split.send_key);
     session.recv_key = std::move(split.receive_key);
     session.established_at = clock_.now();
     session.established = true;
+    session.initiated_locally = initiated_locally;
 }
 
 void SessionManager::set_retired_grace(std::chrono::milliseconds grace) {
@@ -202,6 +204,27 @@ SessionManager::handle_handshake_init(
         return std::nullopt;
     const NodeId peer_id = hash_public_key(*peer_static);
 
+    {
+        std::lock_guard<std::mutex> lock(mtx_);
+        const bool local_has_priority = identity_.node_id < peer_id;
+        const auto active = sessions_.find(peer_id);
+        const bool active_local_initiation =
+            active != sessions_.end() && active->second.established &&
+            active->second.initiated_locally;
+        const auto pending = std::find_if(
+            pending_initiators_.begin(), pending_initiators_.end(),
+            [&](const auto& entry) {
+                return entry.second.expected_peer_id == peer_id;
+            });
+        if (local_has_priority &&
+            (pending != pending_initiators_.end() ||
+             active_local_initiation)) {
+            return std::nullopt;
+        }
+        if (!local_has_priority && pending != pending_initiators_.end())
+            pending_initiators_.erase(pending);
+    }
+
     HandshakeV2ResponseFrame response_frame;
     response_frame.session_id = frame->session_id;
     const auto written = handshake->write_message(
@@ -220,7 +243,7 @@ SessionManager::handle_handshake_init(
         return std::nullopt;
     }
     Session& session = create_session(peer_id, frame->session_id);
-    install_noise_keys(session, std::move(*split));
+    install_noise_keys(session, std::move(*split), false);
 
     HandshakeResponse response;
     response.message.assign(encoded->begin(), encoded->end());
@@ -256,8 +279,15 @@ bool SessionManager::handle_handshake_resp(
     if (!split)
         return false;
 
+    const auto active = sessions_.find(state.expected_peer_id);
+    if (active != sessions_.end() && active->second.established &&
+        !active->second.initiated_locally &&
+        state.expected_peer_id < identity_.node_id) {
+        return false;
+    }
+
     Session& session = create_session(state.expected_peer_id, session_id);
-    install_noise_keys(session, std::move(*split));
+    install_noise_keys(session, std::move(*split), true);
     return true;
 }
 

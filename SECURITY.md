@@ -66,6 +66,8 @@ The implementation currently provides the following limited properties:
 - Peer-table wire encoding and decoding bound the frame size, advertised peer
   count, path length, and prefixes per peer.
 - NetworkID mismatches are rejected during the handshake.
+- If both peers initiate concurrently, the lower-NodeID initiation wins; the
+  losing pending state is destroyed so both peers converge on one session ID.
 
 These properties do not provide membership authorization or route-origin
 authentication.

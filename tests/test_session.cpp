@@ -1,5 +1,6 @@
 #include "aegis/session/session.hpp"
 #include "aegis/identity/identity.hpp"
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <vector>
@@ -393,6 +394,179 @@ int main() {
         const uint8_t pt[] = {0x45, 0x00, 0x00, 0x14};
         auto enc = sm_a.encrypt_data(bob.node_id, pt, sizeof(pt));
         CHECK(!enc.has_value());
+    }
+
+    // ---- 9. Handshake-v2 integration attack matrix -------------------------
+    {
+        Identity charlie = Identity::create(net);
+
+        // A claimed NodeID cannot be paired with another static key, and an IK
+        // message encrypted for Charlie cannot be accepted by Bob.
+        SessionManager sm_claim(alice);
+        CHECK(!sm_claim.create_handshake_init(
+            0xAC000001, charlie.node_id,
+            bob.keypair.public_key).has_value());
+        auto for_charlie = sm_claim.create_handshake_init(
+            0xAC000002, charlie.node_id,
+            charlie.keypair.public_key);
+        SessionManager sm_bob(bob);
+        CHECK(for_charlie.has_value());
+        CHECK(!sm_bob.handle_handshake_init(
+            *for_charlie, 0xAC000002).has_value());
+        CHECK(!sm_bob.get_session(alice.node_id).has_value());
+
+        // Header/session and Noise-message tampering fail before any responder
+        // session is installed.
+        SessionManager sm_tamper_i(alice);
+        SessionManager sm_tamper_r(bob);
+        auto canonical = sm_tamper_i.create_handshake_init(
+            0xAC000010, bob.node_id, bob.keypair.public_key);
+        CHECK(canonical.has_value());
+        auto wrong_inner_session = *canonical;
+        wrong_inner_session[6] ^= 0x01;
+        CHECK(!sm_tamper_r.handle_handshake_init(
+            wrong_inner_session, 0xAC000010).has_value());
+        CHECK(!sm_tamper_r.handle_handshake_init(
+            *canonical, 0xAC000011).has_value());
+        auto tampered_noise = *canonical;
+        tampered_noise.back() ^= 0x80;
+        CHECK(!sm_tamper_r.handle_handshake_init(
+            tampered_noise, 0xAC000010).has_value());
+        auto old_version = *canonical;
+        old_version[0] = 0x01;
+        CHECK(!sm_tamper_r.handle_handshake_init(
+            old_version, 0xAC000010).has_value());
+        CHECK(!sm_tamper_r.handle_handshake_init(
+            std::vector<uint8_t>(100, 0), 0xAC000010).has_value());
+
+        // Changing a cross-network routing selector to the responder's network
+        // still fails because the original network is bound into the Noise
+        // transcript.
+        NetworkId other_net{};
+        other_net[0] = 0x7f;
+        Identity outsider = Identity::create(other_net);
+        SessionManager sm_outsider(outsider);
+        SessionManager sm_network_bob(bob);
+        auto cross_network = sm_outsider.create_handshake_init(
+            0xAC000020, bob.node_id, bob.keypair.public_key);
+        CHECK(cross_network.has_value());
+        std::copy(net.begin(), net.end(),
+                  cross_network->begin() + HANDSHAKE_V2_HEADER_SIZE);
+        CHECK(!sm_network_bob.handle_handshake_init(
+            *cross_network, 0xAC000020).has_value());
+
+        // INIT cannot be reflected as RESP or processed with the responder
+        // role, and the failed response consumes the pending initiator state.
+        SessionManager sm_reflect_i(alice);
+        SessionManager sm_reflect_r(alice);
+        auto reflected = sm_reflect_i.create_handshake_init(
+            0xAC000030, bob.node_id, bob.keypair.public_key);
+        CHECK(reflected.has_value());
+        CHECK(!sm_reflect_i.handle_handshake_resp(
+            *reflected, 0xAC000030));
+        CHECK(!sm_reflect_r.handle_handshake_init(
+            *reflected, 0xAC000030).has_value());
+
+        // A valid response from an unrelated Charlie handshake cannot satisfy
+        // Alice's pending handshake with Bob.
+        SessionManager sm_expect_bob(alice);
+        SessionManager sm_expect_charlie(alice);
+        SessionManager sm_charlie(charlie);
+        auto init_for_bob = sm_expect_bob.create_handshake_init(
+            0xAC000040, bob.node_id, bob.keypair.public_key);
+        auto init_for_charlie = sm_expect_charlie.create_handshake_init(
+            0xAC000040, charlie.node_id, charlie.keypair.public_key);
+        auto charlie_response = sm_charlie.handle_handshake_init(
+            *init_for_charlie, 0xAC000040);
+        CHECK(init_for_bob.has_value());
+        CHECK(charlie_response.has_value());
+        CHECK(!sm_expect_bob.handle_handshake_resp(
+            charlie_response->message, 0xAC000040));
+        CHECK(!sm_expect_bob.get_session(bob.node_id).has_value());
+
+        // Response header/version and ciphertext tampering are fail-closed.
+        SessionManager sm_resp_i(alice);
+        SessionManager sm_resp_r(bob);
+        auto resp_init = sm_resp_i.create_handshake_init(
+            0xAC000050, bob.node_id, bob.keypair.public_key);
+        auto response = sm_resp_r.handle_handshake_init(
+            *resp_init, 0xAC000050);
+        CHECK(response.has_value());
+        auto bad_response_version = response->message;
+        bad_response_version[0] = 0x01;
+        CHECK(!sm_resp_i.handle_handshake_resp(
+            bad_response_version, 0xAC000050));
+        CHECK(!sm_resp_i.handle_handshake_resp(
+            response->message, 0xAC000050));
+
+        SessionManager sm_resp_tamper_i(alice);
+        SessionManager sm_resp_tamper_r(bob);
+        auto tamper_init = sm_resp_tamper_i.create_handshake_init(
+            0xAC000051, bob.node_id, bob.keypair.public_key);
+        auto tamper_response = sm_resp_tamper_r.handle_handshake_init(
+            *tamper_init, 0xAC000051);
+        CHECK(tamper_response.has_value());
+        tamper_response->message.back() ^= 0x01;
+        CHECK(!sm_resp_tamper_i.handle_handshake_resp(
+            tamper_response->message, 0xAC000051));
+    }
+
+    // ---- 10. Simultaneous reconnect converges on lower-NodeID initiation ----
+    {
+        const Identity& lower = alice.node_id < bob.node_id ? alice : bob;
+        const Identity& higher = alice.node_id < bob.node_id ? bob : alice;
+        SessionManager sm_lower(lower);
+        SessionManager sm_higher(higher);
+        const uint32_t lower_session_id = 0xAC001000;
+        const uint32_t higher_session_id = 0xAC002000;
+
+        auto lower_init = sm_lower.create_handshake_init(
+            lower_session_id, higher.node_id, higher.keypair.public_key);
+        auto higher_init = sm_higher.create_handshake_init(
+            higher_session_id, lower.node_id, lower.keypair.public_key);
+        CHECK(lower_init.has_value());
+        CHECK(higher_init.has_value());
+
+        auto response_to_lower = sm_higher.handle_handshake_init(
+            *lower_init, lower_session_id);
+        auto response_to_higher = sm_lower.handle_handshake_init(
+            *higher_init, higher_session_id);
+        CHECK(response_to_lower.has_value());
+        CHECK(!response_to_higher.has_value());
+        CHECK(sm_lower.handle_handshake_resp(
+            response_to_lower->message, lower_session_id));
+
+        auto lower_session = sm_lower.get_session(higher.node_id);
+        auto higher_session = sm_higher.get_session(lower.node_id);
+        CHECK(lower_session.has_value());
+        CHECK(higher_session.has_value());
+        CHECK((*lower_session)->id == lower_session_id);
+        CHECK((*higher_session)->id == lower_session_id);
+
+        // Repeat the collision while that session is active: simultaneous
+        // rekey also converges without either side retaining the losing keys.
+        const uint32_t lower_rekey_id = 0xAC003000;
+        const uint32_t higher_rekey_id = 0xAC004000;
+        auto lower_rekey = sm_lower.create_handshake_init(
+            lower_rekey_id, higher.node_id, higher.keypair.public_key);
+        auto higher_rekey = sm_higher.create_handshake_init(
+            higher_rekey_id, lower.node_id, lower.keypair.public_key);
+        CHECK(lower_rekey.has_value());
+        CHECK(higher_rekey.has_value());
+        auto rekey_response_to_lower = sm_higher.handle_handshake_init(
+            *lower_rekey, lower_rekey_id);
+        auto rekey_response_to_higher = sm_lower.handle_handshake_init(
+            *higher_rekey, higher_rekey_id);
+        CHECK(rekey_response_to_lower.has_value());
+        CHECK(!rekey_response_to_higher.has_value());
+        CHECK(sm_lower.handle_handshake_resp(
+            rekey_response_to_lower->message, lower_rekey_id));
+        lower_session = sm_lower.get_session(higher.node_id);
+        higher_session = sm_higher.get_session(lower.node_id);
+        CHECK(lower_session.has_value());
+        CHECK(higher_session.has_value());
+        CHECK((*lower_session)->id == lower_rekey_id);
+        CHECK((*higher_session)->id == lower_rekey_id);
     }
 
     printf("\n%d / %d passed\n", passed, tests);
