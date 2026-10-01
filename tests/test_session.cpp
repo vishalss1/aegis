@@ -612,6 +612,38 @@ int main() {
         CHECK(!sm_lazy_i.get_session(bob.node_id).has_value());
     }
 
+    // ---- 12. Authenticated INIT replay cache survives session teardown ------
+    {
+        ManualClock clock;
+        SessionManager sm_i(alice, clock);
+        SessionManager sm_r(bob, clock);
+        sm_r.set_handshake_replay_ttl(std::chrono::milliseconds(50));
+        CHECK(sm_r.handshake_replay_ttl() ==
+              std::chrono::milliseconds(50));
+
+        const uint32_t session_id = 0xAC006000;
+        auto init = sm_i.create_handshake_init(
+            session_id, bob.node_id, bob.keypair.public_key);
+        auto response = sm_r.handle_handshake_init(*init, session_id);
+        CHECK(init.has_value());
+        CHECK(response.has_value());
+        CHECK(sm_i.handle_handshake_resp(response->message, session_id));
+
+        sm_r.remove_session(alice.node_id);
+        CHECK(!sm_r.get_session(alice.node_id).has_value());
+        CHECK(!sm_r.handle_handshake_init(*init, session_id).has_value());
+        CHECK(!sm_r.get_session(alice.node_id).has_value());
+
+        // The cache is intentionally bounded in time. Once its TTL passes,
+        // maintenance removes the fingerprint and the otherwise valid INIT is
+        // processed as a new responder attempt.
+        clock.advance(std::chrono::milliseconds(51));
+        sm_r.purge_handshake_replays();
+        auto after_expiry = sm_r.handle_handshake_init(*init, session_id);
+        CHECK(after_expiry.has_value());
+        CHECK(sm_r.get_session(alice.node_id).has_value());
+    }
+
     printf("\n%d / %d passed\n", passed, tests);
     return (passed == tests) ? 0 : 1;
 }

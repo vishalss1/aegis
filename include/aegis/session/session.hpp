@@ -2,6 +2,7 @@
 
 #include "aegis/identity/identity.hpp"
 #include "aegis/crypto/chacha20poly1305.hpp"
+#include "aegis/crypto/primitives.hpp"
 #include "aegis/crypto/random.hpp"
 #include "aegis/packet/header.hpp"
 #include "aegis/protocol/sources.hpp"
@@ -106,6 +107,14 @@ public:
         return handshake_timeout_;
     }
 
+    // Successfully authenticated INIT transcripts remain in a replay cache
+    // for two minutes by default, independent of active-session teardown.
+    void purge_handshake_replays();
+    void set_handshake_replay_ttl(std::chrono::milliseconds ttl);
+    std::chrono::milliseconds handshake_replay_ttl() const {
+        return handshake_replay_ttl_;
+    }
+
     // Step 15: how long a rekeyed-away session keeps decrypting in-flight
     // packets (default 10 s). Tests shorten this so the purge path is
     // exercisable without sleeping through the production grace window.
@@ -142,6 +151,12 @@ private:
         std::chrono::seconds(15);
     std::chrono::milliseconds handshake_timeout_{HANDSHAKE_TIMEOUT};
     std::map<uint32_t, PendingInitiator> pending_initiators_;
+
+    static constexpr std::chrono::minutes HANDSHAKE_REPLAY_TTL =
+        std::chrono::minutes(2);
+    std::chrono::milliseconds handshake_replay_ttl_{HANDSHAKE_REPLAY_TTL};
+    std::map<CryptoHash, std::chrono::steady_clock::time_point>
+        handshake_replays_;
     std::mutex mtx_;
 
     Session& create_session(const NodeId& peer_id, uint32_t session_id);
@@ -149,6 +164,8 @@ private:
         Session& session, NoiseIkSplitResult&& split,
         bool initiated_locally);
     void purge_incomplete_handshakes_locked(
+        std::chrono::steady_clock::time_point now);
+    void purge_handshake_replays_locked(
         std::chrono::steady_clock::time_point now);
 
     bool check_replay(Session& session, uint64_t seq);

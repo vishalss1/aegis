@@ -149,6 +149,30 @@ void SessionManager::set_handshake_timeout(
     purge_incomplete_handshakes_locked(clock_.now());
 }
 
+void SessionManager::purge_handshake_replays_locked(
+    std::chrono::steady_clock::time_point now) {
+    for (auto it = handshake_replays_.begin();
+         it != handshake_replays_.end();) {
+        if (it->second <= now)
+            it = handshake_replays_.erase(it);
+        else
+            ++it;
+    }
+}
+
+void SessionManager::purge_handshake_replays() {
+    std::lock_guard<std::mutex> lock(mtx_);
+    purge_handshake_replays_locked(clock_.now());
+}
+
+void SessionManager::set_handshake_replay_ttl(
+    std::chrono::milliseconds ttl) {
+    std::lock_guard<std::mutex> lock(mtx_);
+    handshake_replay_ttl_ =
+        (std::max)(ttl, std::chrono::milliseconds::zero());
+    purge_handshake_replays_locked(clock_.now());
+}
+
 std::optional<std::vector<uint8_t>> SessionManager::create_handshake_init(
     uint32_t session_id, const NodeId& expected_peer_id,
     const X25519Key& expected_peer_static) {
@@ -205,9 +229,18 @@ SessionManager::handle_handshake_init(
         aegis_log("[session] rejected non-canonical handshake-v2 init\n");
         return std::nullopt;
     }
+    const auto replay_key = transcript_hash(
+        CryptoHashAlgorithm::Blake2s256,
+        {std::span<const uint8_t>(message)});
+    if (!replay_key)
+        return std::nullopt;
     {
         std::lock_guard<std::mutex> lock(mtx_);
-        purge_incomplete_handshakes_locked(clock_.now());
+        const auto now = clock_.now();
+        purge_incomplete_handshakes_locked(now);
+        purge_handshake_replays_locked(now);
+        if (handshake_replays_.contains(*replay_key))
+            return std::nullopt;
         if (session_to_peer_.contains(frame->session_id) ||
             retired_.contains(frame->session_id) ||
             pending_initiators_.contains(frame->session_id)) {
@@ -233,7 +266,12 @@ SessionManager::handle_handshake_init(
 
     {
         std::lock_guard<std::mutex> lock(mtx_);
-        purge_incomplete_handshakes_locked(clock_.now());
+        const auto now = clock_.now();
+        purge_incomplete_handshakes_locked(now);
+        purge_handshake_replays_locked(now);
+        if (handshake_replays_.contains(*replay_key))
+            return std::nullopt;
+        handshake_replays_[*replay_key] = now + handshake_replay_ttl_;
         const bool local_has_priority = identity_.node_id < peer_id;
         const auto active = sessions_.find(peer_id);
         const bool active_local_initiation =
