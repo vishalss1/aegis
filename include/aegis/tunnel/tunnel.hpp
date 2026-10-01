@@ -5,6 +5,7 @@
 #include "aegis/peer/peer_table.hpp"
 #include "aegis/routing/routing.hpp"
 #include "aegis/transport/transport.hpp"
+#include "aegis/transport/handshake_rate_limiter.hpp"
 #include "aegis/adapter/adapter.hpp"
 #include "aegis/discovery/discovery.hpp"
 #include "aegis/crypto/random.hpp"
@@ -121,6 +122,7 @@ private:
     bool is_creator_ = false;
     ProtocolClock& clock_;
     RandomSource& random_;
+    HandshakeRateLimiter handshake_rate_limiter_;
     std::unique_ptr<SessionManager> session_manager_;
     PeerManager peers_;
     RoutingEngine routing_;

@@ -1,4 +1,5 @@
 #include "aegis/transport/transport.hpp"
+#include "aegis/transport/handshake_rate_limiter.hpp"
 #include "aegis/platform/platform.hpp"
 #include <cstdio>
 #include <cstring>
@@ -9,6 +10,15 @@
 
 static int tests  = 0;
 static int passed = 0;
+
+class ManualClock final : public ProtocolClock {
+public:
+    [[nodiscard]] time_point now() const noexcept override { return now_; }
+    void advance(std::chrono::milliseconds duration) { now_ += duration; }
+
+private:
+    time_point now_{};
+};
 
 #define CHECK(cond) do { \
     tests++; \
@@ -138,6 +148,51 @@ int main() {
     {
         Transport t;
         CHECK(!t.send((const uint8_t*)"test", 4, Endpoint::from_parts(127, 0, 0, 1, 9999)));
+    }
+
+    // ---- 5. Handshake limiter: per-IP and global fixed-window budgets ------
+    {
+        ManualClock clock;
+        HandshakeRateLimitConfig config;
+        config.per_source_limit = 2;
+        config.global_limit = 3;
+        config.max_sources = 4;
+        config.window = std::chrono::milliseconds(1000);
+        HandshakeRateLimiter limiter(clock, config);
+
+        const Endpoint source_a = Endpoint::from_parts(10, 0, 0, 1, 4000);
+        const Endpoint source_a_new_port = Endpoint::from_parts(10, 0, 0, 1, 5000);
+        const Endpoint source_b = Endpoint::from_parts(10, 0, 0, 2, 4000);
+
+        CHECK(limiter.allow(source_a));
+        CHECK(limiter.allow(source_a_new_port));
+        CHECK(!limiter.allow(source_a));
+        CHECK(limiter.allow(source_b));
+        CHECK(!limiter.allow(Endpoint::from_parts(10, 0, 0, 3, 4000)));
+
+        clock.advance(std::chrono::milliseconds(1000));
+        CHECK(limiter.allow(source_a));
+        CHECK(limiter.tracked_sources() == 1);
+    }
+
+    // ---- 6. Handshake limiter: source tracking is bounded and expires ------
+    {
+        ManualClock clock;
+        HandshakeRateLimitConfig config;
+        config.per_source_limit = 10;
+        config.global_limit = 10;
+        config.max_sources = 2;
+        config.window = std::chrono::milliseconds(500);
+        HandshakeRateLimiter limiter(clock, config);
+
+        CHECK(limiter.allow(Endpoint::from_parts(10, 0, 0, 1, 4000)));
+        CHECK(limiter.allow(Endpoint::from_parts(10, 0, 0, 2, 4000)));
+        CHECK(!limiter.allow(Endpoint::from_parts(10, 0, 0, 3, 4000)));
+        CHECK(limiter.tracked_sources() == 2);
+
+        clock.advance(std::chrono::milliseconds(500));
+        CHECK(limiter.allow(Endpoint::from_parts(10, 0, 0, 3, 4000)));
+        CHECK(limiter.tracked_sources() == 1);
     }
 
     printf("\n%d / %d passed\n", passed, tests);

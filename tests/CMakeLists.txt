@@ -26,7 +26,7 @@ target_include_directories(test_noise_ik PRIVATE ../include)
 target_link_libraries(test_noise_ik NoiseC::Protocol OpenSSL::Crypto)
 add_test(NAME test_noise_ik COMMAND test_noise_ik)
 
-add_executable(test_transport test_transport.cpp ../src/transport/transport.cpp ../src/platform/platform.cpp)
+add_executable(test_transport test_transport.cpp ../src/transport/handshake_rate_limiter.cpp ../src/transport/transport.cpp ../src/platform/platform.cpp)
 target_include_directories(test_transport PRIVATE ../include)
 target_link_libraries(test_transport ws2_32)
 
@@ -146,7 +146,7 @@ target_include_directories(test_stun PRIVATE ../include)
 target_link_libraries(test_stun OpenSSL::Crypto ws2_32)
 add_test(NAME test_stun COMMAND test_stun)
 
-add_executable(test_cli test_cli.cpp ../src/cli/input_parser.cpp ../src/cli/command_registry.cpp ../src/cli/commands.cpp ../src/cli/identity_store.cpp ../src/identity/identity.cpp ../src/crypto/x25519.cpp ../src/crypto/chacha20poly1305.cpp ../src/crypto/primitives.cpp ../src/crypto/random.cpp ../src/config/config.cpp ../src/invite/invite.cpp ../src/platform/platform.cpp ../src/platform/logger.cpp ../src/tunnel/tunnel.cpp ../src/peer/peer.cpp ../src/peer/peer_table.cpp ../src/session/session.cpp ../src/session/handshake_v2.cpp ../src/session/noise_ik.cpp ../src/adapter/adapter.cpp ../src/packet/packet.cpp ../src/packet/relay.cpp ../src/routing/routing.cpp ../src/transport/transport.cpp ../src/discovery/discovery.cpp ../src/stun/stun.cpp)
+add_executable(test_cli test_cli.cpp ../src/cli/input_parser.cpp ../src/cli/command_registry.cpp ../src/cli/commands.cpp ../src/cli/identity_store.cpp ../src/identity/identity.cpp ../src/crypto/x25519.cpp ../src/crypto/chacha20poly1305.cpp ../src/crypto/primitives.cpp ../src/crypto/random.cpp ../src/config/config.cpp ../src/invite/invite.cpp ../src/platform/platform.cpp ../src/platform/logger.cpp ../src/tunnel/tunnel.cpp ../src/peer/peer.cpp ../src/peer/peer_table.cpp ../src/session/session.cpp ../src/session/handshake_v2.cpp ../src/session/noise_ik.cpp ../src/adapter/adapter.cpp ../src/packet/packet.cpp ../src/packet/relay.cpp ../src/routing/routing.cpp ../src/transport/handshake_rate_limiter.cpp ../src/transport/transport.cpp ../src/discovery/discovery.cpp ../src/stun/stun.cpp)
 target_include_directories(test_cli PRIVATE ../include)
 target_link_libraries(test_cli OpenSSL::Crypto NoiseC::Protocol ws2_32 wintun iphlpapi)
 add_test(NAME test_cli COMMAND test_cli)

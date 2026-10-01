@@ -16,6 +16,7 @@ Tunnel::Tunnel()
 
 Tunnel::Tunnel(ProtocolClock& clock, RandomSource& random)
     : discovery_(clock), clock_(clock), random_(random),
+      handshake_rate_limiter_(clock),
       peers_(PEER_MANAGER_MAX_PEERS, clock) {}
 
 Tunnel::~Tunnel() { stop(); }
@@ -756,8 +757,12 @@ void Tunnel::rx_callback(const uint8_t* data, size_t len, Endpoint sender) {
     }
 
     if (type == TYPE_HANDSHAKE_INIT) {
-        std::vector<uint8_t> payload(data + 16, data + len);
-        if (payload.size() != HANDSHAKE_V2_INIT_FRAME_SIZE) return;
+        if (!handshake_rate_limiter_.allow(sender)) {
+            aegis_log("[tunnel] dropped rate-limited handshake INIT\n");
+            return;
+        }
+        if (len != PACKET_HEADER_SIZE + HANDSHAKE_V2_INIT_FRAME_SIZE) return;
+        std::vector<uint8_t> payload(data + PACKET_HEADER_SIZE, data + len);
 
         auto response = session_manager_->handle_handshake_init(payload, sid);
         if (!response) return;

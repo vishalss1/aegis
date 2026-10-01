@@ -70,6 +70,7 @@ set(AEGIS_SOURCES
     src/session/handshake_v2.cpp
     src/session/noise_ik.cpp
     src/session/session.cpp
+    src/transport/handshake_rate_limiter.cpp
     src/transport/transport.cpp
     src/routing/routing.cpp
     src/peer/peer.cpp
