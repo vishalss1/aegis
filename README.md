@@ -28,9 +28,10 @@ An experimental, user-space **encrypted overlay network** built in **C++** — e
 
 > [!WARNING]
 > Aegis is an experimental prototype and is not ready to protect sensitive or
-> production traffic. The current handshake does not authenticate static peer
-> identities. Gossip now enforces the NodeID/public-key binding at its merge
-> boundary, but route ownership, MTU, resource-exhaustion, and reliability
+> production traffic. Adjacent sessions now authenticate static peer identities
+> with Noise IK, and gossip enforces the NodeID/public-key binding at its merge
+> boundary, but membership authorization, route ownership, MTU,
+> resource-exhaustion, and reliability
 > protections remain incomplete. See
 > [SECURITY.md](SECURITY.md) for the current guarantees and known limitations.
 
@@ -38,12 +39,12 @@ An experimental, user-space **encrypted overlay network** built in **C++** — e
 
 ## What Is Aegis
 
-Most VPNs stop at "two endpoints, one encrypted tunnel." Aegis explores a decentralized mesh in which nodes are addressed by public-key-derived identifiers. The current handshake does not yet authenticate those identifiers. Traffic between non-adjacent nodes can be onion-wrapped, but relays still observe the logical source NodeID, adjacent hops, packet sizes, and timing.
+Most VPNs stop at "two endpoints, one encrypted tunnel." Aegis explores a decentralized mesh in which nodes are addressed by public-key-derived identifiers. Adjacent sessions authenticate those identifiers with Noise IK. Traffic between non-adjacent nodes can be onion-wrapped, but relays still observe the logical source NodeID, adjacent hops, packet sizes, and timing.
 
 Built as a Windows-native CLI binary that creates a Wintun virtual adapter, Aegis routes overlay traffic through a fully layered stack:
 
 ```
-Identity  →  Session (X25519 handshake)  →  Routing (prefix → next-hop → peer)
+Identity  →  Session (Noise IK handshake)  →  Routing (prefix → next-hop → peer)
 →  Onion Wrapping (ChaCha20-Poly1305 layers)  →  UDP (Winsock)  →  Internet
 ```
 
@@ -55,7 +56,7 @@ A VPN point-to-point tunnel is only the first application of this overlay. The m
 
 A few design choices that shaped how Aegis works.
 
-**NodeID, not IP, is the intended identity.** Every node derives a 32-byte `NodeID` as `BLAKE2b(PublicKey)`. Peer-table merge rejects a public key that does not hash to its advertised NodeID, and established non-empty peer keys are immutable through `upsert`. The session handshake still does not prove possession of the corresponding static private key.
+**NodeID, not IP, is the intended identity.** Every node derives a 32-byte `NodeID` as `BLAKE2b(PublicKey)`. Peer-table merge rejects a public key that does not hash to its advertised NodeID, established non-empty peer keys are immutable through `upsert`, and Noise IK proves control of the corresponding static private key for adjacent sessions.
 
 **Onion routing is a core requirement, not a stretch goal.** Each hop decrypts one `ChaCha20-Poly1305` layer keyed by `SHA256("aegis-onion-v1" ‖ X25519(our_priv, source_pub))`. The current framing exposes the source NodeID to every relay and does not pad length or timing, so it should not yet be treated as a complete anonymity system.
 
@@ -67,7 +68,7 @@ A few design choices that shaped how Aegis works.
 
 **Layered packet processing.** The Packet Engine separates IP parsing, session framing, relay wrapping, and UDP transport. Shared packet headers, handshake payloads, discovery, gossip, STUN, invites, and onion layers use bounded typed codecs with exact-length validation. The legacy file-transfer framing is the remaining manual wire format and is scheduled for replacement by its reliable subprotocol.
 
-**Rekeying without a new packet type.** Session rekeying is a fresh X25519 handshake with a new session ID — identical to initial connection. The prior session is retired into a 10-second grace window so in-flight packets under the old key still decrypt cleanly. The lower-NodeID peer drives rekeying every 120 seconds. Replay windows and sequence numbers restart per session ID.
+**Rekeying without a new packet type.** Session rekeying is a fresh authenticated Noise IK handshake with a new session ID — identical to initial connection. The prior session is retired into a 10-second grace window so in-flight packets under the old key still decrypt cleanly. The lower-NodeID peer drives rekeying every 120 seconds. Replay windows and sequence numbers restart per session ID.
 
 ---
 
@@ -108,7 +109,7 @@ A few design choices that shaped how Aegis works.
          │                  │                           │
          │  ┌───────────────┴───────────────────────┐   │
          │  │          Session Manager              │   │
-         │  │  X25519 handshake · rekeying          │   │
+         │  │  Noise IK handshake · rekeying        │   │
          │  │  ChaCha20-Poly1305 · replay windows   │   │
          │  │  NetworkID gate · grace-window retire │   │
          │  └───────────────┬───────────────────────┘   │
@@ -131,10 +132,10 @@ A few design choices that shaped how Aegis works.
          │  │  Winsock UDP · keep-alives            │   │
          │  │  Datagram I/O · background rx thread  │   │
          │  └───────────────┬───────────────────────┘   │
-         └───────────────────┼──────────────────────────┘
-                             │ Encrypted UDP datagrams
-                   ┌─────────┴──────────┐
-                   │    UDP / Winsock   │
+         └──────────────────┼───────────────────────────┘
+                            │ Encrypted UDP datagrams
+                   ┌────────┴───────────┐
+                   │   UDP / Winsock    │
                    └─────────┬──────────┘
                              │
                          Internet
@@ -173,15 +174,15 @@ A few design choices that shaped how Aegis works.
 
 | Feature | What It Does |
 |:--------|:-------------|
-| **NodeID Addressing** | Peers are addressed as `NodeID = BLAKE2b(PublicKey)`. Received gossip enforces that binding; the current handshake does not authenticate it. |
-| **X25519 + ChaCha20-Poly1305** | Ephemeral X25519 derives session keys and ChaCha20-Poly1305 authenticates data frames. The handshake itself does not authenticate static identities or provide transcript key confirmation. |
+| **NodeID Addressing** | Peers are addressed as `NodeID = BLAKE2b(PublicKey)`. Received gossip enforces that binding, and Noise IK authenticates it for adjacent sessions. |
+| **Noise IK + ChaCha20-Poly1305** | Authenticated Noise IK derives directional session keys with fresh ephemerals and transcript key confirmation; ChaCha20-Poly1305 authenticates data frames. |
 | **Multi-hop Onion Routing** | Each hop decrypts one layer and learns the next hop. Relays also receive the source NodeID, and unpadded packet size and timing remain visible. |
 | **Peer Table Gossip** | Full mesh convergence without a coordinator. Every new session triggers a fan-out of the peer table; a periodic 3-second gossip loop ensures far-end peers propagate across multi-hop chains. |
 | **Identity-Hiding Gossip** | Peer tables carry NodeID + public key + IP prefix routes. Physical endpoints are never transmitted in gossip — non-adjacent nodes cannot learn each other's real IP. |
 | **NetworkID Mesh Segmentation** | NetworkID mismatches are rejected before session creation. This separates accidental cross-mesh traffic but is not static peer authentication. |
 | **Join-Any-Available Bootstrap** | No fixed entry point, no dedicated server. Each configured candidate gets its own background connect loop with exponential backoff (1s → 30s cap). The node routes immediately; sessions form as peers become reachable. |
 | **Session Keep-Alive & Dead Detection** | Keep-alives every 25s. Dead timeout at 180s removes the session and all routes. Configured peers are re-joined automatically on reconnect, routes reinstalled, peer table re-announced. |
-| **Transparent Rekeying** | Fresh X25519 handshake every 120s driven by the lower-NodeID peer. Prior session retired to a 10s grace window — in-flight packets decrypt cleanly. Replay windows and sequence numbers reset per session ID. |
+| **Transparent Rekeying** | Fresh authenticated Noise IK handshake every 120s driven by the lower-NodeID peer. Prior session retired to a 10s grace window — in-flight packets decrypt cleanly. Replay windows and sequence numbers reset per session ID. |
 | **Endpoint Self-Healing** | LAN presences provide endpoint hints for configured peers. Broadcasts are unauthenticated, so these hints can be spoofed and must not yet be considered validated endpoints. |
 | **YAML Config Mode** | `--config <file>` — strict YAML subset parser. Validates all fields, rejects unknown keys. Auto-elevates via UAC (`ShellExecuteW "runas"`) when launched without Administrator rights. |
 | **Replay Protection** | Per-session sliding window of 2048 sequence numbers. Out-of-window and duplicate sequence numbers are silently discarded. |
@@ -219,7 +220,7 @@ Endpoint propagation rule:
          path ownership are not authenticated.
 ```
 
-Keys are generated once at node startup (static X25519 keypair). Onion layer keys are static per `(source, hop)` pair and are not forward-secret. Adjacent session keys use fresh ephemeral DH, but the current handshake does not authenticate those ephemeral keys to the static peer identity. See [SECURITY.md](SECURITY.md) before relying on these properties.
+Keys are generated once at node startup (static X25519 keypair). Onion layer keys are static per `(source, hop)` pair and are not forward-secret. Adjacent session keys use authenticated Noise IK with fresh ephemeral keys. See [SECURITY.md](SECURITY.md) before relying on these properties.
 
 ---
 
@@ -260,7 +261,7 @@ One pipeline. Must be green on every push to `master` and on every pull request.
 
 Security-relevant pins and integration constraints are recorded in
 [DEPENDENCIES.md](DEPENDENCIES.md). Noise-C is selected there for handshake v2
-but is not active until its vendored wrapper and vector gate pass.
+and is active behind the reviewed Aegis wrapper and vector gate.
 
 ---
 
@@ -510,7 +511,7 @@ Unit test coverage:
 | `test_aead` | ChaCha20-Poly1305 RFC 8439 test vectors, tamper rejection |
 | `test_identity` | NodeID hashing, NetworkID equality, keypair round-trip |
 | `test_tunnel` | Nonce counter arithmetic, wire format round-trip, AEAD integration |
-| `test_session` | Handshake initiation/response, key derivation, replay window, rekey grace |
+| `test_session` | Authenticated Noise IK integration, identity binding, handshake replay rejection, transport replay window, and rekey grace |
 | `test_peer` | Multi-peer table — states, endpoints, session lookup, health tracking |
 | `test_routing` | Prefix → next-hop → peer resolution, Direct/Relay/Unknown types, loop rejection, tie-breaking |
 | `test_peer_table` | TYPE_PEER_TABLE wire encoding/decoding, gossip merge, IP-stripping |

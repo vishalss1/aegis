@@ -201,11 +201,12 @@ int main() {
         SessionManager sm_b(bob);
 
         uint32_t session_id = 0xA0000001;
-        auto init_msg = sm_a.create_handshake_init(session_id);
-        CHECK(init_msg.size() == HANDSHAKE_PAYLOAD_SIZE);
-        auto resp_msg = sm_b.handle_handshake_init(init_msg, alice.node_id);
+        auto init_msg = sm_a.create_handshake_init(
+            session_id, bob.node_id, bob.keypair.public_key);
+        CHECK(init_msg && init_msg->size() == HANDSHAKE_V2_INIT_FRAME_SIZE);
+        auto resp_msg = sm_b.handle_handshake_init(*init_msg, session_id);
         CHECK(resp_msg.has_value());
-        CHECK(sm_a.handle_handshake_resp(*resp_msg, session_id));
+        CHECK(sm_a.handle_handshake_resp(resp_msg->message, session_id));
 
         PeerManager pm;
         pm.upsert(bob.node_id, bob.keypair.public_key, ep_bob);

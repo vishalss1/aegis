@@ -1,11 +1,8 @@
 #include "aegis/session/session.hpp"
 #include "aegis/platform/logger.hpp"
-#include "aegis/protocol/wire.hpp"
-#include <openssl/evp.h>
 #include <cstdio>
 #include <cstring>
 #include <algorithm>
-#include <cstdlib>
 #include <limits>
 
 #ifdef _MSC_VER
@@ -21,121 +18,20 @@ static uint32_t bswap32(uint32_t x) {
 }
 #endif
 
-SessionManager::SessionManager(const Identity& identity, ProtocolClock& clock)
-    : identity_(identity), clock_(clock) {}
-
-std::optional<SecretBytes<32>> SessionManager::sha256(
-    const uint8_t* d1, size_t l1,
-    const uint8_t* d2, size_t l2)
-{
-    SecretBytes<32> hash{};
-    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
-    if (!ctx)
-        return std::nullopt;
-
-    unsigned int out_len = 0;
-    const bool hashed = EVP_DigestInit_ex(ctx, EVP_sha256(), nullptr) == 1 &&
-        EVP_DigestUpdate(ctx, d1, l1) == 1 &&
-        EVP_DigestUpdate(ctx, d2, l2) == 1 &&
-        EVP_DigestFinal_ex(ctx, hash.data(), &out_len) == 1 &&
-        out_len == hash.size();
-    EVP_MD_CTX_free(ctx);
-    if (!hashed)
-        return std::nullopt;
-    return hash;
-}
+SessionManager::SessionManager(
+    const Identity& identity, ProtocolClock& clock, RandomSource& random)
+    : identity_(identity), clock_(clock), random_(random) {}
 
 std::array<uint8_t, 16> SessionManager::serialize_header(const PacketHeader& hdr) {
     return serialize_packet_header(hdr);
 }
 
-std::vector<uint8_t> SessionManager::build_handshake_message(
-    uint32_t session_id,
-    const X25519KeyPair& ephemeral) const
-{
-    std::vector<uint8_t> msg(HANDSHAKE_PAYLOAD_SIZE);
-    WireWriter writer(msg);
-    if (!writer.write_u32(session_id) ||
-        !writer.write_bytes(ephemeral.public_key) ||
-        !writer.write_bytes(identity_.node_id) ||
-        !writer.write_bytes(identity_.network_id) || !writer.finished())
-        return {};
-    return msg;
-}
-
-std::optional<SessionManager::HandshakeMessage>
-SessionManager::parse_handshake_message(
-    const std::vector<uint8_t>& message) {
-    WireReader reader(message);
-    HandshakeMessage parsed;
-    const auto session_id = reader.read_u32();
-    const auto ephemeral_public = reader.read_bytes(X25519_KEY_SIZE);
-    const auto node_id = reader.read_bytes(NODE_ID_SIZE);
-    const auto network_id = reader.read_bytes(NETWORK_ID_SIZE);
-    if (!session_id || !ephemeral_public || !node_id || !network_id ||
-        !reader.finished())
-        return std::nullopt;
-
-    parsed.session_id = *session_id;
-    std::copy(ephemeral_public->begin(), ephemeral_public->end(),
-              parsed.ephemeral_public.begin());
-    std::copy(node_id->begin(), node_id->end(), parsed.node_id.begin());
-    std::copy(network_id->begin(), network_id->end(),
-              parsed.network_id.begin());
-    return parsed;
-}
-
-X25519SharedSecret SessionManager::derive_master_secret(
-    const X25519PrivateKey& our_priv, const X25519Key& their_pub)
-{
-    auto opt = x25519_derive_shared_secret(our_priv, their_pub);
-    if (!opt) {
-        aegis_log( "[session] derive_master_secret failed\n");
-        return X25519SharedSecret{};
-    }
-    return *opt;
-}
-
-bool SessionManager::derive_keys(
-    Session& session, const X25519SharedSecret& shared_secret,
-    uint32_t session_id, bool initiator)
-{
-    // send_key = SHA-256(shared_secret || session_id_be || "send")
-    // recv_key = SHA-256(shared_secret || session_id_be || "recv")
-    uint32_t sid_be = bswap32(session_id);
-    const char label_send[] = "send";
-    const char label_recv[] = "recv";
-
-    auto k1 = sha256(shared_secret.data(), shared_secret.size(),
-                     (const uint8_t*)&sid_be, 4);
-    if (!k1)
-        return false;
-    auto k1b = sha256(k1->data(), k1->size(),
-                      (const uint8_t*)label_send, 4);
-    if (!k1b)
-        return false;
-
-    auto k2 = sha256(shared_secret.data(), shared_secret.size(),
-                     (const uint8_t*)&sid_be, 4);
-    if (!k2)
-        return false;
-    auto k2b = sha256(k2->data(), k2->size(),
-                      (const uint8_t*)label_recv, 4);
-    if (!k2b)
-        return false;
-
-    std::copy(k1b->begin(), k1b->end(), session.send_key.begin());
-    std::copy(k2b->begin(), k2b->end(), session.recv_key.begin());
-
-    if (!initiator) {
-        std::swap(session.send_key, session.recv_key);
-    }
-
-    // The session becomes active (and its rekey timer starts) only once both
-    // sides have the derived keys. Time is captured here rather than at
-    // create_session so a failed handshake never leaves a "fresh" timestamp.
+void SessionManager::install_noise_keys(
+    Session& session, NoiseIkSplitResult&& split) {
+    session.send_key = std::move(split.send_key);
+    session.recv_key = std::move(split.receive_key);
     session.established_at = clock_.now();
-    return true;
+    session.established = true;
 }
 
 void SessionManager::set_retired_grace(std::chrono::milliseconds grace) {
@@ -206,14 +102,13 @@ void SessionManager::remove_session(const NodeId& peer_id) {
         else
             ++r;
     }
-    // Drop any in-flight handshake ephemeral keyed by a session we just killed.
-    for (auto e = ephemerals_.begin(); e != ephemerals_.end();) {
-        auto s2p = session_to_peer_.find(e->first);
-        if (s2p == session_to_peer_.end() ||
-            sessions_.find(s2p->second) == sessions_.end()) {
-            e = ephemerals_.erase(e);
+    // Drop any in-flight authenticated initiator state for this peer.
+    for (auto pending = pending_initiators_.begin();
+         pending != pending_initiators_.end();) {
+        if (pending->second.expected_peer_id == peer_id) {
+            pending = pending_initiators_.erase(pending);
         } else {
-            ++e;
+            ++pending;
         }
     }
 }
@@ -229,141 +124,140 @@ void SessionManager::purge_retired() {
     }
 }
 
-std::vector<uint8_t> SessionManager::create_handshake_init(uint32_t session_id) {
-    X25519KeyPair ephemeral = x25519_generate_keypair();
-    auto message = build_handshake_message(session_id, ephemeral);
-    {
-        std::lock_guard<std::mutex> lock(mtx_);
-        ephemerals_[session_id] = std::move(ephemeral);
+std::optional<std::vector<uint8_t>> SessionManager::create_handshake_init(
+    uint32_t session_id, const NodeId& expected_peer_id,
+    const X25519Key& expected_peer_static) {
+    if (session_id == 0 ||
+        std::all_of(expected_peer_static.begin(),
+                    expected_peer_static.end(),
+                    [](uint8_t value) { return value == 0; }) ||
+        expected_peer_id !=
+            hash_public_key(expected_peer_static)) {
+        return std::nullopt;
     }
-    return message;
+
+    const auto prologue = make_handshake_v2_prologue(
+        identity_.network_id, session_id);
+    if (!prologue)
+        return std::nullopt;
+
+    auto handshake = NoiseIkHandshake::create_initiator(
+        identity_.keypair.private_key, expected_peer_static,
+        *prologue, random_);
+    if (!handshake)
+        return std::nullopt;
+
+    HandshakeV2InitFrame frame;
+    frame.session_id = session_id;
+    frame.network_id = identity_.network_id;
+    const auto written = handshake->write_message({}, frame.noise_message);
+    if (!written || written.bytes != frame.noise_message.size())
+        return std::nullopt;
+
+    const auto encoded = serialize_handshake_v2_init(frame);
+    if (!encoded)
+        return std::nullopt;
+
+    std::lock_guard<std::mutex> lock(mtx_);
+    if (pending_initiators_.contains(session_id) ||
+        session_to_peer_.contains(session_id) || retired_.contains(session_id)) {
+        return std::nullopt;
+    }
+    pending_initiators_[session_id] = {
+        expected_peer_id, expected_peer_static, std::move(handshake)};
+    return std::vector<uint8_t>(encoded->begin(), encoded->end());
 }
 
-std::optional<std::vector<uint8_t>> SessionManager::handle_handshake_init(
-    const std::vector<uint8_t>& message, const NodeId& sender_id)
-{
+std::optional<SessionManager::HandshakeResponse>
+SessionManager::handle_handshake_init(
+    const std::vector<uint8_t>& message, uint32_t outer_session_id) {
+    const auto frame = parse_handshake_v2_init(message);
+    if (!frame || frame->session_id != outer_session_id ||
+        frame->network_id != identity_.network_id) {
+        aegis_log("[session] rejected non-canonical handshake-v2 init\n");
+        return std::nullopt;
+    }
+    {
+        std::lock_guard<std::mutex> lock(mtx_);
+        if (session_to_peer_.contains(frame->session_id) ||
+            retired_.contains(frame->session_id) ||
+            pending_initiators_.contains(frame->session_id)) {
+            return std::nullopt;
+        }
+    }
+
+    const auto prologue = make_handshake_v2_prologue(
+        identity_.network_id, frame->session_id);
+    if (!prologue)
+        return std::nullopt;
+    auto handshake = NoiseIkHandshake::create_responder(
+        identity_.keypair.private_key, *prologue, random_);
+    if (!handshake || !handshake->read_message(frame->noise_message, {}))
+        return std::nullopt;
+
+    const auto peer_static = handshake->remote_static_public_key();
+    if (!peer_static ||
+        std::all_of(peer_static->begin(), peer_static->end(),
+                    [](uint8_t value) { return value == 0; }))
+        return std::nullopt;
+    const NodeId peer_id = hash_public_key(*peer_static);
+
+    HandshakeV2ResponseFrame response_frame;
+    response_frame.session_id = frame->session_id;
+    const auto written = handshake->write_message(
+        {}, response_frame.noise_message);
+    if (!written || written.bytes != response_frame.noise_message.size())
+        return std::nullopt;
+    auto split = handshake->split();
+    const auto encoded = serialize_handshake_v2_response(response_frame);
+    if (!split || !encoded)
+        return std::nullopt;
+
     std::lock_guard<std::mutex> lock(mtx_);
-
-    const auto parsed = parse_handshake_message(message);
-    if (!parsed) {
-        aegis_log( "[session] handle_handshake_init: invalid message (%zu)\n",
-                message.size());
+    if (session_to_peer_.contains(frame->session_id) ||
+        retired_.contains(frame->session_id) ||
+        pending_initiators_.contains(frame->session_id)) {
         return std::nullopt;
     }
+    Session& session = create_session(peer_id, frame->session_id);
+    install_noise_keys(session, std::move(*split));
 
-    const uint32_t session_id = parsed->session_id;
-    const X25519Key& peer_eph = parsed->ephemeral_public;
-    const NodeId& received_id = parsed->node_id;
-
-    if (received_id != sender_id) {
-        aegis_log( "[session] handle_handshake_init: NodeID mismatch\n");
-        return std::nullopt;
-    }
-
-    // Step 14: NetworkID gating. The responder refuses the handshake before
-    // any keys are derived or a session is created — a cross-network peer is
-    // visible (discovery) but unreachable. This is what makes independent
-    // meshes on a shared LAN stay isolated.
-    const NetworkId& peer_network = parsed->network_id;
-    if (peer_network != identity_.network_id) {
-        aegis_log( "[session] reject handshake init: network mismatch "
-                        "(peer %02x%02x..., expected net %02x...)\n",
-                received_id[0], received_id[1], identity_.network_id[0]);
-        return std::nullopt;
-    }
-
-    X25519KeyPair ephemeral = x25519_generate_keypair();
-
-    X25519SharedSecret secret = derive_master_secret(
-        ephemeral.private_key, peer_eph);
-    if (std::all_of(secret.begin(), secret.end(), [](uint8_t b) { return b == 0; }))
-        return std::nullopt;
-
-    Session derived{};
-    if (!derive_keys(derived, secret, session_id, false)) {
-        aegis_log("[session] responder key derivation failed\n");
-        return std::nullopt;
-    }
-
-    Session& sess = create_session(sender_id, session_id);
-    sess.send_key = std::move(derived.send_key);
-    sess.recv_key = std::move(derived.recv_key);
-    sess.established_at = derived.established_at;
-    sess.established = true;
-
-    aegis_log( "[session] session %08x established with ",
-            session_id);
-    for (auto b : sender_id) aegis_log( "%02x", b);
-    aegis_log( "\n");
-
-    return build_handshake_message(session_id, ephemeral);
+    HandshakeResponse response;
+    response.message.assign(encoded->begin(), encoded->end());
+    response.peer_id = peer_id;
+    response.peer_static_public_key = *peer_static;
+    return response;
 }
 
 bool SessionManager::handle_handshake_resp(
-    const std::vector<uint8_t>& message, uint32_t session_id)
-{
+    const std::vector<uint8_t>& message, uint32_t session_id) {
+    const auto frame = parse_handshake_v2_response(message);
     std::lock_guard<std::mutex> lock(mtx_);
-
-    const auto parsed = parse_handshake_message(message);
-    if (!parsed) {
-        aegis_log( "[session] handle_handshake_resp: invalid message (%zu)\n",
-                message.size());
+    auto pending = pending_initiators_.find(session_id);
+    if (pending == pending_initiators_.end())
+        return false;
+    if (!frame || frame->session_id != session_id) {
+        pending_initiators_.erase(pending);
         return false;
     }
 
-    const uint32_t resp_session_id = parsed->session_id;
-
-    if (resp_session_id != session_id) {
-        aegis_log( "[session] handle_handshake_resp: session_id mismatch "
-                "(got %08x, expected %08x)\n", resp_session_id, session_id);
+    PendingInitiator state = std::move(pending->second);
+    pending_initiators_.erase(pending);
+    if (!state.handshake ||
+        !state.handshake->read_message(frame->noise_message, {})) {
         return false;
     }
-
-    const X25519Key& peer_eph = parsed->ephemeral_public;
-    const NodeId& peer_id = parsed->node_id;
-
-    // Step 14: initiator-side gate. The responder gates first, so this should
-    // never fire; kept as defense in depth so a forged/misconfigured response
-    // from a different network can never establish a session.
-    const NetworkId& peer_network = parsed->network_id;
-    if (peer_network != identity_.network_id) {
-        aegis_log( "[session] reject handshake resp: network mismatch "
-                        "(peer %02x%02x...)\n",
-                peer_id[0], peer_id[1]);
-        ephemerals_.erase(session_id);
+    const auto remote = state.handshake->remote_static_public_key();
+    if (!remote || *remote != state.expected_peer_static ||
+        hash_public_key(*remote) != state.expected_peer_id) {
         return false;
     }
-
-    auto eit = ephemerals_.find(session_id);
-    if (eit == ephemerals_.end()) {
-        aegis_log( "[session] handle_handshake_resp: no ephemeral for "
-                "session %08x\n", session_id);
-        return false;
-    }
-
-    X25519SharedSecret secret = derive_master_secret(
-        eit->second.private_key, peer_eph);
-    ephemerals_.erase(eit);
-    if (std::all_of(secret.begin(), secret.end(), [](uint8_t b) { return b == 0; }))
+    auto split = state.handshake->split();
+    if (!split)
         return false;
 
-    Session derived{};
-    if (!derive_keys(derived, secret, session_id, true)) {
-        aegis_log("[session] initiator key derivation failed\n");
-        return false;
-    }
-
-    Session& sess = create_session(peer_id, session_id);
-    sess.send_key = std::move(derived.send_key);
-    sess.recv_key = std::move(derived.recv_key);
-    sess.established_at = derived.established_at;
-    sess.established = true;
-
-    aegis_log( "[session] session %08x established with ",
-            session_id);
-    for (auto b : peer_id) aegis_log( "%02x", b);
-    aegis_log( "\n");
-
+    Session& session = create_session(state.expected_peer_id, session_id);
+    install_noise_keys(session, std::move(*split));
     return true;
 }
 

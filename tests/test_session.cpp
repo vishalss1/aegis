@@ -42,16 +42,22 @@ int main() {
         uint32_t session_id = 0xABCD0001;
 
         // A creates handshake init for B
-        auto init_msg = sm_a.create_handshake_init(session_id);
-        CHECK(init_msg.size() == HANDSHAKE_PAYLOAD_SIZE);
+        auto init_msg = sm_a.create_handshake_init(
+            session_id, bob.node_id, bob.keypair.public_key);
+        CHECK(init_msg.has_value());
+        CHECK(init_msg && init_msg->size() == HANDSHAKE_V2_INIT_FRAME_SIZE);
 
         // B handles the init
-        auto resp_msg = sm_b.handle_handshake_init(init_msg, alice.node_id);
+        auto resp_msg = sm_b.handle_handshake_init(*init_msg, session_id);
         CHECK(resp_msg.has_value());
-        CHECK(resp_msg->size() == HANDSHAKE_PAYLOAD_SIZE);
+        CHECK(resp_msg &&
+              resp_msg->message.size() == HANDSHAKE_V2_RESPONSE_FRAME_SIZE);
+        CHECK(resp_msg && resp_msg->peer_id == alice.node_id);
+        CHECK(resp_msg && resp_msg->peer_static_public_key ==
+              alice.keypair.public_key);
 
         // A handles the response
-        bool ok = sm_a.handle_handshake_resp(*resp_msg, session_id);
+        bool ok = sm_a.handle_handshake_resp(resp_msg->message, session_id);
         CHECK(ok);
 
         // Both sides should have established sessions
@@ -78,6 +84,14 @@ int main() {
         // A's send key should equal B's recv key (opposite directions)
         CHECK((*sess_a)->send_key == (*sess_b)->recv_key);
         CHECK((*sess_b)->send_key == (*sess_a)->recv_key);
+
+        // Replaying either handshake frame cannot replace an established
+        // session or recreate consumed initiator state.
+        CHECK(!sm_b.handle_handshake_init(*init_msg, session_id).has_value());
+        CHECK(!sm_a.handle_handshake_resp(
+            resp_msg->message, session_id));
+        CHECK(sm_a.get_session(bob.node_id).has_value());
+        CHECK(sm_b.get_session(alice.node_id).has_value());
     }
 
     // ---- 1b. Handshake payloads require exact canonical lengths -------------
@@ -85,31 +99,34 @@ int main() {
         SessionManager sm_a(alice);
         SessionManager sm_b(bob);
         const uint32_t session_id = 0xABCD0009;
-        const auto init = sm_a.create_handshake_init(session_id);
+        const auto init = sm_a.create_handshake_init(
+            session_id, bob.node_id, bob.keypair.public_key);
+        CHECK(init.has_value());
 
-        auto short_init = init;
+        auto short_init = *init;
         short_init.pop_back();
-        CHECK(!sm_b.handle_handshake_init(short_init, alice.node_id).has_value());
+        CHECK(!sm_b.handle_handshake_init(short_init, session_id).has_value());
         CHECK(!sm_b.get_session(alice.node_id).has_value());
 
-        auto trailing_init = init;
+        auto trailing_init = *init;
         trailing_init.push_back(0);
-        CHECK(!sm_b.handle_handshake_init(trailing_init, alice.node_id).has_value());
+        CHECK(!sm_b.handle_handshake_init(trailing_init, session_id).has_value());
         CHECK(!sm_b.get_session(alice.node_id).has_value());
 
-        const auto response = sm_b.handle_handshake_init(init, alice.node_id);
+        const auto response = sm_b.handle_handshake_init(*init, session_id);
         CHECK(response.has_value());
         if (response) {
-            auto short_response = *response;
+            auto short_response = response->message;
             short_response.pop_back();
             CHECK(!sm_a.handle_handshake_resp(short_response, session_id));
             CHECK(!sm_a.get_session(bob.node_id).has_value());
 
-            auto trailing_response = *response;
+            auto trailing_response = response->message;
             trailing_response.push_back(0);
             CHECK(!sm_a.handle_handshake_resp(trailing_response, session_id));
             CHECK(!sm_a.get_session(bob.node_id).has_value());
-            CHECK(sm_a.handle_handshake_resp(*response, session_id));
+            CHECK(!sm_a.handle_handshake_resp(
+                response->message, session_id));
         }
     }
 
@@ -119,9 +136,10 @@ int main() {
         SessionManager sm_b(bob);
 
         uint32_t session_id = 0xABCD0002;
-        auto init_msg = sm_a.create_handshake_init(session_id);
-        auto resp_msg = sm_b.handle_handshake_init(init_msg, alice.node_id);
-        sm_a.handle_handshake_resp(*resp_msg, session_id);
+        auto init_msg = sm_a.create_handshake_init(
+            session_id, bob.node_id, bob.keypair.public_key);
+        auto resp_msg = sm_b.handle_handshake_init(*init_msg, session_id);
+        sm_a.handle_handshake_resp(resp_msg->message, session_id);
 
         const uint8_t plaintext[] = {0x45, 0x00, 0x00, 0x14,
                                      0x08, 0x00, 0x00, 0x00,
@@ -167,9 +185,10 @@ int main() {
         SessionManager sm_b(bob);
 
         uint32_t session_id = 0xABCD0003;
-        auto init_msg = sm_a.create_handshake_init(session_id);
-        auto resp_msg = sm_b.handle_handshake_init(init_msg, alice.node_id);
-        sm_a.handle_handshake_resp(*resp_msg, session_id);
+        auto init_msg = sm_a.create_handshake_init(
+            session_id, bob.node_id, bob.keypair.public_key);
+        auto resp_msg = sm_b.handle_handshake_init(*init_msg, session_id);
+        sm_a.handle_handshake_resp(resp_msg->message, session_id);
 
         const uint8_t pt[] = {0x45, 0x00, 0x00, 0x14};
         auto enc = sm_a.encrypt_data(bob.node_id, pt, sizeof(pt));
@@ -196,9 +215,10 @@ int main() {
         SessionManager sm_b(bob);
 
         uint32_t session_id = 0xABCD0004;
-        auto init_msg = sm_a.create_handshake_init(session_id);
-        auto resp_msg = sm_b.handle_handshake_init(init_msg, alice.node_id);
-        sm_a.handle_handshake_resp(*resp_msg, session_id);
+        auto init_msg = sm_a.create_handshake_init(
+            session_id, bob.node_id, bob.keypair.public_key);
+        auto resp_msg = sm_b.handle_handshake_init(*init_msg, session_id);
+        sm_a.handle_handshake_resp(resp_msg->message, session_id);
 
         const uint8_t pt[] = {0x45, 0x00, 0x00, 0x14};
         auto enc = sm_a.encrypt_data(bob.node_id, pt, sizeof(pt));
@@ -221,11 +241,16 @@ int main() {
         SessionManager sm_b(bob);
 
         uint32_t session_id = 0xABCD0005;
-        auto init_msg = sm_a.create_handshake_init(session_id);
+        auto init_msg = sm_a.create_handshake_init(
+            session_id, bob.node_id, bob.keypair.public_key);
+        auto resp_msg = sm_b.handle_handshake_init(*init_msg, session_id);
+        CHECK(resp_msg.has_value());
+        CHECK(resp_msg && resp_msg->peer_id == alice.node_id);
+        CHECK(resp_msg && resp_msg->peer_id != charlie.node_id);
 
-        // B tries to handle init but claims it's from charlie (wrong node_id)
-        auto resp_msg = sm_b.handle_handshake_init(init_msg, charlie.node_id);
-        CHECK(!resp_msg.has_value());
+        CHECK(!sm_a.create_handshake_init(
+            session_id + 1, charlie.node_id,
+            bob.keypair.public_key).has_value());
     }
 
     // ---- 6. Step 14: NetworkID gating ---------------------------------------
@@ -240,10 +265,12 @@ int main() {
             SessionManager sm_a(alice);
             SessionManager sm_b(bob);
             uint32_t session_id = 0xABCD0010;
-            auto init_msg = sm_a.create_handshake_init(session_id);
-            auto resp_msg = sm_b.handle_handshake_init(init_msg, alice.node_id);
+            auto init_msg = sm_a.create_handshake_init(
+                session_id, bob.node_id, bob.keypair.public_key);
+            auto resp_msg = sm_b.handle_handshake_init(*init_msg, session_id);
             CHECK(resp_msg.has_value());
-            CHECK(sm_a.handle_handshake_resp(*resp_msg, session_id));
+            CHECK(sm_a.handle_handshake_resp(
+                resp_msg->message, session_id));
             CHECK(sm_a.get_session(bob.node_id).has_value());
             CHECK(sm_b.get_session(alice.node_id).has_value());
         }
@@ -254,8 +281,9 @@ int main() {
             SessionManager sm_a(alice);
             SessionManager sm_m(mallory);
             uint32_t session_id = 0xABCD0011;
-            auto init_msg = sm_a.create_handshake_init(session_id);
-            auto resp_msg = sm_m.handle_handshake_init(init_msg, alice.node_id);
+            auto init_msg = sm_a.create_handshake_init(
+                session_id, mallory.node_id, mallory.keypair.public_key);
+            auto resp_msg = sm_m.handle_handshake_init(*init_msg, session_id);
             CHECK(!resp_msg.has_value());
             CHECK(!sm_m.get_session(alice.node_id).has_value());
         }
@@ -266,8 +294,9 @@ int main() {
             SessionManager sm_a(alice);
             SessionManager sm_m(mallory);
             uint32_t session_id = 0xABCD0012;
-            auto init_msg = sm_m.create_handshake_init(session_id);
-            auto resp_msg = sm_a.handle_handshake_init(init_msg, mallory.node_id);
+            auto init_msg = sm_m.create_handshake_init(
+                session_id, alice.node_id, alice.keypair.public_key);
+            auto resp_msg = sm_a.handle_handshake_init(*init_msg, session_id);
             CHECK(!resp_msg.has_value());
             CHECK(!sm_a.get_session(mallory.node_id).has_value());
         }
@@ -283,9 +312,10 @@ int main() {
 
         // Establish the first session (sid1).
         uint32_t sid1 = 0xABCD0100;
-        auto init1 = sm_a.create_handshake_init(sid1);
-        auto resp1 = sm_b.handle_handshake_init(init1, alice.node_id);
-        CHECK(sm_a.handle_handshake_resp(*resp1, sid1));
+        auto init1 = sm_a.create_handshake_init(
+            sid1, bob.node_id, bob.keypair.public_key);
+        auto resp1 = sm_b.handle_handshake_init(*init1, sid1);
+        CHECK(sm_a.handle_handshake_resp(resp1->message, sid1));
         auto sess_a1 = sm_a.get_session(bob.node_id);
         CHECK(sess_a1.has_value());
         CHECK((*sess_a1)->id == sid1);
@@ -300,9 +330,10 @@ int main() {
         // Rekey: fresh handshake with a new session_id. Same deterministic role
         // rules apply; here A drives it on both sides for the round-trip.
         uint32_t sid2 = 0xABCD0200;
-        auto init2 = sm_a.create_handshake_init(sid2);
-        auto resp2 = sm_b.handle_handshake_init(init2, alice.node_id);
-        CHECK(sm_a.handle_handshake_resp(*resp2, sid2));
+        auto init2 = sm_a.create_handshake_init(
+            sid2, bob.node_id, bob.keypair.public_key);
+        auto resp2 = sm_b.handle_handshake_init(*init2, sid2);
+        CHECK(sm_a.handle_handshake_resp(resp2->message, sid2));
 
         // Both sides now hold sid2 as the active session...
         auto sess_a2 = sm_a.get_session(bob.node_id);
@@ -343,15 +374,17 @@ int main() {
         SessionManager sm_b(bob);
 
         uint32_t sid1 = 0xABCD0300;
-        auto init1 = sm_a.create_handshake_init(sid1);
-        auto resp1 = sm_b.handle_handshake_init(init1, alice.node_id);
-        sm_a.handle_handshake_resp(*resp1, sid1);
+        auto init1 = sm_a.create_handshake_init(
+            sid1, bob.node_id, bob.keypair.public_key);
+        auto resp1 = sm_b.handle_handshake_init(*init1, sid1);
+        sm_a.handle_handshake_resp(resp1->message, sid1);
 
         // Rekey once so B has a retired sid1 plus an active sid2.
         uint32_t sid2 = 0xABCD0400;
-        auto init2 = sm_a.create_handshake_init(sid2);
-        auto resp2 = sm_b.handle_handshake_init(init2, alice.node_id);
-        sm_a.handle_handshake_resp(*resp2, sid2);
+        auto init2 = sm_a.create_handshake_init(
+            sid2, bob.node_id, bob.keypair.public_key);
+        auto resp2 = sm_b.handle_handshake_init(*init2, sid2);
+        sm_a.handle_handshake_resp(resp2->message, sid2);
 
         // A removes its session with B.
         sm_a.remove_session(bob.node_id);

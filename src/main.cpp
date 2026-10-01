@@ -500,24 +500,26 @@ static int run_session_test() {
     uint32_t session_id = 0xDEAD0001;
 
     // A creates init
-    auto init = sm_a.create_handshake_init(session_id);
-    if (init.size() != HANDSHAKE_PAYLOAD_SIZE) {
+    auto init = sm_a.create_handshake_init(
+        session_id, bob.node_id, bob.keypair.public_key);
+    if (!init || init->size() != HANDSHAKE_V2_INIT_FRAME_SIZE) {
         fprintf(stderr, "[session-test] FAIL: init size %zu != %zu\n",
-                init.size(), HANDSHAKE_PAYLOAD_SIZE);
+                init ? init->size() : 0, HANDSHAKE_V2_INIT_FRAME_SIZE);
         return 1;
     }
-    printf("[session-test] handshake init: %zu bytes\n", init.size());
+    printf("[session-test] handshake init: %zu bytes\n", init->size());
 
     // B handles init
-    auto resp = sm_b.handle_handshake_init(init, alice.node_id);
+    auto resp = sm_b.handle_handshake_init(*init, session_id);
     if (!resp) {
         fprintf(stderr, "[session-test] FAIL: handle_handshake_init returned nullopt\n");
         return 1;
     }
-    printf("[session-test] handshake resp: %zu bytes\n", resp->size());
+    printf("[session-test] handshake resp: %zu bytes\n",
+           resp->message.size());
 
     // A handles resp
-    if (!sm_a.handle_handshake_resp(*resp, session_id)) {
+    if (!sm_a.handle_handshake_resp(resp->message, session_id)) {
         fprintf(stderr, "[session-test] FAIL: handle_handshake_resp failed\n");
         return 1;
     }
@@ -579,15 +581,14 @@ static int run_session_test() {
     }
     printf("[session-test] tamper rejection: OK\n");
 
-    // Wrong id rejection
+    // Wrong expected identity rejection
     Identity charlie = Identity::create(net);
     SessionManager sm_c(charlie);
-    auto init_c = sm_c.create_handshake_init(0xDEAD0002);
-    auto bad_resp = sm_b.handle_handshake_init(init_c, charlie.node_id);
-    if (bad_resp) {
-        // This should work - charlie and bob don't know each other
-        // but the handshake is session-based, not identity-verified
-        // So this is fine. We just skip this check.
+    auto invalid_init = sm_c.create_handshake_init(
+        0xDEAD0002, alice.node_id, bob.keypair.public_key);
+    if (invalid_init) {
+        fprintf(stderr, "[session-test] FAIL: mismatched expected identity\n");
+        return 1;
     }
 
     printf("[session-test] *** ALL PASS ***\n");
@@ -665,13 +666,16 @@ static int run_peer_test() {
     SessionManager sm_a(alice);
     SessionManager sm_b(bob);
     uint32_t session_id = 0xA0000001;
-    auto init_msg = sm_a.create_handshake_init(session_id);
-    auto resp_msg = sm_b.handle_handshake_init(init_msg, alice.node_id);
+    auto init_msg = sm_a.create_handshake_init(
+        session_id, bob.node_id, bob.keypair.public_key);
+    auto resp_msg = init_msg
+        ? sm_b.handle_handshake_init(*init_msg, session_id)
+        : std::nullopt;
     if (!resp_msg) {
         fprintf(stderr, "[peer-test] FAIL: handshake init\n");
         return 1;
     }
-    if (!sm_a.handle_handshake_resp(*resp_msg, session_id)) {
+    if (!sm_a.handle_handshake_resp(resp_msg->message, session_id)) {
         fprintf(stderr, "[peer-test] FAIL: handshake resp\n");
         return 1;
     }

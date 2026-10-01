@@ -272,17 +272,24 @@ bool Tunnel::handshake_peer(const TunnelPeer& peer, bool force) {
         }
         const uint32_t sid = *reserved_sid;
 
-        auto init_payload = session_manager_->create_handshake_init(sid);
+        auto init_payload = session_manager_->create_handshake_init(
+            sid, peer.node_id, peer.public_key);
+        if (!init_payload) {
+            std::lock_guard<std::mutex> lock(hs_mtx_);
+            pending_handshakes_.erase(peer.node_id);
+            aegis_log("[tunnel] unable to create authenticated handshake\n");
+            return false;
+        }
         PacketHeader hdr{};
         hdr.version = PACKET_VERSION;
         hdr.packet_type = TYPE_HANDSHAKE_INIT;
         hdr.session_id = sid;
-        hdr.payload_length = (uint32_t)init_payload.size();
+        hdr.payload_length = (uint32_t)init_payload->size();
         auto hdr_bytes = SessionManager::serialize_header(hdr);
         std::vector<uint8_t> wire;
-        wire.reserve(16 + init_payload.size());
+        wire.reserve(16 + init_payload->size());
         wire.insert(wire.end(), hdr_bytes.begin(), hdr_bytes.end());
-        wire.insert(wire.end(), init_payload.begin(), init_payload.end());
+        wire.insert(wire.end(), init_payload->begin(), init_payload->end());
 
         std::unique_lock<std::mutex> lock(hs_mtx_);
         for (int attempt = 0; attempt < 10; attempt++) {
@@ -733,19 +740,12 @@ void Tunnel::rx_callback(const uint8_t* data, size_t len, Endpoint sender) {
 
     if (type == TYPE_HANDSHAKE_RESP) {
         std::vector<uint8_t> payload(data + 16, data + len);
-        if (payload.size() < HANDSHAKE_PAYLOAD_SIZE) return;
-
-        NodeId peer_id{};
-        std::memcpy(peer_id.data(), payload.data() + 36, 32);
+        if (payload.size() != HANDSHAKE_V2_RESPONSE_FRAME_SIZE) return;
 
         std::lock_guard<std::mutex> lock(hs_mtx_);
         auto it = std::find_if(pending_handshakes_.begin(), pending_handshakes_.end(),
             [&](const auto& kv) { return kv.second.session_id == sid; });
         if (it == pending_handshakes_.end()) return;
-        if (it->second.peer_id != peer_id) {
-            aegis_log( "[tunnel] handshake resp NodeID mismatch\n");
-            return;
-        }
         if (session_manager_->handle_handshake_resp(payload, sid)) {
             it->second.done = true;
             hs_cv_.notify_all();
@@ -755,36 +755,35 @@ void Tunnel::rx_callback(const uint8_t* data, size_t len, Endpoint sender) {
 
     if (type == TYPE_HANDSHAKE_INIT) {
         std::vector<uint8_t> payload(data + 16, data + len);
-        if (payload.size() < HANDSHAKE_PAYLOAD_SIZE) return;
+        if (payload.size() != HANDSHAKE_V2_INIT_FRAME_SIZE) return;
 
-        NodeId sender_id{};
-        std::memcpy(sender_id.data(), payload.data() + 36, 32);
-
-        // If incoming handshake is from an unknown peer, record endpoint so we can respond.
-        // NetworkID match is strictly checked by handle_handshake_init next.
-        if (!peers_.has_peer(sender_id)) {
-            peers_.upsert(sender_id, Key{}, sender, false);
+        auto response = session_manager_->handle_handshake_init(payload, sid);
+        if (!response) return;
+        const auto upserted = peers_.upsert(
+            response->peer_id, response->peer_static_public_key, sender, false);
+        if (upserted == PeerUpsertResult::IdentityConflict ||
+            upserted == PeerUpsertResult::CapacityRejected) {
+            session_manager_->remove_session(response->peer_id);
+            return;
         }
-
-        auto resp_payload = session_manager_->handle_handshake_init(payload, sender_id);
-        if (!resp_payload) return;
 
         PacketHeader hdr{};
         hdr.version = PACKET_VERSION;
         hdr.packet_type = TYPE_HANDSHAKE_RESP;
         hdr.session_id = sid;
-        hdr.payload_length = (uint32_t)resp_payload->size();
+        hdr.payload_length = (uint32_t)response->message.size();
         auto hdr_bytes = SessionManager::serialize_header(hdr);
         std::vector<uint8_t> out;
-        out.reserve(16 + resp_payload->size());
+        out.reserve(16 + response->message.size());
         out.insert(out.end(), hdr_bytes.begin(), hdr_bytes.end());
-        out.insert(out.end(), resp_payload->begin(), resp_payload->end());
+        out.insert(out.end(), response->message.begin(), response->message.end());
         transport_.send(out.data(), out.size(), sender);
 
         // Mark done only after the response is on the wire so the responder
         // doesn't start sending data before the initiator can decrypt it.
         std::lock_guard<std::mutex> lock(hs_mtx_);
-        pending_handshakes_[sender_id] = {sender_id, sid, true};
+        pending_handshakes_[response->peer_id] = {
+            response->peer_id, sid, true};
         hs_cv_.notify_all();
     }
 }

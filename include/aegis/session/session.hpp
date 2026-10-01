@@ -2,22 +2,20 @@
 
 #include "aegis/identity/identity.hpp"
 #include "aegis/crypto/chacha20poly1305.hpp"
+#include "aegis/crypto/random.hpp"
 #include "aegis/packet/header.hpp"
 #include "aegis/protocol/sources.hpp"
+#include "aegis/session/handshake_v2.hpp"
+#include "aegis/session/noise_ik.hpp"
 #include <array>
 #include <bitset>
 #include <chrono>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <vector>
-
-// Handshake payload = session_id (4) + ephemeral pubkey (32) + NodeID (32) +
-// NetworkID (32). The NetworkID rides on the wire so the responder can gate the
-// handshake (step 14): mismatch -> no session, no route, before any keys are
-// derived. The same check runs on the initiator side against the response.
-static constexpr size_t HANDSHAKE_PAYLOAD_SIZE = 100;
 
 struct Session {
     uint32_t id;
@@ -38,15 +36,24 @@ class SessionManager {
 public:
     explicit SessionManager(
         const Identity& identity,
-        ProtocolClock& clock = system_protocol_clock());
+        ProtocolClock& clock = system_protocol_clock(),
+        RandomSource& random = system_random_source());
 
     SessionManager(const SessionManager&) = delete;
     SessionManager& operator=(const SessionManager&) = delete;
 
-    std::vector<uint8_t> create_handshake_init(uint32_t session_id);
+    [[nodiscard]] std::optional<std::vector<uint8_t>> create_handshake_init(
+        uint32_t session_id, const NodeId& expected_peer_id,
+        const X25519Key& expected_peer_static);
 
-    std::optional<std::vector<uint8_t>> handle_handshake_init(
-        const std::vector<uint8_t>& message, const NodeId& sender_id);
+    struct HandshakeResponse {
+        std::vector<uint8_t> message;
+        NodeId peer_id{};
+        X25519Key peer_static_public_key{};
+    };
+
+    [[nodiscard]] std::optional<HandshakeResponse> handle_handshake_init(
+        const std::vector<uint8_t>& message, uint32_t outer_session_id);
 
     bool handle_handshake_resp(
         const std::vector<uint8_t>& message, uint32_t session_id);
@@ -81,8 +88,8 @@ public:
     std::optional<Session*> get_session_by_id(uint32_t session_id);
 
     // Step 15: tear down every session with `peer_id` (active and retired) and
-    // drop any in-flight handshake ephemeral for it. Used when a peer is judged
-    // dead so stale keys can never be used again.
+    // drop any in-flight authenticated initiator state for it. Used when a peer
+    // is judged dead so stale keys can never be used again.
     void remove_session(const NodeId& peer_id);
 
     // Step 15: drop retired sessions whose grace window has expired. Called by
@@ -100,6 +107,7 @@ public:
 private:
     const Identity& identity_;
     ProtocolClock& clock_;
+    RandomSource& random_;
     std::map<NodeId, Session> sessions_;
     std::map<uint32_t, NodeId> session_to_peer_;
 
@@ -114,39 +122,19 @@ private:
     std::chrono::milliseconds retired_grace_{RETIRED_GRACE};
     std::map<uint32_t, RetiredSession> retired_;
 
-    // Per-session ephemeral keypairs, kept only while the handshake for that
-    // session is in flight. A node can be initiator for one peer and responder
-    // for another concurrently, so a single shared ephemeral_ is wrong.
-    std::map<uint32_t, X25519KeyPair> ephemerals_;
+    struct PendingInitiator {
+        NodeId expected_peer_id{};
+        X25519Key expected_peer_static{};
+        std::unique_ptr<NoiseIkHandshake> handshake;
+    };
+    std::map<uint32_t, PendingInitiator> pending_initiators_;
     std::mutex mtx_;
 
-    std::vector<uint8_t> build_handshake_message(
-        uint32_t session_id,
-        const X25519KeyPair& ephemeral) const;
-
-    struct HandshakeMessage {
-        uint32_t session_id = 0;
-        X25519Key ephemeral_public{};
-        NodeId node_id{};
-        NetworkId network_id{};
-    };
-    static std::optional<HandshakeMessage> parse_handshake_message(
-        const std::vector<uint8_t>& message);
-
     Session& create_session(const NodeId& peer_id, uint32_t session_id);
-    [[nodiscard]] bool derive_keys(
-        Session& session, const X25519SharedSecret& shared_secret,
-        uint32_t session_id, bool initiator);
+    void install_noise_keys(Session& session, NoiseIkSplitResult&& split);
 
     bool check_replay(Session& session, uint64_t seq);
     void update_replay(Session& session, uint64_t seq);
-
-    static X25519SharedSecret derive_master_secret(
-        const X25519PrivateKey& our_priv, const X25519Key& their_pub);
-
-    static std::optional<SecretBytes<32>> sha256(
-        const uint8_t* d1, size_t l1,
-        const uint8_t* d2, size_t l2);
 
     static constexpr size_t REPLAY_BITS = 2048;
 };

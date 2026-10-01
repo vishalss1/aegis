@@ -61,6 +61,7 @@ Integration requirements:
 - Collapse dependency and authentication errors into fail-closed local results;
   never expose fallback or handshake-v1 negotiation.
 
-The active Session Manager continues to use the legacy handshake until the
-reviewed wrapper is integrated with the session state machine and the remaining
-integration attack tests pass the warning-as-error build and full CTest suite.
+The active Session Manager uses only the reviewed handshake-v2 wrapper. It
+requires an expected responder identity, derives traffic keys from Noise
+`Split()`, authenticates the responder's learned initiator identity before peer
+binding, and exposes no handshake-v1 fallback.

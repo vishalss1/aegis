@@ -15,9 +15,9 @@ the LAN, and other mesh members may be hostile. A complete design must therefore
 authenticate peers, bind public keys to NodeIDs, limit resource use, and treat
 all received protocol fields as untrusted.
 
-The current implementation does not yet satisfy that threat model. In
-particular, possession of a NetworkID must not be treated as proof of a peer's
-identity.
+The current implementation does not yet satisfy the complete threat model.
+Noise IK authenticates adjacent peer identities, but possession of a NetworkID
+must not be treated as authorization to join the mesh.
 
 ## Current Security Properties
 
@@ -25,7 +25,9 @@ The implementation currently provides the following limited properties:
 
 - Session payloads use ChaCha20-Poly1305 with the packet header as additional
   authenticated data.
-- Session keys are derived from fresh ephemeral X25519 keys.
+- Session handshakes use `Noise_IK_25519_ChaChaPoly_BLAKE2s`, require the
+  initiator to name the expected responder static key, authenticate the
+  initiator static key, and derive directional keys from Noise `Split()`.
 - Initiator-selected session IDs come from OpenSSL's operating-system-seeded
   CSPRNG and are checked against active and pending local sessions.
 - Newly created NetworkIDs come from the same checked CSPRNG and network
@@ -34,8 +36,9 @@ The implementation currently provides the following limited properties:
   generation failure aborts the transfer before any frame is sent.
 - STUN transaction IDs come from the checked CSPRNG; discovery fails closed
   when secure randomness is unavailable.
-- Checked SHA-256/BLAKE2s transcript hashing, HKDF, and constant-time comparison
-  helpers are available for the authenticated handshake migration.
+- The canonical NetworkID, wire version, session ID, roles, and INIT/RESP
+  headers are bound into the Noise transcript. Handshake application payloads
+  are prohibited.
 - Security-critical OpenSSL digest and public-key extraction results are
   checked; failures abort before installing session or onion keys or accepting
   a persisted identity.
@@ -44,8 +47,9 @@ The implementation currently provides the following limited properties:
   owned copies on destruction, overwrite, and move.
 - Session, peer-liveness, rekey, session-ID, and file-transfer-ID state accepts
   injected clocks and random sources for deterministic protocol tests.
-- Legacy handshake payloads use bounded network-byte-order codecs and reject
-  both truncated frames and trailing bytes before changing session state.
+- Handshake-v2 frames use bounded network-byte-order codecs and reject wrong
+  versions, types, flags, lengths, session IDs, truncation, and trailing bytes
+  before installing session state. There is no handshake-v1 fallback.
 - Common packet headers and complete discovery presence payloads use the
   bounded codec and canonical network byte order; session frames reject
   noncanonical reserved/flag fields and oversized plaintext.
@@ -63,8 +67,8 @@ The implementation currently provides the following limited properties:
   count, path length, and prefixes per peer.
 - NetworkID mismatches are rejected during the handshake.
 
-These properties do not compensate for the missing peer authentication and
-route-origin authentication described below.
+These properties do not provide membership authorization or route-origin
+authentication.
 
 ## Peer Identity Merge Contract
 
@@ -91,30 +95,24 @@ flags. Merge results separately report accepted identities, changed peer
 bindings, installed routes, malformed data, identity conflicts, and capacity
 rejection.
 
-These checks bind a public key to its self-certifying NodeID only. They do not
-authenticate the adjacent session, establish prefix ownership, or prove that an
-advertised route exists. Those guarantees require the authenticated handshake
-and route-origin work described below.
+These checks bind a public key to its self-certifying NodeID. Noise IK also
+proves control of that key for an adjacent session. Neither mechanism
+establishes prefix ownership or proves that an advertised route exists.
 
 ## Known Critical Limitations
 
-### Sessions do not authenticate peers
+### Peer authentication is not membership authorization
 
-The handshake transmits a session ID, ephemeral public key, claimed NodeID, and
-NetworkID in cleartext. Key derivation uses only ephemeral-to-ephemeral X25519.
-The static identity key neither authenticates the transcript nor contributes to
-the session secret.
+Noise IK proves control of the static X25519 key whose BLAKE2b digest is the
+adjacent peer's NodeID. It provides transcript authentication, responder key
+confirmation, fresh ephemeral contributions, and directional transport keys.
+Rekeying repeats the complete authenticated protocol with a new session ID.
 
-Consequences:
-
-- A mesh member can claim another member's NodeID.
-- An active attacker can impersonate an expected peer.
-- There is no handshake key-confirmation tag.
-- NetworkID is a mesh selector or bearer value, not peer authentication.
-- Rekeying repeats the same unauthenticated protocol.
-
-The planned replacement is a versioned Noise IK handshake with no downgrade to
-the existing format.
+NetworkID remains a cleartext mesh selector and bearer membership credential.
+An authenticated static identity is therefore not automatically an authorized
+identity: signed, expiring, revocable membership grants and identity rotation
+remain future work. The current responder may admit a previously unknown peer
+that knows the NetworkID, subject to peer-table capacity.
 
 ### Gossip identity binding is enforced, but route ownership is not
 
