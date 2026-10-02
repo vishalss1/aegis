@@ -6,6 +6,7 @@
 #include "aegis/routing/routing.hpp"
 #include "aegis/transport/transport.hpp"
 #include "aegis/transport/handshake_rate_limiter.hpp"
+#include "aegis/transport/handshake_cookie.hpp"
 #include "aegis/adapter/adapter.hpp"
 #include "aegis/discovery/discovery.hpp"
 #include "aegis/crypto/random.hpp"
@@ -123,6 +124,7 @@ private:
     ProtocolClock& clock_;
     RandomSource& random_;
     HandshakeRateLimiter handshake_rate_limiter_;
+    HandshakeCookieManager handshake_cookie_manager_;
     std::unique_ptr<SessionManager> session_manager_;
     PeerManager peers_;
     RoutingEngine routing_;
@@ -150,6 +152,9 @@ private:
         NodeId peer_id{};
         uint32_t session_id = 0;
         bool done = false;
+        Endpoint endpoint{};
+        std::optional<HandshakeCookie> cookie;
+        bool cookie_updated = false;
     };
     std::map<NodeId, PendingHandshake> pending_handshakes_;
     std::mutex hs_mtx_;

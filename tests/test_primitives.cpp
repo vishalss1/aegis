@@ -61,6 +61,23 @@ int main() {
     }
 
     {
+        const std::array<uint8_t, 3> key{'k', 'e', 'y'};
+        constexpr std::string_view message =
+            "The quick brown fox jumps over the lazy dog";
+        const auto expected = from_hex(
+            "f93215bb90d4af4c3061cd932fb169fb"
+            "8bb8a91d0b4022baea1271e1323cd9a0");
+        const auto actual = hmac_hash(
+            CryptoHashAlgorithm::Blake2s256,
+            key,
+            std::span<const uint8_t>(
+                reinterpret_cast<const uint8_t*>(message.data()),
+                message.size()));
+        CHECK(actual.has_value());
+        CHECK(actual && constant_time_equal(*actual, expected));
+    }
+
+    {
         // Independent HMAC-BLAKE2s HKDF vector for the Noise v2 digest.
         std::array<uint8_t, 32> ikm{};
         std::array<uint8_t, 16> salt{};

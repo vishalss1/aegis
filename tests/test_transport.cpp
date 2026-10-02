@@ -1,5 +1,6 @@
 #include "aegis/transport/transport.hpp"
 #include "aegis/transport/handshake_rate_limiter.hpp"
+#include "aegis/transport/handshake_cookie.hpp"
 #include "aegis/platform/platform.hpp"
 #include <cstdio>
 #include <cstring>
@@ -18,6 +19,24 @@ public:
 
 private:
     time_point now_{};
+};
+
+class IncrementingRandom final : public RandomSource {
+public:
+    [[nodiscard]] bool fill(std::span<uint8_t> output) override {
+        for (size_t i = 0; i < output.size(); ++i)
+            output[i] = static_cast<uint8_t>(generation_ + i);
+        ++generation_;
+        return true;
+    }
+
+private:
+    uint8_t generation_ = 1;
+};
+
+class FailingRandom final : public RandomSource {
+public:
+    [[nodiscard]] bool fill(std::span<uint8_t>) override { return false; }
 };
 
 #define CHECK(cond) do { \
@@ -193,6 +212,54 @@ int main() {
         clock.advance(std::chrono::milliseconds(500));
         CHECK(limiter.allow(Endpoint::from_parts(10, 0, 0, 3, 4000)));
         CHECK(limiter.tracked_sources() == 1);
+    }
+
+    // ---- 7. Stateless retry cookies bind endpoint, session, and INIT --------
+    {
+        ManualClock clock;
+        IncrementingRandom random;
+        HandshakeCookieConfig config;
+        config.rotation_interval = std::chrono::milliseconds(100);
+        HandshakeCookieManager cookies(clock, random, config);
+        const Endpoint source = Endpoint::from_parts(10, 20, 30, 40, 5000);
+        const std::array<uint8_t, 5> init{1, 2, 3, 4, 5};
+        constexpr uint32_t session_id = 0x12345678;
+
+        const auto first = cookies.issue(source, session_id, init);
+        CHECK(first.has_value());
+        CHECK(first && cookies.verify(*first, source, session_id, init));
+        CHECK(first && !cookies.verify(
+            *first, Endpoint::from_parts(10, 20, 30, 40, 5001),
+            session_id, init));
+        CHECK(first && !cookies.verify(*first, source, session_id + 1, init));
+        auto changed_init = init;
+        changed_init.back() ^= 0x80;
+        CHECK(first && !cookies.verify(
+            *first, source, session_id, changed_init));
+
+        // One previous secret remains valid across a rotation boundary.
+        clock.advance(std::chrono::milliseconds(100));
+        CHECK(first && cookies.verify(*first, source, session_id, init));
+        const auto second = cookies.issue(source, session_id, init);
+        CHECK(second.has_value());
+        CHECK(first && second && *first != *second);
+
+        // After the next rotation, the original secret is no longer retained.
+        clock.advance(std::chrono::milliseconds(100));
+        CHECK(first && !cookies.verify(*first, source, session_id, init));
+        CHECK(second && cookies.verify(*second, source, session_id, init));
+    }
+
+    // ---- 8. Cookie issuance fails closed without secure randomness ----------
+    {
+        ManualClock clock;
+        FailingRandom random;
+        HandshakeCookieManager cookies(clock, random);
+        const Endpoint source = Endpoint::from_parts(127, 0, 0, 1, 5000);
+        const std::array<uint8_t, 1> init{0x42};
+        const HandshakeCookie forged{};
+        CHECK(!cookies.issue(source, 1, init).has_value());
+        CHECK(!cookies.verify(forged, source, 1, init));
     }
 
     printf("\n%d / %d passed\n", passed, tests);

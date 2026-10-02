@@ -19,6 +19,12 @@ using CryptoHash = std::array<uint8_t, 32>;
     CryptoHashAlgorithm algorithm,
     std::initializer_list<std::span<const uint8_t>> fragments);
 
+// RFC 2104 HMAC with the selected 256-bit digest.
+[[nodiscard]] std::optional<CryptoHash> hmac_hash(
+    CryptoHashAlgorithm algorithm,
+    std::span<const uint8_t> key,
+    std::span<const uint8_t> message);
+
 // RFC 5869 HKDF using the selected 256-bit digest. Output is left unchanged
 // if OpenSSL rejects an input or any operation fails.
 [[nodiscard]] bool hkdf(

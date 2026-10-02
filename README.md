@@ -163,7 +163,7 @@ A few design choices that shaped how Aegis works.
 | Wintun ring | Overlay → App | Inbound IP packet injection |
 | UDP (TYPE_DATA) | Peer ↔ Peer | Direct encrypted tunnel — adjacent nodes |
 | UDP (TYPE_RELAY) | Hop ↔ Hop | Onion-wrapped relay frame — non-adjacent nodes |
-| UDP (TYPE_HANDSHAKE_INIT/RESP) | Initiator → Responder | X25519 key agreement |
+| UDP (TYPE_HANDSHAKE_INIT/COOKIE/RESP) | Peer ↔ Peer | Stateless endpoint retry, then X25519 key agreement |
 | UDP (TYPE_KEEPALIVE) | Peer ↔ Peer | Empty encrypted frame — liveness + NAT keepalive |
 | UDP (TYPE_PEER_TABLE) | Peer ↔ Peer | Gossip — NodeID + pubkey + prefixes (no IPs) |
 | UDP (TYPE_DISCOVERY) | LAN broadcast | Presence — NodeID + NetworkID + endpoint (pre-session) |
@@ -176,6 +176,7 @@ A few design choices that shaped how Aegis works.
 |:--------|:-------------|
 | **NodeID Addressing** | Peers are addressed as `NodeID = BLAKE2b(PublicKey)`. Received gossip enforces that binding, and Noise IK authenticates it for adjacent sessions. |
 | **Noise IK + ChaCha20-Poly1305** | Authenticated Noise IK derives directional session keys with fresh ephemerals and transcript key confirmation; ChaCha20-Poly1305 authenticates data frames. |
+| **Bounded Handshake Admission** | Per-IP/global INIT limits and rotating stateless retry cookies prove endpoint reachability before responder-side Noise DH or peer/session allocation. |
 | **Multi-hop Onion Routing** | Each hop decrypts one layer and learns the next hop. Relays also receive the source NodeID, and unpadded packet size and timing remain visible. |
 | **Peer Table Gossip** | Full mesh convergence without a coordinator. Every new session triggers a fan-out of the peer table; a periodic 3-second gossip loop ensures far-end peers propagate across multi-hop chains. |
 | **Identity-Hiding Gossip** | Peer tables carry NodeID + public key + IP prefix routes. Physical endpoints are never transmitted in gossip — non-adjacent nodes cannot learn each other's real IP. |
@@ -285,7 +286,7 @@ aegis/
 │       ├── routing/            # Route table — prefix → next-hop → peer
 │       ├── session/            # Handshake, rekeying, replay window, grace retire
 │       ├── stun/               # RFC 5389 STUN Binding Request & mapped address discovery
-│       ├── transport/          # Winsock UDP socket send/receive
+│       ├── transport/          # UDP I/O, handshake rate limits, retry cookies
 │       └── tunnel/             # Integrated data path — tx/rx loops, maintenance
 ├── src/                        # Implementation .cpp files (mirrors include/aegis/)
 │   ├── main.cpp                # CLI entry point — mode dispatch, self-tests
@@ -304,7 +305,7 @@ aegis/
 │   ├── routing/routing.cpp
 │   ├── session/session.cpp
 │   ├── stun/stun.cpp           # STUN client for WAN endpoint discovery
-│   ├── transport/transport.cpp
+│   ├── transport/              # UDP transport and handshake admission controls
 │   └── tunnel/tunnel.cpp       # tx_loop, rx_loop, maintenance loop
 ├── tests/                      # CTest unit test suite — 23 binaries
 │   ├── test_packet.cpp
@@ -503,10 +504,10 @@ Unit test coverage:
 | `test_handshake_v2` | Canonical Noise IK INIT/RESP envelope framing and malformed-frame rejection |
 | `test_noise_dependency` | Pinned Noise-C suite availability and unsupported-algorithm confinement |
 | `test_noise_ik` | Noise vectors, transcript/split verification, malformed-message rejection, and failed-state destruction |
-| `test_transport` | Winsock loopback, socket lifecycle, and bounded per-IP/global handshake admission |
+| `test_transport` | Winsock loopback, socket lifecycle, bounded handshake admission, and stateless retry cookies |
 | `test_crypto` | X25519 keygen, shared secret derivation, determinism |
 | `test_random` | Checked random-source injection and CSPRNG generation |
-| `test_primitives` | SHA-256/BLAKE2s transcript hashes, HKDF vectors, constant-time comparison |
+| `test_primitives` | SHA-256/BLAKE2s transcript hashes, HMAC/HKDF vectors, constant-time comparison |
 | `test_secret` | Cleansing secret storage copy, move, overwrite, and destruction behavior |
 | `test_aead` | ChaCha20-Poly1305 RFC 8439 test vectors, tamper rejection |
 | `test_identity` | NodeID hashing, NetworkID equality, keypair round-trip |

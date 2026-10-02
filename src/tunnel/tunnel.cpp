@@ -17,6 +17,7 @@ Tunnel::Tunnel()
 Tunnel::Tunnel(ProtocolClock& clock, RandomSource& random)
     : discovery_(clock), clock_(clock), random_(random),
       handshake_rate_limiter_(clock),
+      handshake_cookie_manager_(clock, random),
       peers_(PEER_MANAGER_MAX_PEERS, clock) {}
 
 Tunnel::~Tunnel() { stop(); }
@@ -263,7 +264,7 @@ bool Tunnel::handshake_peer(const TunnelPeer& peer, bool force) {
                 });
             if (!pending_collision) {
                 pending_handshakes_[peer.node_id] = {
-                    peer.node_id, *candidate, false};
+                    peer.node_id, *candidate, false, peer.endpoint};
                 reserved_sid = candidate;
             }
         }
@@ -281,24 +282,39 @@ bool Tunnel::handshake_peer(const TunnelPeer& peer, bool force) {
             aegis_log("[tunnel] unable to create authenticated handshake\n");
             return false;
         }
-        PacketHeader hdr{};
-        hdr.version = PACKET_VERSION;
-        hdr.packet_type = TYPE_HANDSHAKE_INIT;
-        hdr.session_id = sid;
-        hdr.payload_length = (uint32_t)init_payload->size();
-        auto hdr_bytes = SessionManager::serialize_header(hdr);
-        std::vector<uint8_t> wire;
-        wire.reserve(16 + init_payload->size());
-        wire.insert(wire.end(), hdr_bytes.begin(), hdr_bytes.end());
-        wire.insert(wire.end(), init_payload->begin(), init_payload->end());
-
         std::unique_lock<std::mutex> lock(hs_mtx_);
         for (int attempt = 0; attempt < 10; attempt++) {
+            auto pending = pending_handshakes_.find(peer.node_id);
+            if (pending == pending_handshakes_.end())
+                return false;
+
+            PacketHeader hdr{};
+            hdr.version = PACKET_VERSION;
+            hdr.packet_type = TYPE_HANDSHAKE_INIT;
+            hdr.session_id = sid;
+            hdr.payload_length = static_cast<uint32_t>(
+                init_payload->size() +
+                (pending->second.cookie ? HANDSHAKE_COOKIE_SIZE : 0));
+            auto hdr_bytes = SessionManager::serialize_header(hdr);
+            std::vector<uint8_t> wire;
+            wire.reserve(PACKET_HEADER_SIZE + hdr.payload_length);
+            wire.insert(wire.end(), hdr_bytes.begin(), hdr_bytes.end());
+            wire.insert(wire.end(), init_payload->begin(), init_payload->end());
+            if (pending->second.cookie) {
+                wire.insert(
+                    wire.end(), pending->second.cookie->begin(),
+                    pending->second.cookie->end());
+            }
+            pending->second.cookie_updated = false;
             transport_.send(wire.data(), wire.size(), peer.endpoint);
             if (hs_cv_.wait_for(lock, std::chrono::seconds(1),
                     [&] { return !running_ ||
-                             pending_handshakes_[peer.node_id].done; }))
-                break;
+                             pending_handshakes_[peer.node_id].done ||
+                             pending_handshakes_[peer.node_id].cookie_updated; })) {
+                if (!running_ || pending_handshakes_[peer.node_id].done)
+                    break;
+                continue;
+            }
             aegis_log( "[tunnel] handshake retry %d for peer %02x%02x...\n",
                     attempt + 1, peer.node_id[0], peer.node_id[1]);
         }
@@ -756,13 +772,76 @@ void Tunnel::rx_callback(const uint8_t* data, size_t len, Endpoint sender) {
         return;
     }
 
+    if (type == TYPE_HANDSHAKE_COOKIE) {
+        if (len != PACKET_HEADER_SIZE + HANDSHAKE_COOKIE_SIZE ||
+            header->payload_length != HANDSHAKE_COOKIE_SIZE)
+            return;
+
+        std::lock_guard<std::mutex> lock(hs_mtx_);
+        auto it = std::find_if(
+            pending_handshakes_.begin(), pending_handshakes_.end(),
+            [&](const auto& entry) {
+                return entry.second.session_id == sid &&
+                    entry.second.endpoint == sender && !entry.second.done;
+            });
+        if (it == pending_handshakes_.end())
+            return;
+        HandshakeCookie cookie{};
+        std::copy_n(
+            data + PACKET_HEADER_SIZE, cookie.size(), cookie.begin());
+        it->second.cookie = cookie;
+        it->second.cookie_updated = true;
+        hs_cv_.notify_all();
+        return;
+    }
+
     if (type == TYPE_HANDSHAKE_INIT) {
         if (!handshake_rate_limiter_.allow(sender)) {
             aegis_log("[tunnel] dropped rate-limited handshake INIT\n");
             return;
         }
-        if (len != PACKET_HEADER_SIZE + HANDSHAKE_V2_INIT_FRAME_SIZE) return;
-        std::vector<uint8_t> payload(data + PACKET_HEADER_SIZE, data + len);
+        const size_t bare_size = PACKET_HEADER_SIZE + HANDSHAKE_V2_INIT_FRAME_SIZE;
+        const size_t cookie_size = bare_size + HANDSHAKE_COOKIE_SIZE;
+        if ((len != bare_size && len != cookie_size) ||
+            header->payload_length != len - PACKET_HEADER_SIZE)
+            return;
+
+        const std::span<const uint8_t> init_frame(
+            data + PACKET_HEADER_SIZE, HANDSHAKE_V2_INIT_FRAME_SIZE);
+        bool cookie_valid = false;
+        if (len == cookie_size) {
+            HandshakeCookie cookie{};
+            std::copy_n(
+                data + bare_size, cookie.size(), cookie.begin());
+            cookie_valid = handshake_cookie_manager_.verify(
+                cookie, sender, sid, init_frame);
+        }
+        if (!cookie_valid) {
+            const auto cookie = handshake_cookie_manager_.issue(
+                sender, sid, init_frame);
+            if (!cookie)
+                return;
+            PacketHeader challenge{};
+            challenge.version = PACKET_VERSION;
+            challenge.packet_type = TYPE_HANDSHAKE_COOKIE;
+            challenge.session_id = sid;
+            challenge.payload_length = HANDSHAKE_COOKIE_SIZE;
+            const auto challenge_header =
+                SessionManager::serialize_header(challenge);
+            std::array<uint8_t, PACKET_HEADER_SIZE + HANDSHAKE_COOKIE_SIZE>
+                challenge_wire{};
+            std::copy(
+                challenge_header.begin(), challenge_header.end(),
+                challenge_wire.begin());
+            std::copy(
+                cookie->begin(), cookie->end(),
+                challenge_wire.begin() + PACKET_HEADER_SIZE);
+            transport_.send(
+                challenge_wire.data(), challenge_wire.size(), sender);
+            return;
+        }
+
+        std::vector<uint8_t> payload(init_frame.begin(), init_frame.end());
 
         auto response = session_manager_->handle_handshake_init(payload, sid);
         if (!response) return;

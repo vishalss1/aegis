@@ -1,4 +1,5 @@
 #include "aegis/crypto/primitives.hpp"
+#include "aegis/crypto/secret.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -54,6 +55,37 @@ std::optional<CryptoHash> transcript_hash(
 
     if (!ok)
         return std::nullopt;
+    return result;
+}
+
+std::optional<CryptoHash> hmac_hash(
+    CryptoHashAlgorithm algorithm,
+    std::span<const uint8_t> key,
+    std::span<const uint8_t> message) {
+    constexpr size_t block_size = 64;
+    SecretBytes<block_size> key_block;
+    if (key.size() > block_size) {
+        auto hashed_key = transcript_hash(algorithm, {key});
+        if (!hashed_key)
+            return std::nullopt;
+        std::copy(hashed_key->begin(), hashed_key->end(), key_block.begin());
+        OPENSSL_cleanse(hashed_key->data(), hashed_key->size());
+    } else {
+        std::copy(key.begin(), key.end(), key_block.begin());
+    }
+
+    SecretBytes<block_size> inner_pad;
+    SecretBytes<block_size> outer_pad;
+    for (size_t i = 0; i < block_size; ++i) {
+        inner_pad[i] = static_cast<uint8_t>(key_block[i] ^ 0x36u);
+        outer_pad[i] = static_cast<uint8_t>(key_block[i] ^ 0x5cu);
+    }
+
+    auto inner = transcript_hash(algorithm, {inner_pad, message});
+    if (!inner)
+        return std::nullopt;
+    auto result = transcript_hash(algorithm, {outer_pad, *inner});
+    OPENSSL_cleanse(inner->data(), inner->size());
     return result;
 }
 

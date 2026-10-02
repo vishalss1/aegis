@@ -79,6 +79,10 @@ The implementation currently provides the following limited properties:
   source IP and 64 attempts globally per one-second fixed window. Source
   tracking is capped at 1024 IPs and occurs before payload allocation or Noise
   processing.
+- Responders require a stateless HMAC-BLAKE2s retry cookie before Noise DH or
+  peer/session allocation. Cookies bind the source IP and port, session ID, and
+  exact INIT transcript; secrets rotate every two minutes and the immediately
+  previous secret remains valid across one rotation boundary.
 
 These properties do not provide membership authorization or route-origin
 authentication.
@@ -155,12 +159,12 @@ static keys.
 
 ### Handshake and table state are vulnerable to resource exhaustion
 
-There is no stateless retry cookie. A fixed-window limiter bounds
-unauthenticated INIT processing per source IP and globally; pending initiator,
-active-session, and retired-session state have hard caps; incomplete initiator
-state has a 15-second TTL; authenticated INIT fingerprints have a two-minute
-replay window; and peer and route tables are capped. The replay cache and other
-state are not yet comprehensively bounded. Peer-table wire limits also prevent
+A stateless retry cookie and fixed-window limiter protect unauthenticated INIT
+processing before Noise DH; pending initiator, active-session, and
+retired-session state have hard caps; incomplete initiator state has a
+15-second TTL; authenticated INIT fingerprints have a two-minute replay
+window; and peer and route tables are capped. The replay cache and other state
+are not yet comprehensively bounded. Peer-table wire limits also prevent
 oversized gossip frames from allocating without bound.
 
 ### MTU and reliability are not managed
