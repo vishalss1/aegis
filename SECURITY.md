@@ -72,6 +72,9 @@ The implementation currently provides the following limited properties:
   handshake entry points destroy expired Noise state.
 - Authenticated INIT fingerprints remain in a two-minute replay cache that is
   independent of active-session teardown.
+- Pending initiator, active session, and retired rekey state each have a hard
+  256-entry cap. New peers and initiations fail closed at capacity; rekeys can
+  still replace an active session and evict the retired entry nearest expiry.
 - Unauthenticated handshake INIT processing is limited to 8 attempts per
   source IP and 64 attempts globally per one-second fixed window. Source
   tracking is capped at 1024 IPs and occurs before payload allocation or Noise
@@ -152,13 +155,13 @@ static keys.
 
 ### Handshake and table state are vulnerable to resource exhaustion
 
-There is no stateless retry cookie or strict handshake or session-table
-capacity. A fixed-window limiter bounds unauthenticated INIT processing per
-source IP and globally, incomplete initiator state has a 15-second TTL,
-authenticated INIT fingerprints have a two-minute replay window, and peer and
-route tables are capped. Retired-session and other state are not yet
-comprehensively bounded. Peer-table wire limits also prevent oversized gossip
-frames from allocating without bound.
+There is no stateless retry cookie. A fixed-window limiter bounds
+unauthenticated INIT processing per source IP and globally; pending initiator,
+active-session, and retired-session state have hard caps; incomplete initiator
+state has a 15-second TTL; authenticated INIT fingerprints have a two-minute
+replay window; and peer and route tables are capped. The replay cache and other
+state are not yet comprehensively bounded. Peer-table wire limits also prevent
+oversized gossip frames from allocating without bound.
 
 ### MTU and reliability are not managed
 

@@ -19,8 +19,10 @@ static uint32_t bswap32(uint32_t x) {
 #endif
 
 SessionManager::SessionManager(
-    const Identity& identity, ProtocolClock& clock, RandomSource& random)
-    : identity_(identity), clock_(clock), random_(random) {}
+    const Identity& identity, ProtocolClock& clock, RandomSource& random,
+    SessionCapacityLimits capacity)
+    : identity_(identity), clock_(clock), random_(random),
+      capacity_(capacity) {}
 
 std::array<uint8_t, 16> SessionManager::serialize_header(const PacketHeader& hdr) {
     return serialize_packet_header(hdr);
@@ -50,8 +52,7 @@ Session& SessionManager::create_session(
     // decrypt; it is dropped by purge_retired once the window expires.
     auto it = sessions_.find(peer_id);
     if (it != sessions_.end() && it->second.established) {
-        retired_[it->second.id] = { it->second,
-            clock_.now() + retired_grace_ };
+        retire_session_locked(it->second, clock_.now());
         session_to_peer_.erase(it->second.id);
     }
 
@@ -64,6 +65,29 @@ Session& SessionManager::create_session(
     n->second.established = false;
     session_to_peer_[session_id] = peer_id;
     return n->second;
+}
+
+void SessionManager::retire_session_locked(
+    const Session& session,
+    std::chrono::steady_clock::time_point now) {
+    purge_retired_locked(now);
+    if (capacity_.retired == 0)
+        return;
+
+    if (!retired_.contains(session.id) &&
+        retired_.size() >= capacity_.retired) {
+        const auto victim = (std::min_element)(
+            retired_.begin(), retired_.end(),
+            [](const auto& left, const auto& right) {
+                if (left.second.expires != right.second.expires)
+                    return left.second.expires < right.second.expires;
+                return left.first < right.first;
+            });
+        if (victim != retired_.end())
+            retired_.erase(victim);
+    }
+
+    retired_[session.id] = {session, now + retired_grace_};
 }
 
 std::optional<Session*> SessionManager::get_session(const NodeId& peer_id) {
@@ -115,15 +139,34 @@ void SessionManager::remove_session(const NodeId& peer_id) {
     }
 }
 
-void SessionManager::purge_retired() {
-    std::lock_guard<std::mutex> lock(mtx_);
-    auto now = clock_.now();
+void SessionManager::purge_retired_locked(
+    std::chrono::steady_clock::time_point now) {
     for (auto it = retired_.begin(); it != retired_.end();) {
         if (it->second.expires <= now)
             it = retired_.erase(it);
         else
             ++it;
     }
+}
+
+void SessionManager::purge_retired() {
+    std::lock_guard<std::mutex> lock(mtx_);
+    purge_retired_locked(clock_.now());
+}
+
+size_t SessionManager::active_session_count() const {
+    std::lock_guard<std::mutex> lock(mtx_);
+    return sessions_.size();
+}
+
+size_t SessionManager::retired_session_count() const {
+    std::lock_guard<std::mutex> lock(mtx_);
+    return retired_.size();
+}
+
+size_t SessionManager::pending_handshake_count() const {
+    std::lock_guard<std::mutex> lock(mtx_);
+    return pending_initiators_.size();
 }
 
 void SessionManager::purge_incomplete_handshakes_locked(
@@ -214,6 +257,10 @@ std::optional<std::vector<uint8_t>> SessionManager::create_handshake_init(
         session_to_peer_.contains(session_id) || retired_.contains(session_id)) {
         return std::nullopt;
     }
+    if (pending_initiators_.size() >= capacity_.pending) {
+        aegis_log("[session] rejected handshake INIT creation at pending capacity\n");
+        return std::nullopt;
+    }
     pending_initiators_[session_id] = {
         expected_peer_id, expected_peer_static, std::move(handshake),
         now + handshake_timeout_};
@@ -289,6 +336,11 @@ SessionManager::handle_handshake_init(
         }
         if (!local_has_priority && pending != pending_initiators_.end())
             pending_initiators_.erase(pending);
+        if (active == sessions_.end() &&
+            sessions_.size() >= capacity_.active) {
+            aegis_log("[session] rejected handshake INIT at active capacity\n");
+            return std::nullopt;
+        }
     }
 
     HandshakeV2ResponseFrame response_frame;
@@ -307,6 +359,11 @@ SessionManager::handle_handshake_init(
     if (session_to_peer_.contains(frame->session_id) ||
         retired_.contains(frame->session_id) ||
         pending_initiators_.contains(frame->session_id)) {
+        return std::nullopt;
+    }
+    if (!sessions_.contains(peer_id) &&
+        sessions_.size() >= capacity_.active) {
+        aegis_log("[session] rejected handshake INIT at active capacity\n");
         return std::nullopt;
     }
     Session& session = create_session(peer_id, frame->session_id);
@@ -351,6 +408,11 @@ bool SessionManager::handle_handshake_resp(
     if (active != sessions_.end() && active->second.established &&
         !active->second.initiated_locally &&
         state.expected_peer_id < identity_.node_id) {
+        return false;
+    }
+    if (active == sessions_.end() &&
+        sessions_.size() >= capacity_.active) {
+        aegis_log("[session] rejected handshake response at active capacity\n");
         return false;
     }
 

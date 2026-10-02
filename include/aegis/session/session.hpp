@@ -34,12 +34,23 @@ struct Session {
     std::chrono::steady_clock::time_point established_at{};
 };
 
+inline constexpr size_t SESSION_MAX_ACTIVE = 256;
+inline constexpr size_t SESSION_MAX_RETIRED = 256;
+inline constexpr size_t SESSION_MAX_PENDING = 256;
+
+struct SessionCapacityLimits {
+    size_t active = SESSION_MAX_ACTIVE;
+    size_t retired = SESSION_MAX_RETIRED;
+    size_t pending = SESSION_MAX_PENDING;
+};
+
 class SessionManager {
 public:
     explicit SessionManager(
         const Identity& identity,
         ProtocolClock& clock = system_protocol_clock(),
-        RandomSource& random = system_random_source());
+        RandomSource& random = system_random_source(),
+        SessionCapacityLimits capacity = {});
 
     SessionManager(const SessionManager&) = delete;
     SessionManager& operator=(const SessionManager&) = delete;
@@ -121,12 +132,17 @@ public:
     void set_retired_grace(std::chrono::milliseconds grace);
     std::chrono::milliseconds retired_grace() const { return retired_grace_; }
 
+    [[nodiscard]] size_t active_session_count() const;
+    [[nodiscard]] size_t retired_session_count() const;
+    [[nodiscard]] size_t pending_handshake_count() const;
+
     static std::array<uint8_t, 16> serialize_header(const PacketHeader& hdr);
 
 private:
     const Identity& identity_;
     ProtocolClock& clock_;
     RandomSource& random_;
+    SessionCapacityLimits capacity_;
     std::map<NodeId, Session> sessions_;
     std::map<uint32_t, NodeId> session_to_peer_;
 
@@ -157,13 +173,17 @@ private:
     std::chrono::milliseconds handshake_replay_ttl_{HANDSHAKE_REPLAY_TTL};
     std::map<CryptoHash, std::chrono::steady_clock::time_point>
         handshake_replays_;
-    std::mutex mtx_;
+    mutable std::mutex mtx_;
 
     Session& create_session(const NodeId& peer_id, uint32_t session_id);
     void install_noise_keys(
         Session& session, NoiseIkSplitResult&& split,
         bool initiated_locally);
     void purge_incomplete_handshakes_locked(
+        std::chrono::steady_clock::time_point now);
+    void purge_retired_locked(std::chrono::steady_clock::time_point now);
+    void retire_session_locked(
+        const Session& session,
         std::chrono::steady_clock::time_point now);
     void purge_handshake_replays_locked(
         std::chrono::steady_clock::time_point now);

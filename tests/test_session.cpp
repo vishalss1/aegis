@@ -644,6 +644,97 @@ int main() {
         CHECK(sm_r.get_session(alice.node_id).has_value());
     }
 
+    // ---- 13. Pending and active session state has hard capacity limits ------
+    {
+        Identity charlie = Identity::create(net);
+        ManualClock clock;
+        SessionCapacityLimits limits;
+        limits.active = 1;
+        limits.retired = 1;
+        limits.pending = 1;
+
+        SessionManager pending_limited(
+            alice, clock, system_random_source(), limits);
+        CHECK(pending_limited.create_handshake_init(
+            0xAC007000, bob.node_id, bob.keypair.public_key).has_value());
+        CHECK(!pending_limited.create_handshake_init(
+            0xAC007001, charlie.node_id,
+            charlie.keypair.public_key).has_value());
+        CHECK(pending_limited.pending_handshake_count() == 1);
+
+        SessionManager responder(
+            bob, clock, system_random_source(), limits);
+        SessionManager alice_initiator(alice, clock);
+        SessionManager charlie_initiator(charlie, clock);
+        auto alice_init = alice_initiator.create_handshake_init(
+            0xAC007010, bob.node_id, bob.keypair.public_key);
+        auto alice_response = responder.handle_handshake_init(
+            *alice_init, 0xAC007010);
+        CHECK(alice_response.has_value());
+        CHECK(responder.active_session_count() == 1);
+
+        auto charlie_init = charlie_initiator.create_handshake_init(
+            0xAC007011, bob.node_id, bob.keypair.public_key);
+        CHECK(!responder.handle_handshake_init(
+            *charlie_init, 0xAC007011).has_value());
+        CHECK(responder.active_session_count() == 1);
+
+        SessionCapacityLimits no_active = limits;
+        no_active.active = 0;
+        SessionManager full_initiator(
+            alice, clock, system_random_source(), no_active);
+        SessionManager response_source(bob, clock);
+        auto blocked_init = full_initiator.create_handshake_init(
+            0xAC007012, bob.node_id, bob.keypair.public_key);
+        auto blocked_response = response_source.handle_handshake_init(
+            *blocked_init, 0xAC007012);
+        CHECK(blocked_response.has_value());
+        CHECK(!full_initiator.handle_handshake_resp(
+            blocked_response->message, 0xAC007012));
+        CHECK(full_initiator.active_session_count() == 0);
+    }
+
+    // ---- 14. Retired session state evicts deterministically at capacity -----
+    {
+        ManualClock clock;
+        SessionCapacityLimits limits;
+        limits.active = 1;
+        limits.retired = 1;
+        limits.pending = 1;
+        SessionManager sm_i(
+            alice, clock, system_random_source(), limits);
+        SessionManager sm_r(
+            bob, clock, system_random_source(), limits);
+
+        const uint32_t sid1 = 0xAC008001;
+        const uint32_t sid2 = 0xAC008002;
+        const uint32_t sid3 = 0xAC008003;
+        auto init1 = sm_i.create_handshake_init(
+            sid1, bob.node_id, bob.keypair.public_key);
+        auto resp1 = sm_r.handle_handshake_init(*init1, sid1);
+        CHECK(resp1.has_value());
+        CHECK(sm_i.handle_handshake_resp(resp1->message, sid1));
+
+        auto init2 = sm_i.create_handshake_init(
+            sid2, bob.node_id, bob.keypair.public_key);
+        auto resp2 = sm_r.handle_handshake_init(*init2, sid2);
+        CHECK(resp2.has_value());
+        CHECK(sm_i.handle_handshake_resp(resp2->message, sid2));
+        CHECK(sm_i.retired_session_count() == 1);
+        CHECK(sm_i.get_session_by_id(sid1).has_value());
+
+        auto init3 = sm_i.create_handshake_init(
+            sid3, bob.node_id, bob.keypair.public_key);
+        auto resp3 = sm_r.handle_handshake_init(*init3, sid3);
+        CHECK(resp3.has_value());
+        CHECK(sm_i.handle_handshake_resp(resp3->message, sid3));
+        CHECK(sm_i.active_session_count() == 1);
+        CHECK(sm_i.retired_session_count() == 1);
+        CHECK(!sm_i.get_session_by_id(sid1).has_value());
+        CHECK(sm_i.get_session_by_id(sid2).has_value());
+        CHECK(sm_i.get_session_by_id(sid3).has_value());
+    }
+
     printf("\n%d / %d passed\n", passed, tests);
     return (passed == tests) ? 0 : 1;
 }
