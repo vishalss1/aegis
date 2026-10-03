@@ -160,6 +160,16 @@ private:
     std::mutex hs_mtx_;
     std::condition_variable hs_cv_;
 
+    struct IncomingFileTransfer {
+        std::string filename;
+        uint64_t file_size = 0;
+        uint32_t total_chunks = 0;
+        uint32_t received_chunks = 0;
+        std::string output_path;
+    };
+    std::map<uint64_t, IncomingFileTransfer> incoming_transfers_;
+    std::mutex incoming_transfers_mtx_;
+
     // Step 15: last rekey attempt per peer, so a failed rekey is throttled to
     // one attempt per rekey interval instead of spamming handshakes. Guarded by
     // hs_mtx_.

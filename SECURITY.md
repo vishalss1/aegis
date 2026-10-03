@@ -187,8 +187,8 @@ or backpressure. UDP packet loss is not repaired for general tunnel traffic.
 File transfer sends 32 KiB chunks with a fixed delay and no acknowledgement,
 retransmission, completion digest, or resume support. Completion is based on a
 received-chunk counter rather than a verified chunk set. Transfer state is
-process-global, and received filenames are not yet handled as hostile path
-input.
+owned and synchronized per tunnel instance, but received filenames are not yet
+handled as hostile path input.
 
 ### Routing does not validate path liveness
 

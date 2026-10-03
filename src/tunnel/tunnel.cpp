@@ -22,16 +22,6 @@ Tunnel::Tunnel(ProtocolClock& clock, RandomSource& random)
 
 Tunnel::~Tunnel() { stop(); }
 
-struct IncomingFileTransfer {
-    std::string filename;
-    uint64_t file_size = 0;
-    uint32_t total_chunks = 0;
-    uint32_t received_chunks = 0;
-    std::string output_path;
-};
-static std::mutex g_ft_mtx;
-static std::map<uint64_t, IncomingFileTransfer> g_incoming_transfers;
-
 bool Tunnel::start(const TunnelConfig& config, const std::string& adapter_name) {
     config_ = config;
     network_name_ = config_.network_name;
@@ -165,6 +155,8 @@ void Tunnel::stop() {
     connect_threads_.clear();
     transport_.close();
     adapter_.close();
+    std::lock_guard<std::mutex> lock(incoming_transfers_mtx_);
+    incoming_transfers_.clear();
 }
 
 bool Tunnel::session_established(const NodeId& node_id) const {
@@ -730,14 +722,14 @@ void Tunnel::handle_file_header_frame(const uint8_t* data, size_t len,
     std::string out_path = "./downloads/" + filename;
 
     {
-        std::lock_guard<std::mutex> lock(g_ft_mtx);
+        std::lock_guard<std::mutex> lock(incoming_transfers_mtx_);
         IncomingFileTransfer ft;
         ft.filename = filename;
         ft.file_size = file_size;
         ft.total_chunks = total_chunks;
         ft.received_chunks = 0;
         ft.output_path = out_path;
-        g_incoming_transfers[transfer_id] = ft;
+        incoming_transfers_[transfer_id] = ft;
     }
 
     std::ofstream ofs(out_path, std::ios::binary | std::ios::trunc);
@@ -773,9 +765,9 @@ void Tunnel::handle_file_chunk_frame(const uint8_t* data, size_t len,
     ptr += 4;
     if (msg->payload.size() < 16 + dlen) return;
 
-    std::lock_guard<std::mutex> lock(g_ft_mtx);
-    auto it = g_incoming_transfers.find(transfer_id);
-    if (it == g_incoming_transfers.end()) return;
+    std::lock_guard<std::mutex> lock(incoming_transfers_mtx_);
+    auto it = incoming_transfers_.find(transfer_id);
+    if (it == incoming_transfers_.end()) return;
 
     std::fstream fs(
         it->second.output_path,
@@ -793,7 +785,7 @@ void Tunnel::handle_file_chunk_frame(const uint8_t* data, size_t len,
                     static_cast<double>(it->second.file_size) / 1024.0,
                     it->second.output_path.c_str());
         std::fflush(stdout);
-        g_incoming_transfers.erase(it);
+        incoming_transfers_.erase(it);
     }
 }
 
