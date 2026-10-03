@@ -181,6 +181,30 @@ private:
     void rekey_peer(const NodeId& node_id);
     void rekey_due();
     void rx_callback(const uint8_t* data, size_t len, Endpoint sender);
+    void handle_data_frame(const uint8_t* data, size_t len,
+                           const PacketHeader& header, Endpoint sender);
+    void handle_relay_frame(const uint8_t* data, size_t len,
+                            const PacketHeader& header);
+    void handle_keepalive_frame(const uint8_t* data, size_t len,
+                                const PacketHeader& header, Endpoint sender);
+    void handle_peer_table_frame(const uint8_t* data, size_t len,
+                                 const PacketHeader& header, Endpoint sender);
+    void handle_chat_frame(const uint8_t* data, size_t len,
+                           const PacketHeader& header, Endpoint sender);
+    void handle_file_header_frame(const uint8_t* data, size_t len,
+                                  const PacketHeader& header, Endpoint sender);
+    void handle_file_chunk_frame(const uint8_t* data, size_t len,
+                                 const PacketHeader& header, Endpoint sender);
+    void handle_network_teardown_frame(const uint8_t* data, size_t len,
+                                       const PacketHeader& header);
+    void handle_handshake_response_frame(const uint8_t* data, size_t len,
+                                         const PacketHeader& header);
+    void handle_handshake_cookie_frame(const uint8_t* data, size_t len,
+                                       const PacketHeader& header,
+                                       Endpoint sender);
+    void handle_handshake_init_frame(const uint8_t* data, size_t len,
+                                     const PacketHeader& header,
+                                     Endpoint sender);
     // Step 13: peel one onion layer off a relayed frame and either deliver the
     // final packet or forward the inner layer to the revealed next hop.
     void handle_relay(const uint8_t* data, size_t len, uint32_t session_id);

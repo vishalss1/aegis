@@ -287,7 +287,7 @@ aegis/
 │       ├── session/            # Handshake, rekeying, replay window, grace retire
 │       ├── stun/               # RFC 5389 STUN Binding Request & mapped address discovery
 │       ├── transport/          # UDP I/O, handshake rate limits, retry cookies
-│       └── tunnel/             # Integrated data path — tx/rx loops, maintenance
+│       └── tunnel/             # Typed frame dispatch, tx/rx loops, maintenance
 ├── src/                        # Implementation .cpp files (mirrors include/aegis/)
 │   ├── main.cpp                # CLI entry point — mode dispatch, self-tests
 │   ├── adapter/adapter.cpp

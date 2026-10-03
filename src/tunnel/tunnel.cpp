@@ -598,280 +598,344 @@ void Tunnel::rx_callback(const uint8_t* data, size_t len, Endpoint sender) {
         (header->flags & static_cast<uint8_t>(~PACKET_KNOWN_FLAGS)) != 0)
         return;
 
-    const uint8_t type = header->packet_type;
-    const uint32_t sid = header->session_id;
-
-    if (type == TYPE_DATA) {
-        if (!running_) return;
-        auto dec = session_manager_->decrypt_data(data, len);
-        if (!dec) return;
-        if (auto sess = session_manager_->get_session_by_id(sid))
-            peers_.mark_seen(sess->peer_id, sender);
-        if (!adapter_.write_packet(*dec)) {
-            aegis_log( "[tunnel] write_packet failed\n");
-        }
-        return;
+    switch (header->packet_type) {
+    case TYPE_DATA:
+        handle_data_frame(data, len, *header, sender);
+        break;
+    case TYPE_RELAY:
+        handle_relay_frame(data, len, *header);
+        break;
+    case TYPE_KEEPALIVE:
+        handle_keepalive_frame(data, len, *header, sender);
+        break;
+    case TYPE_PEER_TABLE:
+        handle_peer_table_frame(data, len, *header, sender);
+        break;
+    case TYPE_CHAT_MSG:
+        handle_chat_frame(data, len, *header, sender);
+        break;
+    case TYPE_FILE_HEADER:
+        handle_file_header_frame(data, len, *header, sender);
+        break;
+    case TYPE_FILE_CHUNK:
+        handle_file_chunk_frame(data, len, *header, sender);
+        break;
+    case TYPE_NETWORK_TEARDOWN:
+        handle_network_teardown_frame(data, len, *header);
+        break;
+    case TYPE_HANDSHAKE_RESP:
+        handle_handshake_response_frame(data, len, *header);
+        break;
+    case TYPE_HANDSHAKE_COOKIE:
+        handle_handshake_cookie_frame(data, len, *header, sender);
+        break;
+    case TYPE_HANDSHAKE_INIT:
+        handle_handshake_init_frame(data, len, *header, sender);
+        break;
+    default:
+        break;
     }
+}
 
-    if (type == TYPE_RELAY) {
-        if (!running_) return;
-        handle_relay(data, len, sid);
-        return;
-    }
-
-    if (type == TYPE_KEEPALIVE) {
-        if (!running_) return;
-        auto msg = session_manager_->decrypt_message(data, len);
-        if (!msg) return;
-        auto sess = session_manager_->get_session_by_id(sid);
-        if (!sess) return;
-        // Any decrypted packet proves liveness; mark_seen advances
-        // last_keepalive so the peer drops off peers_needing_keepalive.
+void Tunnel::handle_data_frame(const uint8_t* data, size_t len,
+                               const PacketHeader& header, Endpoint sender) {
+    if (!running_) return;
+    auto dec = session_manager_->decrypt_data(data, len);
+    if (!dec) return;
+    if (auto sess = session_manager_->get_session_by_id(header.session_id))
         peers_.mark_seen(sess->peer_id, sender);
-        return;
+    if (!adapter_.write_packet(*dec)) {
+        aegis_log("[tunnel] write_packet failed\n");
     }
+}
 
-    if (type == TYPE_PEER_TABLE) {
-        if (!running_) return;
-        auto msg = session_manager_->decrypt_message(data, len);
-        if (!msg) return;
-        auto sess = session_manager_->get_session_by_id(sid);
-        if (!sess) return;
-        peers_.mark_seen(sess->peer_id, sender);
-        handle_peer_table(sess->peer_id, msg->payload.data(), msg->payload.size());
-        return;
-    }
+void Tunnel::handle_relay_frame(const uint8_t* data, size_t len,
+                                const PacketHeader& header) {
+    if (!running_) return;
+    handle_relay(data, len, header.session_id);
+}
 
-    if (type == TYPE_CHAT_MSG) {
-        if (!running_) return;
-        auto msg = session_manager_->decrypt_message(data, len);
-        if (!msg) return;
-        auto sess = session_manager_->get_session_by_id(sid);
-        if (!sess) return;
-        peers_.mark_seen(sess->peer_id, sender);
+void Tunnel::handle_keepalive_frame(const uint8_t* data, size_t len,
+                                    const PacketHeader& header,
+                                    Endpoint sender) {
+    if (!running_) return;
+    auto msg = session_manager_->decrypt_message(data, len);
+    if (!msg) return;
+    auto sess = session_manager_->get_session_by_id(header.session_id);
+    if (!sess) return;
+    // Any decrypted packet proves liveness; mark_seen advances
+    // last_keepalive so the peer drops off peers_needing_keepalive.
+    peers_.mark_seen(sess->peer_id, sender);
+}
 
-        std::string chat_text((const char*)msg->payload.data(), msg->payload.size());
-        NodeId peer_id = sess->peer_id;
-        std::printf("\n[Peer %02x%02x...]: %s\n", peer_id[0], peer_id[1], chat_text.c_str());
-        std::fflush(stdout);
-        return;
-    }
+void Tunnel::handle_peer_table_frame(const uint8_t* data, size_t len,
+                                     const PacketHeader& header,
+                                     Endpoint sender) {
+    if (!running_) return;
+    auto msg = session_manager_->decrypt_message(data, len);
+    if (!msg) return;
+    auto sess = session_manager_->get_session_by_id(header.session_id);
+    if (!sess) return;
+    peers_.mark_seen(sess->peer_id, sender);
+    handle_peer_table(sess->peer_id, msg->payload.data(), msg->payload.size());
+}
 
-    if (type == TYPE_FILE_HEADER) {
-        if (!running_) return;
-        auto msg = session_manager_->decrypt_message(data, len);
-        if (!msg || msg->payload.size() < 22) return;
+void Tunnel::handle_chat_frame(const uint8_t* data, size_t len,
+                               const PacketHeader& header, Endpoint sender) {
+    if (!running_) return;
+    auto msg = session_manager_->decrypt_message(data, len);
+    if (!msg) return;
+    auto sess = session_manager_->get_session_by_id(header.session_id);
+    if (!sess) return;
+    peers_.mark_seen(sess->peer_id, sender);
 
-        auto sess = session_manager_->get_session_by_id(sid);
-        if (!sess) return;
-        peers_.mark_seen(sess->peer_id, sender);
+    std::string chat_text(
+        reinterpret_cast<const char*>(msg->payload.data()),
+        msg->payload.size());
+    const NodeId peer_id = sess->peer_id;
+    std::printf("\n[Peer %02x%02x...]: %s\n",
+                peer_id[0], peer_id[1], chat_text.c_str());
+    std::fflush(stdout);
+}
 
-        const uint8_t* ptr = msg->payload.data();
-        uint64_t transfer_id; std::memcpy(&transfer_id, ptr, 8); ptr += 8;
-        uint64_t file_size; std::memcpy(&file_size, ptr, 8); ptr += 8;
-        uint32_t total_chunks; std::memcpy(&total_chunks, ptr, 4); ptr += 4;
-        uint16_t fn_len; std::memcpy(&fn_len, ptr, 2); ptr += 2;
-        if (msg->payload.size() < 22 + fn_len) return;
+void Tunnel::handle_file_header_frame(const uint8_t* data, size_t len,
+                                      const PacketHeader& header,
+                                      Endpoint sender) {
+    if (!running_) return;
+    auto msg = session_manager_->decrypt_message(data, len);
+    if (!msg || msg->payload.size() < 22) return;
 
-        std::string filename((const char*)ptr, fn_len);
+    auto sess = session_manager_->get_session_by_id(header.session_id);
+    if (!sess) return;
+    peers_.mark_seen(sess->peer_id, sender);
 
-        system("mkdir downloads 2>NUL");
-        std::string out_path = "./downloads/" + filename;
+    const uint8_t* ptr = msg->payload.data();
+    uint64_t transfer_id;
+    std::memcpy(&transfer_id, ptr, 8);
+    ptr += 8;
+    uint64_t file_size;
+    std::memcpy(&file_size, ptr, 8);
+    ptr += 8;
+    uint32_t total_chunks;
+    std::memcpy(&total_chunks, ptr, 4);
+    ptr += 4;
+    uint16_t fn_len;
+    std::memcpy(&fn_len, ptr, 2);
+    ptr += 2;
+    if (msg->payload.size() < 22 + fn_len) return;
 
-        {
-            std::lock_guard<std::mutex> lock(g_ft_mtx);
-            IncomingFileTransfer ft;
-            ft.filename = filename;
-            ft.file_size = file_size;
-            ft.total_chunks = total_chunks;
-            ft.received_chunks = 0;
-            ft.output_path = out_path;
-            g_incoming_transfers[transfer_id] = ft;
-        }
+    std::string filename(reinterpret_cast<const char*>(ptr), fn_len);
 
-        std::ofstream ofs(out_path, std::ios::binary | std::ios::trunc);
+    system("mkdir downloads 2>NUL");
+    std::string out_path = "./downloads/" + filename;
 
-        NodeId peer_id = sess->peer_id;
-        std::printf("\n[Incoming File]: '%s' (%.2f KB, %u chunks) from Peer %02x%02x...\n",
-                    filename.c_str(), (double)file_size / 1024.0, total_chunks,
-                    peer_id[0], peer_id[1]);
-        std::fflush(stdout);
-        return;
-    }
-
-    if (type == TYPE_FILE_CHUNK) {
-        if (!running_) return;
-        auto msg = session_manager_->decrypt_message(data, len);
-        if (!msg || msg->payload.size() < 16) return;
-
-        auto sess = session_manager_->get_session_by_id(sid);
-        if (!sess) return;
-        peers_.mark_seen(sess->peer_id, sender);
-
-        const uint8_t* ptr = msg->payload.data();
-        uint64_t transfer_id; std::memcpy(&transfer_id, ptr, 8); ptr += 8;
-        uint32_t chunk_idx; std::memcpy(&chunk_idx, ptr, 4); ptr += 4;
-        uint32_t dlen; std::memcpy(&dlen, ptr, 4); ptr += 4;
-        if (msg->payload.size() < 16 + dlen) return;
-
+    {
         std::lock_guard<std::mutex> lock(g_ft_mtx);
-        auto it = g_incoming_transfers.find(transfer_id);
-        if (it == g_incoming_transfers.end()) return;
-
-        std::fstream fs(it->second.output_path, std::ios::binary | std::ios::in | std::ios::out);
-        if (fs.is_open()) {
-            fs.seekp((uint64_t)chunk_idx * 32768, std::ios::beg);
-            fs.write((const char*)ptr, dlen);
-            fs.close();
-        }
-        it->second.received_chunks++;
-
-        if (it->second.received_chunks >= it->second.total_chunks) {
-            std::printf("\n[File Received]: '%s' (%.2f KB) saved to %s\n",
-                        it->second.filename.c_str(), (double)it->second.file_size / 1024.0,
-                        it->second.output_path.c_str());
-            std::fflush(stdout);
-            g_incoming_transfers.erase(it);
-        }
-        return;
+        IncomingFileTransfer ft;
+        ft.filename = filename;
+        ft.file_size = file_size;
+        ft.total_chunks = total_chunks;
+        ft.received_chunks = 0;
+        ft.output_path = out_path;
+        g_incoming_transfers[transfer_id] = ft;
     }
 
-    if (type == TYPE_NETWORK_TEARDOWN) {
-        if (!running_) return;
-        auto msg = session_manager_->decrypt_message(data, len);
-        if (!msg || msg->payload.size() < 32) return;
+    std::ofstream ofs(out_path, std::ios::binary | std::ios::trunc);
 
-        auto sess = session_manager_->get_session_by_id(sid);
-        if (!sess) return;
-        NodeId requester_id = sess->peer_id;
+    const NodeId peer_id = sess->peer_id;
+    std::printf(
+        "\n[Incoming File]: '%s' (%.2f KB, %u chunks) from Peer %02x%02x...\n",
+        filename.c_str(), static_cast<double>(file_size) / 1024.0, total_chunks,
+        peer_id[0], peer_id[1]);
+    std::fflush(stdout);
+}
 
-        if (requester_id == creator_node_id_) {
-            std::printf("\n[Network]: Network was destroyed by creator (%02x%02x...). Disconnecting session...\n",
-                        requester_id[0], requester_id[1]);
-            std::fflush(stdout);
-            std::thread([this]() { stop(); }).detach();
-        } else {
-            aegis_log("[tunnel] dropped teardown request from non-creator %02x%02x...\n",
-                      requester_id[0], requester_id[1]);
-        }
+void Tunnel::handle_file_chunk_frame(const uint8_t* data, size_t len,
+                                     const PacketHeader& header,
+                                     Endpoint sender) {
+    if (!running_) return;
+    auto msg = session_manager_->decrypt_message(data, len);
+    if (!msg || msg->payload.size() < 16) return;
+
+    auto sess = session_manager_->get_session_by_id(header.session_id);
+    if (!sess) return;
+    peers_.mark_seen(sess->peer_id, sender);
+
+    const uint8_t* ptr = msg->payload.data();
+    uint64_t transfer_id;
+    std::memcpy(&transfer_id, ptr, 8);
+    ptr += 8;
+    uint32_t chunk_idx;
+    std::memcpy(&chunk_idx, ptr, 4);
+    ptr += 4;
+    uint32_t dlen;
+    std::memcpy(&dlen, ptr, 4);
+    ptr += 4;
+    if (msg->payload.size() < 16 + dlen) return;
+
+    std::lock_guard<std::mutex> lock(g_ft_mtx);
+    auto it = g_incoming_transfers.find(transfer_id);
+    if (it == g_incoming_transfers.end()) return;
+
+    std::fstream fs(
+        it->second.output_path,
+        std::ios::binary | std::ios::in | std::ios::out);
+    if (fs.is_open()) {
+        fs.seekp(static_cast<uint64_t>(chunk_idx) * 32768, std::ios::beg);
+        fs.write(reinterpret_cast<const char*>(ptr), dlen);
+        fs.close();
+    }
+    it->second.received_chunks++;
+
+    if (it->second.received_chunks >= it->second.total_chunks) {
+        std::printf("\n[File Received]: '%s' (%.2f KB) saved to %s\n",
+                    it->second.filename.c_str(),
+                    static_cast<double>(it->second.file_size) / 1024.0,
+                    it->second.output_path.c_str());
+        std::fflush(stdout);
+        g_incoming_transfers.erase(it);
+    }
+}
+
+void Tunnel::handle_network_teardown_frame(const uint8_t* data, size_t len,
+                                           const PacketHeader& header) {
+    if (!running_) return;
+    auto msg = session_manager_->decrypt_message(data, len);
+    if (!msg || msg->payload.size() < 32) return;
+
+    auto sess = session_manager_->get_session_by_id(header.session_id);
+    if (!sess) return;
+    const NodeId requester_id = sess->peer_id;
+
+    if (requester_id == creator_node_id_) {
+        std::printf(
+            "\n[Network]: Network was destroyed by creator (%02x%02x...). Disconnecting session...\n",
+            requester_id[0], requester_id[1]);
+        std::fflush(stdout);
+        std::thread([this]() { stop(); }).detach();
+    } else {
+        aegis_log(
+            "[tunnel] dropped teardown request from non-creator %02x%02x...\n",
+            requester_id[0], requester_id[1]);
+    }
+}
+
+void Tunnel::handle_handshake_response_frame(const uint8_t* data, size_t len,
+                                             const PacketHeader& header) {
+    std::vector<uint8_t> payload(data + PACKET_HEADER_SIZE, data + len);
+    if (payload.size() != HANDSHAKE_V2_RESPONSE_FRAME_SIZE) return;
+
+    std::lock_guard<std::mutex> lock(hs_mtx_);
+    auto it = std::find_if(
+        pending_handshakes_.begin(), pending_handshakes_.end(),
+        [&](const auto& kv) {
+            return kv.second.session_id == header.session_id;
+        });
+    if (it == pending_handshakes_.end()) return;
+    if (session_manager_->handle_handshake_resp(payload, header.session_id)) {
+        it->second.done = true;
+        hs_cv_.notify_all();
+    }
+}
+
+void Tunnel::handle_handshake_cookie_frame(const uint8_t* data, size_t len,
+                                           const PacketHeader& header,
+                                           Endpoint sender) {
+    if (len != PACKET_HEADER_SIZE + HANDSHAKE_COOKIE_SIZE ||
+        header.payload_length != HANDSHAKE_COOKIE_SIZE)
+        return;
+
+    std::lock_guard<std::mutex> lock(hs_mtx_);
+    auto it = std::find_if(
+        pending_handshakes_.begin(), pending_handshakes_.end(),
+        [&](const auto& entry) {
+            return entry.second.session_id == header.session_id &&
+                entry.second.endpoint == sender && !entry.second.done;
+        });
+    if (it == pending_handshakes_.end()) return;
+    HandshakeCookie cookie{};
+    std::copy_n(data + PACKET_HEADER_SIZE, cookie.size(), cookie.begin());
+    it->second.cookie = cookie;
+    it->second.cookie_updated = true;
+    hs_cv_.notify_all();
+}
+
+void Tunnel::handle_handshake_init_frame(const uint8_t* data, size_t len,
+                                         const PacketHeader& header,
+                                         Endpoint sender) {
+    if (!handshake_rate_limiter_.allow(sender)) {
+        aegis_log("[tunnel] dropped rate-limited handshake INIT\n");
         return;
     }
-
-    if (type == TYPE_HANDSHAKE_RESP) {
-        std::vector<uint8_t> payload(data + 16, data + len);
-        if (payload.size() != HANDSHAKE_V2_RESPONSE_FRAME_SIZE) return;
-
-        std::lock_guard<std::mutex> lock(hs_mtx_);
-        auto it = std::find_if(pending_handshakes_.begin(), pending_handshakes_.end(),
-            [&](const auto& kv) { return kv.second.session_id == sid; });
-        if (it == pending_handshakes_.end()) return;
-        if (session_manager_->handle_handshake_resp(payload, sid)) {
-            it->second.done = true;
-            hs_cv_.notify_all();
-        }
+    const size_t bare_size =
+        PACKET_HEADER_SIZE + HANDSHAKE_V2_INIT_FRAME_SIZE;
+    const size_t cookie_size = bare_size + HANDSHAKE_COOKIE_SIZE;
+    if ((len != bare_size && len != cookie_size) ||
+        header.payload_length != len - PACKET_HEADER_SIZE)
         return;
-    }
 
-    if (type == TYPE_HANDSHAKE_COOKIE) {
-        if (len != PACKET_HEADER_SIZE + HANDSHAKE_COOKIE_SIZE ||
-            header->payload_length != HANDSHAKE_COOKIE_SIZE)
-            return;
-
-        std::lock_guard<std::mutex> lock(hs_mtx_);
-        auto it = std::find_if(
-            pending_handshakes_.begin(), pending_handshakes_.end(),
-            [&](const auto& entry) {
-                return entry.second.session_id == sid &&
-                    entry.second.endpoint == sender && !entry.second.done;
-            });
-        if (it == pending_handshakes_.end())
-            return;
+    const std::span<const uint8_t> init_frame(
+        data + PACKET_HEADER_SIZE, HANDSHAKE_V2_INIT_FRAME_SIZE);
+    bool cookie_valid = false;
+    if (len == cookie_size) {
         HandshakeCookie cookie{};
-        std::copy_n(
-            data + PACKET_HEADER_SIZE, cookie.size(), cookie.begin());
-        it->second.cookie = cookie;
-        it->second.cookie_updated = true;
-        hs_cv_.notify_all();
+        std::copy_n(data + bare_size, cookie.size(), cookie.begin());
+        cookie_valid = handshake_cookie_manager_.verify(
+            cookie, sender, header.session_id, init_frame);
+    }
+    if (!cookie_valid) {
+        const auto cookie = handshake_cookie_manager_.issue(
+            sender, header.session_id, init_frame);
+        if (!cookie) return;
+        PacketHeader challenge{};
+        challenge.version = PACKET_VERSION;
+        challenge.packet_type = TYPE_HANDSHAKE_COOKIE;
+        challenge.session_id = header.session_id;
+        challenge.payload_length = HANDSHAKE_COOKIE_SIZE;
+        const auto challenge_header =
+            SessionManager::serialize_header(challenge);
+        std::array<uint8_t, PACKET_HEADER_SIZE + HANDSHAKE_COOKIE_SIZE>
+            challenge_wire{};
+        std::copy(challenge_header.begin(), challenge_header.end(),
+                  challenge_wire.begin());
+        std::copy(cookie->begin(), cookie->end(),
+                  challenge_wire.begin() + PACKET_HEADER_SIZE);
+        transport_.send(challenge_wire.data(), challenge_wire.size(), sender);
         return;
     }
 
-    if (type == TYPE_HANDSHAKE_INIT) {
-        if (!handshake_rate_limiter_.allow(sender)) {
-            aegis_log("[tunnel] dropped rate-limited handshake INIT\n");
-            return;
-        }
-        const size_t bare_size = PACKET_HEADER_SIZE + HANDSHAKE_V2_INIT_FRAME_SIZE;
-        const size_t cookie_size = bare_size + HANDSHAKE_COOKIE_SIZE;
-        if ((len != bare_size && len != cookie_size) ||
-            header->payload_length != len - PACKET_HEADER_SIZE)
-            return;
+    std::vector<uint8_t> payload(init_frame.begin(), init_frame.end());
 
-        const std::span<const uint8_t> init_frame(
-            data + PACKET_HEADER_SIZE, HANDSHAKE_V2_INIT_FRAME_SIZE);
-        bool cookie_valid = false;
-        if (len == cookie_size) {
-            HandshakeCookie cookie{};
-            std::copy_n(
-                data + bare_size, cookie.size(), cookie.begin());
-            cookie_valid = handshake_cookie_manager_.verify(
-                cookie, sender, sid, init_frame);
-        }
-        if (!cookie_valid) {
-            const auto cookie = handshake_cookie_manager_.issue(
-                sender, sid, init_frame);
-            if (!cookie)
-                return;
-            PacketHeader challenge{};
-            challenge.version = PACKET_VERSION;
-            challenge.packet_type = TYPE_HANDSHAKE_COOKIE;
-            challenge.session_id = sid;
-            challenge.payload_length = HANDSHAKE_COOKIE_SIZE;
-            const auto challenge_header =
-                SessionManager::serialize_header(challenge);
-            std::array<uint8_t, PACKET_HEADER_SIZE + HANDSHAKE_COOKIE_SIZE>
-                challenge_wire{};
-            std::copy(
-                challenge_header.begin(), challenge_header.end(),
-                challenge_wire.begin());
-            std::copy(
-                cookie->begin(), cookie->end(),
-                challenge_wire.begin() + PACKET_HEADER_SIZE);
-            transport_.send(
-                challenge_wire.data(), challenge_wire.size(), sender);
-            return;
-        }
-
-        std::vector<uint8_t> payload(init_frame.begin(), init_frame.end());
-
-        auto response = session_manager_->handle_handshake_init(payload, sid);
-        if (!response) return;
-        const auto upserted = peers_.upsert(
-            response->peer_id, response->peer_static_public_key, sender, false);
-        if (upserted == PeerUpsertResult::IdentityConflict ||
-            upserted == PeerUpsertResult::CapacityRejected) {
-            session_manager_->remove_session(response->peer_id);
-            return;
-        }
-
-        PacketHeader hdr{};
-        hdr.version = PACKET_VERSION;
-        hdr.packet_type = TYPE_HANDSHAKE_RESP;
-        hdr.session_id = sid;
-        hdr.payload_length = (uint32_t)response->message.size();
-        auto hdr_bytes = SessionManager::serialize_header(hdr);
-        std::vector<uint8_t> out;
-        out.reserve(16 + response->message.size());
-        out.insert(out.end(), hdr_bytes.begin(), hdr_bytes.end());
-        out.insert(out.end(), response->message.begin(), response->message.end());
-        transport_.send(out.data(), out.size(), sender);
-
-        // Mark done only after the response is on the wire so the responder
-        // doesn't start sending data before the initiator can decrypt it.
-        std::lock_guard<std::mutex> lock(hs_mtx_);
-        pending_handshakes_[response->peer_id] = {
-            response->peer_id, sid, true};
-        hs_cv_.notify_all();
+    auto response = session_manager_->handle_handshake_init(
+        payload, header.session_id);
+    if (!response) return;
+    const auto upserted = peers_.upsert(
+        response->peer_id, response->peer_static_public_key, sender, false);
+    if (upserted == PeerUpsertResult::IdentityConflict ||
+        upserted == PeerUpsertResult::CapacityRejected) {
+        session_manager_->remove_session(response->peer_id);
+        return;
     }
+
+    PacketHeader response_header{};
+    response_header.version = PACKET_VERSION;
+    response_header.packet_type = TYPE_HANDSHAKE_RESP;
+    response_header.session_id = header.session_id;
+    response_header.payload_length =
+        static_cast<uint32_t>(response->message.size());
+    auto header_bytes = SessionManager::serialize_header(response_header);
+    std::vector<uint8_t> out;
+    out.reserve(PACKET_HEADER_SIZE + response->message.size());
+    out.insert(out.end(), header_bytes.begin(), header_bytes.end());
+    out.insert(out.end(), response->message.begin(), response->message.end());
+    transport_.send(out.data(), out.size(), sender);
+
+    // Mark done only after the response is on the wire so the responder
+    // doesn't start sending data before the initiator can decrypt it.
+    std::lock_guard<std::mutex> lock(hs_mtx_);
+    pending_handshakes_[response->peer_id] = {
+        response->peer_id, header.session_id, true};
+    hs_cv_.notify_all();
 }
 
 void Tunnel::handle_relay(const uint8_t* data, size_t len, uint32_t session_id) {
