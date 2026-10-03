@@ -169,7 +169,61 @@ int main() {
         CHECK(!t.send((const uint8_t*)"test", 4, Endpoint::from_parts(127, 0, 0, 1, 9999)));
     }
 
-    // ---- 5. Handshake limiter: per-IP and global fixed-window budgets ------
+    // ---- 5. Datagram budgets reject oversized sends and receives -----------
+    {
+        Transport tx;
+        Transport rx;
+        CHECK(tx.set_max_datagram_size(9));
+        CHECK(rx.set_max_datagram_size(8));
+        CHECK(tx.max_datagram_size() == 9);
+        CHECK(rx.max_datagram_size() == 8);
+        CHECK(!tx.set_max_datagram_size(0));
+        CHECK(!tx.set_max_datagram_size(IPV4_UDP_MAX_DATAGRAM_SIZE + 1));
+        CHECK(tx.max_datagram_size() == 9);
+
+        bool ok = tx.bind(7106) && rx.bind(7107);
+        CHECK(ok);
+        bool received = false;
+        size_t received_size = 0;
+        std::mutex mtx;
+        std::condition_variable cv;
+
+        if (!rx.start_receive(
+                [&](const uint8_t*, size_t len, Endpoint) {
+                    std::lock_guard<std::mutex> lock(mtx);
+                    received = true;
+                    received_size = len;
+                    cv.notify_one();
+                })) {
+            CHECK(!"rx.start_receive failed");
+        } else {
+            const std::array<uint8_t, 10> payload{};
+            const Endpoint dest =
+                Endpoint::from_parts(127, 0, 0, 1, 7107);
+
+            // Nine bytes fit the sender but exceed the receiver's budget.
+            CHECK(tx.send(payload.data(), 9, dest));
+            // The following exact-boundary datagram proves the prior one was
+            // consumed and dropped before this callback was delivered.
+            CHECK(tx.send(payload.data(), 8, dest));
+            {
+                std::unique_lock<std::mutex> lock(mtx);
+                CHECK(cv.wait_for(lock, std::chrono::seconds(2),
+                                  [&] { return received; }));
+            }
+            CHECK(received_size == 8);
+            CHECK(rx.oversize_receive_drops() == 1);
+
+            CHECK(!tx.send(payload.data(), 10, dest));
+            CHECK(tx.oversize_send_drops() == 1);
+            rx.stop_receive();
+        }
+
+        tx.close();
+        rx.close();
+    }
+
+    // ---- 6. Handshake limiter: per-IP and global fixed-window budgets ------
     {
         ManualClock clock;
         HandshakeRateLimitConfig config;
@@ -194,7 +248,7 @@ int main() {
         CHECK(limiter.tracked_sources() == 1);
     }
 
-    // ---- 6. Handshake limiter: source tracking is bounded and expires ------
+    // ---- 7. Handshake limiter: source tracking is bounded and expires ------
     {
         ManualClock clock;
         HandshakeRateLimitConfig config;
@@ -214,7 +268,7 @@ int main() {
         CHECK(limiter.tracked_sources() == 1);
     }
 
-    // ---- 7. Stateless retry cookies bind endpoint, session, and INIT --------
+    // ---- 8. Stateless retry cookies bind endpoint, session, and INIT --------
     {
         ManualClock clock;
         IncrementingRandom random;
@@ -250,7 +304,7 @@ int main() {
         CHECK(second && cookies.verify(*second, source, session_id, init));
     }
 
-    // ---- 8. Cookie issuance fails closed without secure randomness ----------
+    // ---- 9. Cookie issuance fails closed without secure randomness ----------
     {
         ManualClock clock;
         FailingRandom random;

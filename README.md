@@ -511,7 +511,7 @@ Unit test coverage:
 | `test_handshake_v2` | Canonical Noise IK INIT/RESP envelope framing and malformed-frame rejection |
 | `test_noise_dependency` | Pinned Noise-C suite availability and unsupported-algorithm confinement |
 | `test_noise_ik` | Noise vectors, transcript/split verification, malformed-message rejection, and failed-state destruction |
-| `test_transport` | Winsock loopback, socket lifecycle, bounded handshake admission, and stateless retry cookies |
+| `test_transport` | Winsock loopback, MTU-derived datagram limits, socket lifecycle, bounded handshake admission, and stateless retry cookies |
 | `test_crypto` | X25519 keygen, shared secret derivation, determinism |
 | `test_random` | Checked random-source injection and CSPRNG generation |
 | `test_primitives` | SHA-256/BLAKE2s transcript hashes, HMAC/HKDF vectors, constant-time comparison |

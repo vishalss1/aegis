@@ -50,7 +50,19 @@ void Transport::close() {
     local_port_ = 0;
 }
 
+bool Transport::set_max_datagram_size(size_t maximum) {
+    if (maximum == 0 || maximum > IPV4_UDP_MAX_DATAGRAM_SIZE)
+        return false;
+    max_datagram_size_.store(maximum, std::memory_order_relaxed);
+    return true;
+}
+
 bool Transport::send(const uint8_t* data, size_t len, const Endpoint& dest) {
+    if (len > max_datagram_size_.load(std::memory_order_relaxed)) {
+        oversize_send_drops_.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    if (len > 0 && !data) return false;
     if (sock_ == INVALID_SOCKET) return false;
 
     sockaddr_in addr{};
@@ -101,6 +113,12 @@ void Transport::recv_loop(OnReceiveCallback callback) {
                 err == WSAENETRESET)
                 continue;
             break;
+        }
+
+        if (static_cast<size_t>(ret) >
+            max_datagram_size_.load(std::memory_order_relaxed)) {
+            oversize_receive_drops_.fetch_add(1, std::memory_order_relaxed);
+            continue;
         }
 
         Endpoint ep{sender.sin_addr.s_addr, sender.sin_port};

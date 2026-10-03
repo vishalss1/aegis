@@ -7,6 +7,8 @@
 #include <atomic>
 #include <winsock2.h>
 
+inline constexpr size_t IPV4_UDP_MAX_DATAGRAM_SIZE = 65507;
+
 struct Endpoint {
     uint32_t ip;       // Network byte order
     uint16_t port;     // Network byte order
@@ -50,6 +52,20 @@ public:
 
     bool send(const uint8_t* data, size_t len, const Endpoint& dest);
 
+    // Maximum UDP payload permitted by the configured physical IPv4 MTU.
+    // The default is the protocol maximum so non-tunnel users remain usable;
+    // Tunnel narrows it before binding.
+    bool set_max_datagram_size(size_t maximum);
+    size_t max_datagram_size() const {
+        return max_datagram_size_.load(std::memory_order_relaxed);
+    }
+    uint64_t oversize_send_drops() const {
+        return oversize_send_drops_.load(std::memory_order_relaxed);
+    }
+    uint64_t oversize_receive_drops() const {
+        return oversize_receive_drops_.load(std::memory_order_relaxed);
+    }
+
     bool start_receive(OnReceiveCallback callback);
     void stop_receive();
 
@@ -61,6 +77,9 @@ private:
     uint16_t local_port_ = 0;
     std::thread recv_thread_;
     std::atomic<bool> running_{false};
+    std::atomic<size_t> max_datagram_size_{IPV4_UDP_MAX_DATAGRAM_SIZE};
+    std::atomic<uint64_t> oversize_send_drops_{0};
+    std::atomic<uint64_t> oversize_receive_drops_{0};
 
     void recv_loop(OnReceiveCallback callback);
 };

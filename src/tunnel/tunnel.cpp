@@ -34,6 +34,14 @@ bool Tunnel::start(const TunnelConfig& config, const std::string& adapter_name) 
     config_ = config;
     network_name_ = config_.network_name;
 
+    const size_t datagram_budget =
+        config.underlay_mtu - OUTER_IPV4_UDP_OVERHEAD;
+    if (!transport_.set_max_datagram_size(datagram_budget)) {
+        aegis_log("[tunnel] invalid UDP datagram budget: %zu\n",
+                  datagram_budget);
+        return false;
+    }
+
     if (config_.identity)
         identity_ = *config_.identity;
     else
