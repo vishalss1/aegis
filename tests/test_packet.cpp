@@ -1,4 +1,5 @@
 #include "aegis/packet/packet.hpp"
+#include "aegis/packet/mtu.hpp"
 #include <cstdio>
 #include <cstring>
 
@@ -126,6 +127,31 @@ int main() {
     {
         uint16_t csum = ip_checksum(BAD_CSUM_IP, 20);
         CHECK(csum != 0xFFFF);
+    }
+
+    // 10. Physical-wire overhead follows route encapsulation depth
+    {
+        CHECK(OUTER_IPV4_UDP_OVERHEAD == 28);
+        CHECK(SESSION_FRAME_OVERHEAD == 44);
+        CHECK(RELAY_SOURCE_OVERHEAD == 32);
+        CHECK(ONION_OVERHEAD == 60);
+
+        const auto direct = wire_overhead_for_route_depth(1);
+        CHECK(direct.has_value());
+        CHECK(direct && *direct == 72);
+
+        const auto two_hop = wire_overhead_for_route_depth(2);
+        const auto three_hop = wire_overhead_for_route_depth(3);
+        CHECK(two_hop && *two_hop == 224);
+        CHECK(three_hop && *three_hop == 284);
+        CHECK(two_hop && three_hop && *three_hop - *two_hop == 60);
+
+        const auto maximum =
+            wire_overhead_for_route_depth(ONION_MAX_HOPS);
+        CHECK(maximum && *maximum == 584);
+        CHECK(!wire_overhead_for_route_depth(0).has_value());
+        CHECK(!wire_overhead_for_route_depth(
+            ONION_MAX_HOPS + 1).has_value());
     }
 
     printf("\n%d / %d passed\n", passed, tests);

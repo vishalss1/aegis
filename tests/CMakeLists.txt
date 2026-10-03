@@ -1,5 +1,6 @@
 add_executable(test_packet test_packet.cpp ../src/packet/packet.cpp)
 target_include_directories(test_packet PRIVATE ../include)
+target_link_libraries(test_packet OpenSSL::Crypto)
 
 add_test(NAME test_packet COMMAND test_packet)
 

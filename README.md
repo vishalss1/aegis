@@ -499,7 +499,7 @@ Unit test coverage:
 
 | Test Binary | What It Covers |
 |:------------|:---------------|
-| `test_packet` | IP packet parsing, encrypted frame construction, layer typing |
+| `test_packet` | IP packet parsing, encrypted frame construction, layer typing, and route-depth wire overhead |
 | `test_wire` | Bounded network-byte-order readers/writers and atomic failure behavior |
 | `test_handshake_v2` | Canonical Noise IK INIT/RESP envelope framing and malformed-frame rejection |
 | `test_noise_dependency` | Pinned Noise-C suite availability and unsupported-algorithm confinement |
