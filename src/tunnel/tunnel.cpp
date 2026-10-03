@@ -33,6 +33,10 @@ bool Tunnel::start(const TunnelConfig& config, const std::string& adapter_name) 
     }
     config_ = config;
     network_name_ = config_.network_name;
+    overlay_mtu_ = static_cast<uint32_t>(*overlay_mtu);
+    oversize_outbound_drops_.store(0, std::memory_order_relaxed);
+    oversize_inbound_drops_.store(0, std::memory_order_relaxed);
+    invalid_inbound_drops_.store(0, std::memory_order_relaxed);
 
     const size_t datagram_budget =
         config.underlay_mtu - OUTER_IPV4_UDP_OVERHEAD;
@@ -179,6 +183,62 @@ void Tunnel::stop() {
 
 bool Tunnel::session_established(const NodeId& node_id) const {
     return session_manager_->get_session(node_id).has_value();
+}
+
+TunnelDropStats Tunnel::drop_stats() const {
+    TunnelDropStats stats;
+    stats.oversize_outbound =
+        oversize_outbound_drops_.load(std::memory_order_relaxed);
+    stats.oversize_inbound =
+        oversize_inbound_drops_.load(std::memory_order_relaxed);
+    stats.invalid_inbound =
+        invalid_inbound_drops_.load(std::memory_order_relaxed);
+    stats.transport_oversize_send = transport_.oversize_send_drops();
+    stats.transport_oversize_receive = transport_.oversize_receive_drops();
+    return stats;
+}
+
+bool Tunnel::packet_fits_route(size_t packet_size, size_t route_depth) {
+    const auto route_mtu = safe_overlay_mtu(config_.underlay_mtu, route_depth);
+    if (route_mtu && packet_size <= *route_mtu)
+        return true;
+
+    const uint64_t count =
+        oversize_outbound_drops_.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (count == 1 || count % 100 == 0) {
+        aegis_log("[tunnel] oversize outbound packet: %zu bytes, "
+                  "route depth %zu, limit %zu (%llu drop(s))\n",
+                  packet_size, route_depth, route_mtu.value_or(0),
+                  static_cast<unsigned long long>(count));
+    }
+    return false;
+}
+
+bool Tunnel::inject_inner_packet(const std::vector<uint8_t>& packet) {
+    const auto status = validate_inner_ipv4_packet(
+        packet.data(), packet.size(), overlay_mtu_);
+    if (status != InnerPacketStatus::Valid) {
+        std::atomic<uint64_t>& counter =
+            status == InnerPacketStatus::Oversize
+                ? oversize_inbound_drops_
+                : invalid_inbound_drops_;
+        const uint64_t count =
+            counter.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (count == 1 || count % 100 == 0) {
+            aegis_log("[tunnel] dropped %s inbound packet: %zu bytes, "
+                      "overlay MTU %u (%llu drop(s))\n",
+                      status == InnerPacketStatus::Oversize
+                          ? "oversize" : "invalid",
+                      packet.size(), overlay_mtu_,
+                      static_cast<unsigned long long>(count));
+        }
+        return false;
+    }
+    if (!adapter_.write_packet(packet)) {
+        aegis_log("[tunnel] write_packet failed\n");
+        return false;
+    }
+    return true;
 }
 
 void Tunnel::connect_loop(const TunnelPeer& peer) {
@@ -398,6 +458,8 @@ void Tunnel::tx_loop() {
         }
 
         if (route->type == NextHopType::Direct) {
+            if (!packet_fits_route(raw.size(), DIRECT_ROUTE_DEPTH))
+                continue;
             auto peer = peers_.get_peer(route->destination);
             if (!peer || !peer->endpoint) {
                 aegis_log( "[tunnel] peer %02x%02x... has no endpoint, dropping\n",
@@ -431,6 +493,8 @@ void Tunnel::tx_loop() {
                       static_cast<unsigned>(config_.max_relay_depth));
             continue;
         }
+        if (!packet_fits_route(raw.size(), path.size()))
+            continue;
         std::vector<Key> path_keys;
         path_keys.reserve(path.size());
         for (const auto& hop : path) {
@@ -661,9 +725,7 @@ void Tunnel::handle_data_frame(const uint8_t* data, size_t len,
     if (!dec) return;
     if (auto sess = session_manager_->get_session_by_id(header.session_id))
         peers_.mark_seen(sess->peer_id, sender);
-    if (!adapter_.write_packet(*dec)) {
-        aegis_log("[tunnel] write_packet failed\n");
-    }
+    inject_inner_packet(*dec);
 }
 
 void Tunnel::handle_relay_frame(const uint8_t* data, size_t len,
@@ -993,8 +1055,7 @@ void Tunnel::handle_relay(const uint8_t* data, size_t len, uint32_t session_id) 
     for (auto b : peeled->next_hop)
         if (b != 0) { final = false; break; }
     if (final) {
-        if (!adapter_.write_packet(peeled->inner))
-            aegis_log( "[tunnel] relay final write_packet failed\n");
+        inject_inner_packet(peeled->inner);
         return;
     }
 

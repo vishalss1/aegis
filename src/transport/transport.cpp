@@ -10,6 +10,8 @@ Transport::~Transport() { close(); }
 
 bool Transport::bind(uint16_t port, const SocketOptions& opts) {
     if (sock_ != INVALID_SOCKET) close();
+    oversize_send_drops_.store(0, std::memory_order_relaxed);
+    oversize_receive_drops_.store(0, std::memory_order_relaxed);
 
     sock_ = socket(AF_INET, SOCK_DGRAM, 0);
     if (sock_ == INVALID_SOCKET) {

@@ -21,6 +21,18 @@ struct IPPacket {
     static std::optional<IPPacket> parse(const uint8_t* data, size_t len);
 };
 
+enum class InnerPacketStatus {
+    Valid,
+    Invalid,
+    Oversize
+};
+
+// Validate a decrypted packet before injecting it into the virtual adapter.
+// The supplied buffer must contain exactly one complete IPv4 packet; trailing
+// bytes, truncation, checksum failures, and non-IPv4 payloads are rejected.
+InnerPacketStatus validate_inner_ipv4_packet(
+    const uint8_t* data, size_t len, size_t mtu);
+
 // Internet checksum (16-bit one's complement sum).
 // Returns the raw sum; when computed over the entire header including
 // the checksum field, 0xFFFF (or 0) indicates a valid checksum.

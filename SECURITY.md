@@ -177,8 +177,9 @@ oversized gossip frames from allocating without bound.
 
 The adapter MTU is reduced for the configured underlay MTU and maximum route
 depth, and transport rejects oversized outbound and inbound UDP payloads.
-Decrypted inner-length validation is not yet complete. The overlay does not
-fragment or reassemble packets.
+The tunnel rejects oversized, malformed, truncated, and trailing-byte inner
+IPv4 packets before Wintun injection and reports drop counters. The overlay
+does not fragment or reassemble packets.
 
 The transport has no bounded per-peer queues, congestion pacing, relay quotas,
 or backpressure. UDP packet loss is not repaired for general tunnel traffic.

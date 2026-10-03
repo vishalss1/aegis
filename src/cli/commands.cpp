@@ -424,8 +424,19 @@ static int cmd_status(const ParsedInput& input, CliContext& ctx) {
 
     if (ctx.state == CliState::Running && ctx.tunnel) {
         std::printf("Overlay IP:   %s\n", ctx.active_config.iface.address.c_str());
+        std::printf("Overlay MTU:  %u\n", ctx.tunnel->overlay_mtu());
         std::printf("Listen Port:  %u\n", ctx.active_config.iface.listen_port);
         std::printf("Peers:        %zu active\n", ctx.tunnel->peers().size());
+        const auto drops = ctx.tunnel->drop_stats();
+        std::printf("MTU Drops:    outbound=%llu inbound=%llu invalid=%llu "
+                    "wire-send=%llu wire-receive=%llu\n",
+                    static_cast<unsigned long long>(drops.oversize_outbound),
+                    static_cast<unsigned long long>(drops.oversize_inbound),
+                    static_cast<unsigned long long>(drops.invalid_inbound),
+                    static_cast<unsigned long long>(
+                        drops.transport_oversize_send),
+                    static_cast<unsigned long long>(
+                        drops.transport_oversize_receive));
     }
     std::printf("\n");
     return 0;

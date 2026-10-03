@@ -2,6 +2,7 @@
 #include "aegis/packet/mtu.hpp"
 #include <cstdio>
 #include <cstring>
+#include <vector>
 
 static int tests  = 0;
 static int passed = 0;
@@ -160,6 +161,35 @@ int main() {
               MINIMUM_IPV4_MTU);
         CHECK(!safe_overlay_mtu(1159, ONION_MAX_HOPS).has_value());
         CHECK(!safe_overlay_mtu(MAXIMUM_IPV4_MTU + 1, 1).has_value());
+    }
+
+    // 11. Decrypted inner packets must be exact and fit the adapter MTU
+    {
+        CHECK(validate_inner_ipv4_packet(
+                  VALID_IP, sizeof(VALID_IP), sizeof(VALID_IP)) ==
+              InnerPacketStatus::Valid);
+        CHECK(validate_inner_ipv4_packet(
+                  VALID_IP, sizeof(VALID_IP), sizeof(VALID_IP) - 1) ==
+              InnerPacketStatus::Oversize);
+        CHECK(validate_inner_ipv4_packet(
+                  BAD_CSUM_IP, sizeof(BAD_CSUM_IP), sizeof(BAD_CSUM_IP)) ==
+              InnerPacketStatus::Invalid);
+        CHECK(validate_inner_ipv4_packet(
+                  VALID_IP, sizeof(VALID_IP) - 1, sizeof(VALID_IP)) ==
+              InnerPacketStatus::Invalid);
+        CHECK(validate_inner_ipv4_packet(
+                  IPV6_PACKET, sizeof(IPV6_PACKET), sizeof(IPV6_PACKET)) ==
+              InnerPacketStatus::Invalid);
+        CHECK(validate_inner_ipv4_packet(
+                  nullptr, sizeof(VALID_IP), sizeof(VALID_IP)) ==
+              InnerPacketStatus::Invalid);
+
+        std::vector<uint8_t> trailing(
+            VALID_IP, VALID_IP + sizeof(VALID_IP));
+        trailing.push_back(0);
+        CHECK(validate_inner_ipv4_packet(
+                  trailing.data(), trailing.size(), trailing.size()) ==
+              InnerPacketStatus::Invalid);
     }
 
     printf("\n%d / %d passed\n", passed, tests);

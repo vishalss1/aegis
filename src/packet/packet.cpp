@@ -60,3 +60,15 @@ std::optional<IPPacket> IPPacket::parse(const uint8_t* data, size_t len) {
 
     return pkt;
 }
+
+InnerPacketStatus validate_inner_ipv4_packet(
+    const uint8_t* data, size_t len, size_t mtu) {
+    if (len > mtu)
+        return InnerPacketStatus::Oversize;
+    if (!data)
+        return InnerPacketStatus::Invalid;
+    const auto packet = IPPacket::parse(data, len);
+    if (!packet || packet->total_length != len)
+        return InnerPacketStatus::Invalid;
+    return InnerPacketStatus::Valid;
+}

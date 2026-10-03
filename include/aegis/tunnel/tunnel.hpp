@@ -62,6 +62,14 @@ struct TunnelConfig {
     uint32_t rekey_interval_ms = 0;
 };
 
+struct TunnelDropStats {
+    uint64_t oversize_outbound = 0;
+    uint64_t oversize_inbound = 0;
+    uint64_t invalid_inbound = 0;
+    uint64_t transport_oversize_send = 0;
+    uint64_t transport_oversize_receive = 0;
+};
+
 class Tunnel {
 public:
     Tunnel();
@@ -81,6 +89,8 @@ public:
     PeerManager& peers() { return peers_; }
     const RoutingEngine& routing() const { return routing_; }
     uint32_t interface_index() const { return adapter_.interface_index(); }
+    uint32_t overlay_mtu() const { return overlay_mtu_; }
+    TunnelDropStats drop_stats() const;
     // Observability: the current session (and its id / established_at) for a
     // peer, so tests can prove a rekey replaced the keys.
     SessionManager* session_manager() const { return session_manager_.get(); }
@@ -138,6 +148,10 @@ private:
     std::thread maintenance_thread_;
     std::vector<std::thread> connect_threads_;
     std::atomic<bool> running_{false};
+    uint32_t overlay_mtu_ = 0;
+    std::atomic<uint64_t> oversize_outbound_drops_{0};
+    std::atomic<uint64_t> oversize_inbound_drops_{0};
+    std::atomic<uint64_t> invalid_inbound_drops_{0};
     uint32_t unrouted_count_ = 0;
     static constexpr int GOSSIP_INTERVAL_MS = 3000;
 
@@ -193,6 +207,8 @@ private:
     void send_keepalive(const Peer& peer);
     void rekey_peer(const NodeId& node_id);
     void rekey_due();
+    bool packet_fits_route(size_t packet_size, size_t route_depth);
+    bool inject_inner_packet(const std::vector<uint8_t>& packet);
     void rx_callback(const uint8_t* data, size_t len, Endpoint sender);
     void handle_data_frame(const uint8_t* data, size_t len,
                            const PacketHeader& header, Endpoint sender);
