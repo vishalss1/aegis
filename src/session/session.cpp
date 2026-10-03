@@ -29,7 +29,7 @@ std::array<uint8_t, 16> SessionManager::serialize_header(const PacketHeader& hdr
 }
 
 void SessionManager::install_noise_keys(
-    Session& session, NoiseIkSplitResult&& split,
+    SessionState& session, NoiseIkSplitResult&& split,
     bool initiated_locally) {
     session.send_key = std::move(split.send_key);
     session.recv_key = std::move(split.receive_key);
@@ -43,7 +43,12 @@ void SessionManager::set_retired_grace(std::chrono::milliseconds grace) {
     retired_grace_ = grace;
 }
 
-Session& SessionManager::create_session(
+std::chrono::milliseconds SessionManager::retired_grace() const {
+    std::lock_guard<std::mutex> lock(mtx_);
+    return retired_grace_;
+}
+
+SessionManager::SessionState& SessionManager::create_session(
     const NodeId& peer_id, uint32_t session_id)
 {
     // A rekey (or a fresh handshake replacing a dead session) supersedes the
@@ -68,7 +73,7 @@ Session& SessionManager::create_session(
 }
 
 void SessionManager::retire_session_locked(
-    const Session& session,
+    const SessionState& session,
     std::chrono::steady_clock::time_point now) {
     purge_retired_locked(now);
     if (capacity_.retired == 0)
@@ -90,24 +95,59 @@ void SessionManager::retire_session_locked(
     retired_[session.id] = {session, now + retired_grace_};
 }
 
-std::optional<Session*> SessionManager::get_session(const NodeId& peer_id) {
+SessionManager::SessionState* SessionManager::find_session_locked(
+    const NodeId& peer_id) {
     auto it = sessions_.find(peer_id);
     if (it != sessions_.end() && it->second.established)
         return &it->second;
-    return std::nullopt;
+    return nullptr;
 }
 
-std::optional<Session*> SessionManager::get_session_by_id(uint32_t session_id) {
+SessionManager::SessionState* SessionManager::find_session_by_id_locked(
+    uint32_t session_id) {
     // Active session first...
     auto it = session_to_peer_.find(session_id);
     if (it != session_to_peer_.end())
-        return get_session(it->second);
+        return find_session_locked(it->second);
     // ...then sessions superseded by a rekey, still inside the grace window.
     // This lets in-flight packets that were encrypted under the old keys
     // decrypt until purge_retired drops them.
     auto rit = retired_.find(session_id);
     if (rit != retired_.end() && rit->second.session.established)
         return &rit->second.session;
+    return nullptr;
+}
+
+SessionSnapshot SessionManager::snapshot(const SessionState& session) {
+    return SessionSnapshot{
+        session.id,
+        session.peer_id,
+        session.established,
+        session.initiated_locally,
+        session.established_at};
+}
+
+std::optional<SessionSnapshot> SessionManager::get_session(
+    const NodeId& peer_id) const {
+    std::lock_guard<std::mutex> lock(mtx_);
+    const auto it = sessions_.find(peer_id);
+    if (it == sessions_.end() || !it->second.established)
+        return std::nullopt;
+    return snapshot(it->second);
+}
+
+std::optional<SessionSnapshot> SessionManager::get_session_by_id(
+    uint32_t session_id) const {
+    std::lock_guard<std::mutex> lock(mtx_);
+    const auto active = session_to_peer_.find(session_id);
+    if (active != session_to_peer_.end()) {
+        const auto session = sessions_.find(active->second);
+        if (session != sessions_.end() && session->second.established)
+            return snapshot(session->second);
+    }
+    const auto retired = retired_.find(session_id);
+    if (retired != retired_.end() && retired->second.session.established)
+        return snapshot(retired->second.session);
     return std::nullopt;
 }
 
@@ -192,6 +232,11 @@ void SessionManager::set_handshake_timeout(
     purge_incomplete_handshakes_locked(clock_.now());
 }
 
+std::chrono::milliseconds SessionManager::handshake_timeout() const {
+    std::lock_guard<std::mutex> lock(mtx_);
+    return handshake_timeout_;
+}
+
 void SessionManager::purge_handshake_replays_locked(
     std::chrono::steady_clock::time_point now) {
     for (auto it = handshake_replays_.begin();
@@ -214,6 +259,11 @@ void SessionManager::set_handshake_replay_ttl(
     handshake_replay_ttl_ =
         (std::max)(ttl, std::chrono::milliseconds::zero());
     purge_handshake_replays_locked(clock_.now());
+}
+
+std::chrono::milliseconds SessionManager::handshake_replay_ttl() const {
+    std::lock_guard<std::mutex> lock(mtx_);
+    return handshake_replay_ttl_;
 }
 
 std::optional<std::vector<uint8_t>> SessionManager::create_handshake_init(
@@ -366,7 +416,7 @@ SessionManager::handle_handshake_init(
         aegis_log("[session] rejected handshake INIT at active capacity\n");
         return std::nullopt;
     }
-    Session& session = create_session(peer_id, frame->session_id);
+    SessionState& session = create_session(peer_id, frame->session_id);
     install_noise_keys(session, std::move(*split), false);
 
     HandshakeResponse response;
@@ -416,12 +466,12 @@ bool SessionManager::handle_handshake_resp(
         return false;
     }
 
-    Session& session = create_session(state.expected_peer_id, session_id);
+    SessionState& session = create_session(state.expected_peer_id, session_id);
     install_noise_keys(session, std::move(*split), true);
     return true;
 }
 
-bool SessionManager::check_replay(Session& session, uint64_t seq) {
+bool SessionManager::check_replay(SessionState& session, uint64_t seq) {
     if (session.recv_last >= REPLAY_BITS &&
         seq <= session.recv_last - REPLAY_BITS)
         return false;
@@ -438,7 +488,7 @@ bool SessionManager::check_replay(Session& session, uint64_t seq) {
     return true;
 }
 
-void SessionManager::update_replay(Session& session, uint64_t seq) {
+void SessionManager::update_replay(SessionState& session, uint64_t seq) {
     if (seq > session.recv_last) {
         uint64_t shift = seq - session.recv_last;
         if (shift < REPLAY_BITS)
@@ -455,20 +505,20 @@ std::optional<std::vector<uint8_t>> SessionManager::encrypt_message(
     const NodeId& peer_id, uint8_t packet_type,
     const uint8_t* plaintext, size_t pt_len, uint8_t flags)
 {
-    auto sess_opt = get_session(peer_id);
-    if (!sess_opt)
-        return std::nullopt;
     if ((pt_len > 0 && !plaintext) || pt_len > 4096 ||
         pt_len > static_cast<size_t>((std::numeric_limits<uint32_t>::max)()))
         return std::nullopt;
 
-    Session& sess = *sess_opt.value();
+    std::lock_guard<std::mutex> lock(mtx_);
+    SessionState* sess = find_session_locked(peer_id);
+    if (!sess)
+        return std::nullopt;
 
-    uint64_t send_seq = sess.send_seq++;
+    uint64_t send_seq = sess->send_seq++;
 
     // Nonce from session_id + send_seq
     ChaCha20Poly1305Nonce nonce{};
-    uint32_t sid_be = bswap32(sess.id);
+    uint32_t sid_be = bswap32(sess->id);
     uint32_t seq_hi = (uint32_t)(send_seq >> 32);
     uint32_t seq_lo = (uint32_t)(send_seq);
     std::memcpy(nonce.data(), &sid_be, 4);
@@ -485,14 +535,14 @@ std::optional<std::vector<uint8_t>> SessionManager::encrypt_message(
     hdr.packet_type = packet_type;
     hdr.flags = flags;
     hdr.reserved = 0;
-    hdr.session_id = sess.id;
+    hdr.session_id = sess->id;
     hdr.sequence_number = (uint32_t)(send_seq & 0xFFFFFFFF);
     hdr.payload_length = (uint32_t)pt_len;
 
     auto hdr_bytes = serialize_header(hdr);
 
     if (!chacha20_poly1305_encrypt(
-            sess.send_key, nonce,
+            sess->send_key, nonce,
             plaintext, pt_len, ct_buf, tag_buf,
             hdr_bytes.data(), hdr_bytes.size())) {
         aegis_log( "[session] encrypt failed\n");
@@ -536,15 +586,20 @@ std::optional<SessionManager::DecryptedMessage> SessionManager::decrypt_message(
         return std::nullopt;
     }
 
-    auto sess_opt = get_session_by_id(hdr.session_id);
-    if (!sess_opt)
+    uint8_t pt_buf[4096];
+    if (ct_len > sizeof(pt_buf)) {
+        aegis_log( "[session] drop: payload too large (%zu)\n", ct_len);
         return std::nullopt;
+    }
 
-    Session& sess = *sess_opt.value();
+    std::lock_guard<std::mutex> lock(mtx_);
+    SessionState* sess = find_session_by_id_locked(hdr.session_id);
+    if (!sess)
+        return std::nullopt;
 
     uint64_t wire_seq = ((uint64_t)hdr.sequence_number);
 
-    if (!check_replay(sess, wire_seq)) {
+    if (!check_replay(*sess, wire_seq)) {
         aegis_log( "[session] drop: replay (seq=%llu)\n",
                 (unsigned long long)wire_seq);
         return std::nullopt;
@@ -560,20 +615,15 @@ std::optional<SessionManager::DecryptedMessage> SessionManager::decrypt_message(
     std::array<uint8_t, 16> hdr_bytes;
     std::memcpy(hdr_bytes.data(), data, 16);
 
-    uint8_t pt_buf[4096];
-    if (ct_len > sizeof(pt_buf)) {
-        aegis_log( "[session] drop: payload too large (%zu)\n", ct_len);
-        return std::nullopt;
-    }
     if (!chacha20_poly1305_decrypt(
-            sess.recv_key, nonce,
+            sess->recv_key, nonce,
             ct_ptr, ct_len, tag_ptr, pt_buf,
             hdr_bytes.data(), hdr_bytes.size())) {
         aegis_log( "[session] drop: decrypt/auth failure\n");
         return std::nullopt;
     }
 
-    update_replay(sess, wire_seq);
+    update_replay(*sess, wire_seq);
 
     DecryptedMessage out;
     out.packet_type = hdr.packet_type;

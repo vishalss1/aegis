@@ -532,7 +532,7 @@ static int run_session_test() {
         fprintf(stderr, "[session-test] FAIL: sessions not found\n");
         return 1;
     }
-    if (!sess_a.value()->established || !sess_b.value()->established) {
+    if (!sess_a->established || !sess_b->established) {
         fprintf(stderr, "[session-test] FAIL: sessions not established\n");
         return 1;
     }
@@ -682,7 +682,7 @@ static int run_peer_test() {
 
     pm.set_session_manager(&sm_a);
     auto sess = pm.get_session(bob.node_id);
-    if (!sess || !(*sess)->established || (*sess)->id != session_id) {
+    if (!sess || !sess->established || sess->id != session_id) {
         fprintf(stderr, "[peer-test] FAIL: session lookup via PeerManager\n");
         return 1;
     }

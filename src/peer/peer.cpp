@@ -140,7 +140,8 @@ void PeerManager::update_endpoint(const NodeId& node_id, const Endpoint& endpoin
     it->second.last_seen = clock_.now();
 }
 
-std::optional<Session*> PeerManager::get_session(const NodeId& node_id) const {
+std::optional<SessionSnapshot> PeerManager::get_session(
+    const NodeId& node_id) const {
     std::lock_guard<std::mutex> lock(mtx_);
     if (!session_manager_ || !peers_.contains(node_id))
         return std::nullopt;

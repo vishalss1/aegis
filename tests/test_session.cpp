@@ -66,25 +66,15 @@ int main() {
         auto sess_b = sm_b.get_session(alice.node_id);
         CHECK(sess_a.has_value());
         CHECK(sess_b.has_value());
-        CHECK((*sess_a)->established);
-        CHECK((*sess_b)->established);
-        CHECK((*sess_a)->id == session_id);
-        CHECK((*sess_b)->id == session_id);
+        CHECK(sess_a->established);
+        CHECK(sess_b->established);
+        CHECK(sess_a->id == session_id);
+        CHECK(sess_b->id == session_id);
 
-        // Session keys should be non-zero
-        bool a_send_nonzero = false;
-        for (auto b : (*sess_a)->send_key)
-            if (b != 0) { a_send_nonzero = true; break; }
-        CHECK(a_send_nonzero);
-
-        bool a_recv_nonzero = false;
-        for (auto b : (*sess_a)->recv_key)
-            if (b != 0) { a_recv_nonzero = true; break; }
-        CHECK(a_recv_nonzero);
-
-        // A's send key should equal B's recv key (opposite directions)
-        CHECK((*sess_a)->send_key == (*sess_b)->recv_key);
-        CHECK((*sess_b)->send_key == (*sess_a)->recv_key);
+        // Metadata reads are snapshots, not mutable access to live key state.
+        sess_a->established = false;
+        const auto fresh_a = sm_a.get_session(bob.node_id);
+        CHECK(fresh_a && fresh_a->established);
 
         // Replaying either handshake frame cannot replace an established
         // session or recreate consumed initiator state.
@@ -319,7 +309,7 @@ int main() {
         CHECK(sm_a.handle_handshake_resp(resp1->message, sid1));
         auto sess_a1 = sm_a.get_session(bob.node_id);
         CHECK(sess_a1.has_value());
-        CHECK((*sess_a1)->id == sid1);
+        CHECK(sess_a1->id == sid1);
 
         // A packet sent under sid1 but still in flight when the rekey happens.
         const uint8_t pt[] = {0x45, 0x00, 0x00, 0x14, 0x00, 0x00,
@@ -341,8 +331,8 @@ int main() {
         auto sess_b2 = sm_b.get_session(alice.node_id);
         CHECK(sess_a2.has_value());
         CHECK(sess_b2.has_value());
-        CHECK((*sess_a2)->id == sid2);
-        CHECK((*sess_b2)->id == sid2);
+        CHECK(sess_a2->id == sid2);
+        CHECK(sess_b2->id == sid2);
 
         // ...while sid1 is retired but still resolving for in-flight packets.
         // The in-flight packet from before the rekey must still decrypt on B.
@@ -540,8 +530,8 @@ int main() {
         auto higher_session = sm_higher.get_session(lower.node_id);
         CHECK(lower_session.has_value());
         CHECK(higher_session.has_value());
-        CHECK((*lower_session)->id == lower_session_id);
-        CHECK((*higher_session)->id == lower_session_id);
+        CHECK(lower_session->id == lower_session_id);
+        CHECK(higher_session->id == lower_session_id);
 
         // Repeat the collision while that session is active: simultaneous
         // rekey also converges without either side retaining the losing keys.
@@ -565,8 +555,8 @@ int main() {
         higher_session = sm_higher.get_session(lower.node_id);
         CHECK(lower_session.has_value());
         CHECK(higher_session.has_value());
-        CHECK((*lower_session)->id == lower_rekey_id);
-        CHECK((*higher_session)->id == lower_rekey_id);
+        CHECK(lower_session->id == lower_rekey_id);
+        CHECK(higher_session->id == lower_rekey_id);
     }
 
     // ---- 11. Incomplete initiator handshakes expire ------------------------

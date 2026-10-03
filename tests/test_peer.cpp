@@ -234,8 +234,8 @@ int main() {
         pm.set_session_manager(&sm_a);
         auto sess = pm.get_session(bob.node_id);
         CHECK(sess.has_value());
-        CHECK((*sess)->established);
-        CHECK((*sess)->id == session_id);
+        CHECK(sess->established);
+        CHECK(sess->id == session_id);
 
         NodeId unknown{};
         unknown[0] = 0xEE;

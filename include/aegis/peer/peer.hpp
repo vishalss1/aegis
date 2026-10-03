@@ -3,6 +3,7 @@
 #include "aegis/identity/identity.hpp"
 #include "aegis/transport/transport.hpp"
 #include "aegis/protocol/sources.hpp"
+#include "aegis/session/session.hpp"
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -10,9 +11,6 @@
 #include <mutex>
 #include <optional>
 #include <vector>
-
-class SessionManager;
-struct Session;
 
 enum class PeerState {
     Unknown,
@@ -79,7 +77,7 @@ public:
     void mark_dead(const NodeId& node_id);
     void update_endpoint(const NodeId& node_id, const Endpoint& endpoint);
 
-    std::optional<Session*> get_session(const NodeId& node_id) const;
+    std::optional<SessionSnapshot> get_session(const NodeId& node_id) const;
 
     void set_keepalive_interval(std::chrono::milliseconds interval);
     void set_dead_timeout(std::chrono::milliseconds timeout);

@@ -18,19 +18,11 @@
 #include <optional>
 #include <vector>
 
-struct Session {
-    uint32_t id;
-    ChaCha20Poly1305Key send_key{};
-    ChaCha20Poly1305Key recv_key{};
-    uint64_t send_seq = 0;
-    uint64_t recv_last = 0;
-    std::bitset<2048> recv_window{};
+struct SessionSnapshot {
+    uint32_t id = 0;
     NodeId peer_id{};
     bool established = false;
     bool initiated_locally = false;
-    // When the session's keys were established. Rekey (step 15) replaces a
-    // session once it has lived past the rekey interval, so the age lives on
-    // the session itself (a peer's connected_since is not reset by rekey).
     std::chrono::steady_clock::time_point established_at{};
 };
 
@@ -97,8 +89,11 @@ public:
     std::optional<std::vector<uint8_t>> decrypt_data(
         const uint8_t* data, size_t len);
 
-    std::optional<Session*> get_session(const NodeId& peer_id);
-    std::optional<Session*> get_session_by_id(uint32_t session_id);
+    // Read APIs expose metadata snapshots only. Keys, counters, and replay
+    // windows remain private and are accessed under the manager mutex.
+    std::optional<SessionSnapshot> get_session(const NodeId& peer_id) const;
+    std::optional<SessionSnapshot> get_session_by_id(
+        uint32_t session_id) const;
 
     // Step 15: tear down every session with `peer_id` (active and retired) and
     // drop any in-flight authenticated initiator state for it. Used when a peer
@@ -114,23 +109,19 @@ public:
     // purge expired state before it can participate in collision handling.
     void purge_incomplete_handshakes();
     void set_handshake_timeout(std::chrono::milliseconds timeout);
-    std::chrono::milliseconds handshake_timeout() const {
-        return handshake_timeout_;
-    }
+    std::chrono::milliseconds handshake_timeout() const;
 
     // Successfully authenticated INIT transcripts remain in a replay cache
     // for two minutes by default, independent of active-session teardown.
     void purge_handshake_replays();
     void set_handshake_replay_ttl(std::chrono::milliseconds ttl);
-    std::chrono::milliseconds handshake_replay_ttl() const {
-        return handshake_replay_ttl_;
-    }
+    std::chrono::milliseconds handshake_replay_ttl() const;
 
     // Step 15: how long a rekeyed-away session keeps decrypting in-flight
     // packets (default 10 s). Tests shorten this so the purge path is
     // exercisable without sleeping through the production grace window.
     void set_retired_grace(std::chrono::milliseconds grace);
-    std::chrono::milliseconds retired_grace() const { return retired_grace_; }
+    std::chrono::milliseconds retired_grace() const;
 
     [[nodiscard]] size_t active_session_count() const;
     [[nodiscard]] size_t retired_session_count() const;
@@ -139,18 +130,31 @@ public:
     static std::array<uint8_t, 16> serialize_header(const PacketHeader& hdr);
 
 private:
+    struct SessionState {
+        uint32_t id = 0;
+        ChaCha20Poly1305Key send_key{};
+        ChaCha20Poly1305Key recv_key{};
+        uint64_t send_seq = 0;
+        uint64_t recv_last = 0;
+        std::bitset<2048> recv_window{};
+        NodeId peer_id{};
+        bool established = false;
+        bool initiated_locally = false;
+        std::chrono::steady_clock::time_point established_at{};
+    };
+
     const Identity& identity_;
     ProtocolClock& clock_;
     RandomSource& random_;
     SessionCapacityLimits capacity_;
-    std::map<NodeId, Session> sessions_;
+    std::map<NodeId, SessionState> sessions_;
     std::map<uint32_t, NodeId> session_to_peer_;
 
     // Sessions superseded by a rekey, kept briefly so packets that were in
     // flight under the old keys still decrypt. Keyed by session_id so
     // get_session_by_id finds them. Expired entries are purged by purge_retired.
     struct RetiredSession {
-        Session session;
+        SessionState session;
         std::chrono::steady_clock::time_point expires;
     };
     static constexpr std::chrono::seconds RETIRED_GRACE = std::chrono::seconds(10);
@@ -175,21 +179,28 @@ private:
         handshake_replays_;
     mutable std::mutex mtx_;
 
-    Session& create_session(const NodeId& peer_id, uint32_t session_id);
+    SessionState& create_session(
+        const NodeId& peer_id, uint32_t session_id);
     void install_noise_keys(
-        Session& session, NoiseIkSplitResult&& split,
+        SessionState& session, NoiseIkSplitResult&& split,
         bool initiated_locally);
+    [[nodiscard]] SessionState* find_session_locked(
+        const NodeId& peer_id);
+    [[nodiscard]] SessionState* find_session_by_id_locked(
+        uint32_t session_id);
+    [[nodiscard]] static SessionSnapshot snapshot(
+        const SessionState& session);
     void purge_incomplete_handshakes_locked(
         std::chrono::steady_clock::time_point now);
     void purge_retired_locked(std::chrono::steady_clock::time_point now);
     void retire_session_locked(
-        const Session& session,
+        const SessionState& session,
         std::chrono::steady_clock::time_point now);
     void purge_handshake_replays_locked(
         std::chrono::steady_clock::time_point now);
 
-    bool check_replay(Session& session, uint64_t seq);
-    void update_replay(Session& session, uint64_t seq);
+    bool check_replay(SessionState& session, uint64_t seq);
+    void update_replay(SessionState& session, uint64_t seq);
 
     static constexpr size_t REPLAY_BITS = 2048;
 };

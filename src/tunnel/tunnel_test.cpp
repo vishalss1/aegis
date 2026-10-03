@@ -849,7 +849,7 @@ int run_lifecycle_test() {
     auto session_id = [](Tunnel& t, const NodeId& peer) -> uint32_t {
         auto sess = t.session_manager()->get_session(peer);
         if (!sess) return 0;
-        return (*sess)->id;
+        return sess->id;
     };
     auto peer_state = [](const Tunnel& t, const NodeId& peer) -> PeerState {
         const auto p = t.peers().get_peer(peer);

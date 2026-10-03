@@ -520,7 +520,7 @@ void Tunnel::rekey_due() {
         auto sess = session_manager_->get_session(peer.node_id);
         if (!sess)
             continue;
-        if (now - (*sess)->established_at < interval)
+        if (now - sess->established_at < interval)
             continue;
         auto attempt = rekey_attempts_.find(peer.node_id);
         if (attempt != rekey_attempts_.end() &&
@@ -606,7 +606,7 @@ void Tunnel::rx_callback(const uint8_t* data, size_t len, Endpoint sender) {
         auto dec = session_manager_->decrypt_data(data, len);
         if (!dec) return;
         if (auto sess = session_manager_->get_session_by_id(sid))
-            peers_.mark_seen((*sess)->peer_id, sender);
+            peers_.mark_seen(sess->peer_id, sender);
         if (!adapter_.write_packet(*dec)) {
             aegis_log( "[tunnel] write_packet failed\n");
         }
@@ -627,7 +627,7 @@ void Tunnel::rx_callback(const uint8_t* data, size_t len, Endpoint sender) {
         if (!sess) return;
         // Any decrypted packet proves liveness; mark_seen advances
         // last_keepalive so the peer drops off peers_needing_keepalive.
-        peers_.mark_seen((*sess)->peer_id, sender);
+        peers_.mark_seen(sess->peer_id, sender);
         return;
     }
 
@@ -637,8 +637,8 @@ void Tunnel::rx_callback(const uint8_t* data, size_t len, Endpoint sender) {
         if (!msg) return;
         auto sess = session_manager_->get_session_by_id(sid);
         if (!sess) return;
-        peers_.mark_seen((*sess)->peer_id, sender);
-        handle_peer_table((*sess)->peer_id, msg->payload.data(), msg->payload.size());
+        peers_.mark_seen(sess->peer_id, sender);
+        handle_peer_table(sess->peer_id, msg->payload.data(), msg->payload.size());
         return;
     }
 
@@ -648,10 +648,10 @@ void Tunnel::rx_callback(const uint8_t* data, size_t len, Endpoint sender) {
         if (!msg) return;
         auto sess = session_manager_->get_session_by_id(sid);
         if (!sess) return;
-        peers_.mark_seen((*sess)->peer_id, sender);
+        peers_.mark_seen(sess->peer_id, sender);
 
         std::string chat_text((const char*)msg->payload.data(), msg->payload.size());
-        NodeId peer_id = (*sess)->peer_id;
+        NodeId peer_id = sess->peer_id;
         std::printf("\n[Peer %02x%02x...]: %s\n", peer_id[0], peer_id[1], chat_text.c_str());
         std::fflush(stdout);
         return;
@@ -664,7 +664,7 @@ void Tunnel::rx_callback(const uint8_t* data, size_t len, Endpoint sender) {
 
         auto sess = session_manager_->get_session_by_id(sid);
         if (!sess) return;
-        peers_.mark_seen((*sess)->peer_id, sender);
+        peers_.mark_seen(sess->peer_id, sender);
 
         const uint8_t* ptr = msg->payload.data();
         uint64_t transfer_id; std::memcpy(&transfer_id, ptr, 8); ptr += 8;
@@ -691,7 +691,7 @@ void Tunnel::rx_callback(const uint8_t* data, size_t len, Endpoint sender) {
 
         std::ofstream ofs(out_path, std::ios::binary | std::ios::trunc);
 
-        NodeId peer_id = (*sess)->peer_id;
+        NodeId peer_id = sess->peer_id;
         std::printf("\n[Incoming File]: '%s' (%.2f KB, %u chunks) from Peer %02x%02x...\n",
                     filename.c_str(), (double)file_size / 1024.0, total_chunks,
                     peer_id[0], peer_id[1]);
@@ -706,7 +706,7 @@ void Tunnel::rx_callback(const uint8_t* data, size_t len, Endpoint sender) {
 
         auto sess = session_manager_->get_session_by_id(sid);
         if (!sess) return;
-        peers_.mark_seen((*sess)->peer_id, sender);
+        peers_.mark_seen(sess->peer_id, sender);
 
         const uint8_t* ptr = msg->payload.data();
         uint64_t transfer_id; std::memcpy(&transfer_id, ptr, 8); ptr += 8;
@@ -743,7 +743,7 @@ void Tunnel::rx_callback(const uint8_t* data, size_t len, Endpoint sender) {
 
         auto sess = session_manager_->get_session_by_id(sid);
         if (!sess) return;
-        NodeId requester_id = (*sess)->peer_id;
+        NodeId requester_id = sess->peer_id;
 
         if (requester_id == creator_node_id_) {
             std::printf("\n[Network]: Network was destroyed by creator (%02x%02x...). Disconnecting session...\n",
@@ -879,7 +879,7 @@ void Tunnel::handle_relay(const uint8_t* data, size_t len, uint32_t session_id) 
     if (!msg || msg->packet_type != TYPE_RELAY) return;
     auto sess = session_manager_->get_session_by_id(session_id);
     if (!sess) return;
-    peers_.mark_seen((*sess)->peer_id);
+    peers_.mark_seen(sess->peer_id);
 
     // Payload = [32] source NodeID || onion blob. The source is who we peel
     // with — every layer was keyed to the source's static key, and a relay is
