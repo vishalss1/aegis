@@ -512,8 +512,8 @@ Unit test coverage:
 | `test_aead` | ChaCha20-Poly1305 RFC 8439 test vectors, tamper rejection |
 | `test_identity` | NodeID hashing, NetworkID equality, keypair round-trip |
 | `test_tunnel` | Nonce counter arithmetic, wire format round-trip, AEAD integration |
-| `test_session` | Authenticated Noise IK integration, metadata snapshot isolation, bounded session state, pending-state expiry, INIT replay caching, simultaneous-init convergence, transport replay windows, and rekey grace |
-| `test_peer` | Multi-peer table — snapshot isolation, states, endpoints, session lookup, health tracking |
+| `test_session` | Authenticated Noise IK integration, concurrent lifecycle/snapshot safety, bounded session state, pending-state expiry, INIT replay caching, simultaneous-init convergence, transport replay windows, and rekey grace |
+| `test_peer` | Multi-peer table — concurrent lifecycle/snapshot safety, states, endpoints, session lookup, health tracking |
 | `test_routing` | Prefix → next-hop → peer resolution, Direct/Relay/Unknown types, loop rejection, tie-breaking |
 | `test_peer_table` | TYPE_PEER_TABLE wire encoding/decoding, gossip merge, IP-stripping |
 | `test_relay` | `build_onion` / `peel_onion` — layer construction, per-hop decryption, innermost injection |

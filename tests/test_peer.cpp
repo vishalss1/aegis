@@ -2,6 +2,8 @@
 #include "aegis/session/session.hpp"
 #include "aegis/identity/identity.hpp"
 #include <algorithm>
+#include <atomic>
+#include <barrier>
 #include <cstdio>
 #include <cstring>
 #include <chrono>
@@ -13,9 +15,16 @@ static int passed = 0;
 
 class ManualClock final : public ProtocolClock {
 public:
-    time_point current{};
-    time_point now() const noexcept override { return current; }
-    void advance(std::chrono::milliseconds duration) { current += duration; }
+    time_point now() const noexcept override {
+        return time_point(std::chrono::milliseconds(
+            current_ms_.load(std::memory_order_relaxed)));
+    }
+    void advance(std::chrono::milliseconds duration) {
+        current_ms_.fetch_add(duration.count(), std::memory_order_relaxed);
+    }
+
+private:
+    std::atomic<int64_t> current_ms_{0};
 };
 
 #define CHECK(cond) do { \
@@ -309,6 +318,84 @@ int main() {
 
         clock.advance(std::chrono::milliseconds(1100));
         CHECK(pm.peers_needing_keepalive().size() == 1);
+    }
+
+    // ---- 8. Concurrent peer lifecycle keeps snapshots self-contained --------
+    {
+        ManualClock clock;
+        PeerManager pm(PEER_MANAGER_MAX_PEERS, clock);
+        pm.set_keepalive_interval(std::chrono::milliseconds(5));
+        pm.set_dead_timeout(std::chrono::milliseconds(10));
+        CHECK(pm.upsert(bob.node_id, bob.keypair.public_key, ep_bob) ==
+              PeerUpsertResult::Inserted);
+
+        constexpr int iterations = 1000;
+        std::atomic<bool> consistent{true};
+        std::barrier start_line(4);
+
+        std::thread lifecycle([&] {
+            start_line.arrive_and_wait();
+            for (int i = 0; i < iterations; ++i) {
+                pm.remove_peer(bob.node_id);
+                const auto result = pm.upsert(
+                    bob.node_id, bob.keypair.public_key, ep_bob,
+                    (i % 2) == 0);
+                if (result != PeerUpsertResult::Inserted)
+                    consistent.store(false, std::memory_order_relaxed);
+            }
+        });
+
+        std::thread state_updates([&] {
+            start_line.arrive_and_wait();
+            for (int i = 0; i < iterations; ++i) {
+                pm.mark_connecting(bob.node_id);
+                pm.mark_seen(bob.node_id, ep_bob);
+                pm.update_endpoint(bob.node_id, ep_bob);
+                pm.mark_dead(bob.node_id);
+            }
+        });
+
+        std::thread snapshot_reads([&] {
+            start_line.arrive_and_wait();
+            for (int i = 0; i < iterations; ++i) {
+                const auto peer = pm.get_peer(bob.node_id);
+                if (peer && (peer->node_id != bob.node_id ||
+                             peer->public_key != bob.keypair.public_key)) {
+                    consistent.store(false, std::memory_order_relaxed);
+                }
+
+                const auto peers = pm.all_peers();
+                if (peers.size() > 1 ||
+                    (!peers.empty() &&
+                     (peers.front().node_id != bob.node_id ||
+                      peers.front().public_key != bob.keypair.public_key))) {
+                    consistent.store(false, std::memory_order_relaxed);
+                }
+                (void)pm.stale_peers();
+                (void)pm.peers_needing_keepalive();
+            }
+        });
+
+        start_line.arrive_and_wait();
+        for (int i = 0; i < iterations; ++i)
+            clock.advance(std::chrono::milliseconds(1));
+
+        lifecycle.join();
+        state_updates.join();
+        snapshot_reads.join();
+
+        const auto final_result = pm.upsert(
+            bob.node_id, bob.keypair.public_key, ep_bob, true);
+        CHECK(final_result == PeerUpsertResult::Inserted ||
+              final_result == PeerUpsertResult::Updated);
+        pm.mark_seen(bob.node_id, ep_bob);
+        const auto final_peer = pm.get_peer(bob.node_id);
+        CHECK(consistent.load(std::memory_order_relaxed));
+        CHECK(pm.size() == 1);
+        CHECK(final_peer && final_peer->node_id == bob.node_id);
+        CHECK(final_peer && final_peer->public_key == bob.keypair.public_key);
+        CHECK(final_peer && final_peer->state == PeerState::Established);
+        CHECK(final_peer && final_peer->trusted);
     }
 
     printf("\n%d / %d passed\n", passed, tests);

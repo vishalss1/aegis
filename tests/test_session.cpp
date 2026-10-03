@@ -1,6 +1,8 @@
 #include "aegis/session/session.hpp"
 #include "aegis/identity/identity.hpp"
 #include <algorithm>
+#include <atomic>
+#include <barrier>
 #include <cstdio>
 #include <cstring>
 #include <vector>
@@ -12,9 +14,16 @@ static int passed = 0;
 
 class ManualClock final : public ProtocolClock {
 public:
-    time_point current{};
-    time_point now() const noexcept override { return current; }
-    void advance(std::chrono::milliseconds duration) { current += duration; }
+    time_point now() const noexcept override {
+        return time_point(std::chrono::milliseconds(
+            current_ms_.load(std::memory_order_relaxed)));
+    }
+    void advance(std::chrono::milliseconds duration) {
+        current_ms_.fetch_add(duration.count(), std::memory_order_relaxed);
+    }
+
+private:
+    std::atomic<int64_t> current_ms_{0};
 };
 
 #define CHECK(cond) do { \
@@ -723,6 +732,125 @@ int main() {
         CHECK(!sm_i.get_session_by_id(sid1).has_value());
         CHECK(sm_i.get_session_by_id(sid2).has_value());
         CHECK(sm_i.get_session_by_id(sid3).has_value());
+    }
+
+    // ---- 15. Concurrent rekey, expiry, reads, and teardown stay coherent ----
+    {
+        ManualClock clock;
+        SessionManager sm_i(alice, clock);
+        SessionManager sm_r(bob, clock);
+        sm_i.set_retired_grace(std::chrono::milliseconds(2));
+        sm_r.set_retired_grace(std::chrono::milliseconds(2));
+
+        constexpr uint32_t first_session_id = 0xAC009000;
+        constexpr uint32_t rekey_count = 24;
+        std::atomic<bool> consistent{true};
+        std::atomic<bool> writer_done{false};
+        std::atomic<uint32_t> completed_rekeys{0};
+        std::barrier start_line(4);
+
+        std::thread rekey_writer([&] {
+            start_line.arrive_and_wait();
+            for (uint32_t i = 0; i < rekey_count; ++i) {
+                const uint32_t session_id = first_session_id + i;
+                const auto init = sm_i.create_handshake_init(
+                    session_id, bob.node_id, bob.keypair.public_key);
+                if (!init) {
+                    consistent.store(false, std::memory_order_relaxed);
+                    break;
+                }
+                const auto response = sm_r.handle_handshake_init(
+                    *init, session_id);
+                if (!response || !sm_i.handle_handshake_resp(
+                                     response->message, session_id)) {
+                    consistent.store(false, std::memory_order_relaxed);
+                    break;
+                }
+                completed_rekeys.store(i + 1, std::memory_order_release);
+            }
+            sm_i.remove_session(bob.node_id);
+            sm_r.remove_session(alice.node_id);
+            writer_done.store(true, std::memory_order_release);
+        });
+
+        std::thread snapshot_reader([&] {
+            start_line.arrive_and_wait();
+            const uint8_t payload[] = {0x45, 0x00, 0x00, 0x14};
+            do {
+                const auto session = sm_i.get_session(bob.node_id);
+                if (session &&
+                    (!session->established || session->peer_id != bob.node_id ||
+                     session->id < first_session_id ||
+                     session->id >= first_session_id + rekey_count)) {
+                    consistent.store(false, std::memory_order_relaxed);
+                }
+                if (session) {
+                    const auto by_id = sm_i.get_session_by_id(session->id);
+                    if (by_id && (by_id->id != session->id ||
+                                  by_id->peer_id != bob.node_id)) {
+                        consistent.store(false, std::memory_order_relaxed);
+                    }
+                }
+
+                const auto encrypted = sm_i.encrypt_data(
+                    bob.node_id, payload, sizeof(payload));
+                if (encrypted) {
+                    const auto header = parse_packet_header(
+                        std::span<const uint8_t>(
+                            encrypted->data(), PACKET_HEADER_SIZE));
+                    if (!header || header->packet_type != TYPE_DATA ||
+                        header->session_id < first_session_id ||
+                        header->session_id >=
+                            first_session_id + rekey_count) {
+                        consistent.store(false, std::memory_order_relaxed);
+                    }
+                }
+                std::this_thread::yield();
+            } while (!writer_done.load(std::memory_order_acquire));
+        });
+
+        std::thread maintenance([&] {
+            start_line.arrive_and_wait();
+            do {
+                sm_i.purge_retired();
+                sm_i.purge_incomplete_handshakes();
+                sm_i.purge_handshake_replays();
+                sm_r.purge_retired();
+                sm_r.purge_incomplete_handshakes();
+                sm_r.purge_handshake_replays();
+                std::this_thread::yield();
+            } while (!writer_done.load(std::memory_order_acquire));
+        });
+
+        start_line.arrive_and_wait();
+        uint32_t observed_rekeys = 0;
+        while (!writer_done.load(std::memory_order_acquire)) {
+            const uint32_t completed =
+                completed_rekeys.load(std::memory_order_acquire);
+            if (completed > observed_rekeys) {
+                const auto elapsed = static_cast<int64_t>(
+                    completed - observed_rekeys) * 3;
+                clock.advance(std::chrono::milliseconds(elapsed));
+                observed_rekeys = completed;
+            } else {
+                std::this_thread::yield();
+            }
+        }
+
+        rekey_writer.join();
+        snapshot_reader.join();
+        maintenance.join();
+
+        clock.advance(std::chrono::milliseconds(3));
+        sm_i.purge_retired();
+        sm_r.purge_retired();
+        CHECK(consistent.load(std::memory_order_relaxed));
+        CHECK(completed_rekeys.load(std::memory_order_acquire) == rekey_count);
+        CHECK(sm_i.active_session_count() == 0);
+        CHECK(sm_i.retired_session_count() == 0);
+        CHECK(sm_i.pending_handshake_count() == 0);
+        CHECK(sm_r.active_session_count() == 0);
+        CHECK(sm_r.retired_session_count() == 0);
     }
 
     printf("\n%d / %d passed\n", passed, tests);
