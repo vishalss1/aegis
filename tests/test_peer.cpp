@@ -1,6 +1,7 @@
 #include "aegis/peer/peer.hpp"
 #include "aegis/session/session.hpp"
 #include "aegis/identity/identity.hpp"
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <chrono>
@@ -51,34 +52,52 @@ int main() {
         CHECK(pm.has_peer(bob.node_id));
         CHECK(pm.has_peer(charlie.node_id));
 
-        Peer* a = pm.get_peer(alice.node_id);
-        CHECK(a != nullptr);
+        auto a = pm.get_peer(alice.node_id);
+        CHECK(a.has_value());
         CHECK(a->node_id == alice.node_id);
         CHECK(a->public_key == alice.keypair.public_key);
         CHECK(a->endpoint.has_value());
         CHECK(a->endpoint->port == ep_alice.port);
         CHECK(a->trusted);
 
-        Peer* b = pm.get_peer(bob.node_id);
-        CHECK(b != nullptr);
+        // Read results are owned snapshots: caller mutation cannot escape
+        // back into PeerManager after its lock has been released.
+        a->trusted = false;
+        a->endpoint.reset();
+        const auto fresh_a = pm.get_peer(alice.node_id);
+        CHECK(fresh_a && fresh_a->trusted);
+        CHECK(fresh_a && fresh_a->endpoint.has_value());
+
+        auto snapshots = pm.all_peers();
+        const auto snapshot_a = std::find_if(
+            snapshots.begin(), snapshots.end(),
+            [&](const Peer& peer) { return peer.node_id == alice.node_id; });
+        CHECK(snapshot_a != snapshots.end());
+        if (snapshot_a != snapshots.end())
+            snapshot_a->state = PeerState::Dead;
+        const auto unchanged_a = pm.get_peer(alice.node_id);
+        CHECK(unchanged_a && unchanged_a->state == PeerState::Unknown);
+
+        auto b = pm.get_peer(bob.node_id);
+        CHECK(b.has_value());
         CHECK(!b->trusted);
 
         // Relay-only peer: no endpoint
-        Peer* c = pm.get_peer(charlie.node_id);
-        CHECK(c != nullptr);
+        auto c = pm.get_peer(charlie.node_id);
+        CHECK(c.has_value());
         CHECK(!c->endpoint.has_value());
 
         // Unknown peer lookup
         NodeId unknown{};
         unknown[0] = 0xFF;
-        CHECK(pm.get_peer(unknown) == nullptr);
+        CHECK(!pm.get_peer(unknown).has_value());
         CHECK(!pm.has_peer(unknown));
 
         // Remove
         pm.remove_peer(bob.node_id);
         CHECK(pm.size() == 2);
         CHECK(!pm.has_peer(bob.node_id));
-        CHECK(pm.get_peer(bob.node_id) == nullptr);
+        CHECK(!pm.get_peer(bob.node_id).has_value());
     }
 
     // ---- 2. State transitions and endpoint update ---------------------------
@@ -87,7 +106,7 @@ int main() {
         pm.upsert(bob.node_id, bob.keypair.public_key, ep_bob);
 
         pm.mark_connecting(bob.node_id);
-        Peer* b = pm.get_peer(bob.node_id);
+        auto b = pm.get_peer(bob.node_id);
         CHECK(b->state == PeerState::Connecting);
         CHECK(b->connect_attempts == 1);
 
@@ -121,8 +140,8 @@ int main() {
         CHECK(pm.upsert(bob.node_id, charlie.keypair.public_key, ep_new) ==
               PeerUpsertResult::IdentityConflict);
 
-        const Peer* existing = pm.get_peer(bob.node_id);
-        CHECK(existing != nullptr);
+        auto existing = pm.get_peer(bob.node_id);
+        CHECK(existing.has_value());
         if (existing) {
             CHECK(existing->public_key == bob.keypair.public_key);
             CHECK(existing->endpoint.has_value());
@@ -133,7 +152,7 @@ int main() {
         CHECK(pm.upsert(bob.node_id, bob.keypair.public_key, ep_new) ==
               PeerUpsertResult::Updated);
         existing = pm.get_peer(bob.node_id);
-        CHECK(existing != nullptr);
+        CHECK(existing.has_value());
         if (existing) {
             CHECK(existing->endpoint.has_value());
             CHECK(existing->endpoint->ip == ep_new.ip);
@@ -179,8 +198,8 @@ int main() {
         Endpoint ep_new = Endpoint::from_parts(192, 168, 1, 52, 51832);
         CHECK(pm.upsert(bob.node_id, bob.keypair.public_key, ep_new) ==
               PeerUpsertResult::Updated);
-        const Peer* updated = pm.get_peer(bob.node_id);
-        CHECK(updated != nullptr);
+        auto updated = pm.get_peer(bob.node_id);
+        CHECK(updated.has_value());
         CHECK(updated && updated->endpoint.has_value());
         CHECK(updated && updated->endpoint && updated->endpoint->ip == ep_new.ip);
         CHECK(updated && updated->endpoint && updated->endpoint->port == ep_new.port);
@@ -237,7 +256,7 @@ int main() {
 
         auto stale = pm.stale_peers();
         CHECK(stale.size() == 1);
-        CHECK(stale[0]->node_id == bob.node_id);
+        CHECK(stale[0].node_id == bob.node_id);
 
         // Dead peers are excluded from stale detection
         pm.mark_dead(bob.node_id);
@@ -258,11 +277,10 @@ int main() {
 
         auto need = pm.peers_needing_keepalive();
         CHECK(need.size() == 1);
-        CHECK(need[0]->node_id == bob.node_id);
+        CHECK(need[0].node_id == bob.node_id);
 
-        // Marking last_keepalive fresh removes it from the list
-        Peer* b = pm.get_peer(bob.node_id);
-        b->last_keepalive = clock.now();
+        // Receiving traffic refreshes last_keepalive under the manager lock.
+        pm.mark_seen(bob.node_id);
         CHECK(pm.peers_needing_keepalive().empty());
     }
 

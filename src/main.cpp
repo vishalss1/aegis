@@ -620,7 +620,7 @@ static int run_peer_test() {
         return 1;
     }
 
-    auto* a = pm.get_peer(alice.node_id);
+    auto a = pm.get_peer(alice.node_id);
     if (!a || a->node_id != alice.node_id ||
         a->public_key != alice.keypair.public_key ||
         !a->endpoint.has_value() || !a->trusted) {
@@ -629,7 +629,7 @@ static int run_peer_test() {
     }
     printf("[peer-test] direct peer entry with endpoint + trusted: OK\n");
 
-    auto* c = pm.get_peer(charlie.node_id);
+    auto c = pm.get_peer(charlie.node_id);
     if (!c || c->endpoint.has_value()) {
         fprintf(stderr, "[peer-test] FAIL: relay-only peer must have no endpoint\n");
         return 1;
@@ -649,7 +649,7 @@ static int run_peer_test() {
 
     // ---- state transitions --------------------------------------------------
     pm.mark_connecting(bob.node_id);
-    auto* b = pm.get_peer(bob.node_id);
+    auto b = pm.get_peer(bob.node_id);
     if (!b || b->state != PeerState::Connecting || b->connect_attempts != 1) {
         fprintf(stderr, "[peer-test] FAIL: mark_connecting\n");
         return 1;

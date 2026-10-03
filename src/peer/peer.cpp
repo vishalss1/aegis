@@ -72,18 +72,11 @@ void PeerManager::remove_peer(const NodeId& node_id) {
     peers_.erase(node_id);
 }
 
-Peer* PeerManager::get_peer(const NodeId& node_id) {
+std::optional<Peer> PeerManager::get_peer(const NodeId& node_id) const {
     std::lock_guard<std::mutex> lock(mtx_);
     auto it = peers_.find(node_id);
-    if (it != peers_.end()) return &it->second;
-    return nullptr;
-}
-
-const Peer* PeerManager::get_peer(const NodeId& node_id) const {
-    std::lock_guard<std::mutex> lock(mtx_);
-    auto it = peers_.find(node_id);
-    if (it != peers_.end()) return &it->second;
-    return nullptr;
+    if (it != peers_.end()) return it->second;
+    return std::nullopt;
 }
 
 bool PeerManager::has_peer(const NodeId& node_id) const {
@@ -96,21 +89,12 @@ size_t PeerManager::size() const {
     return peers_.size();
 }
 
-std::vector<Peer*> PeerManager::all_peers() {
+std::vector<Peer> PeerManager::all_peers() const {
     std::lock_guard<std::mutex> lock(mtx_);
-    std::vector<Peer*> result;
-    result.reserve(peers_.size());
-    for (auto& [_, peer] : peers_)
-        result.push_back(&peer);
-    return result;
-}
-
-std::vector<const Peer*> PeerManager::all_peers() const {
-    std::lock_guard<std::mutex> lock(mtx_);
-    std::vector<const Peer*> result;
+    std::vector<Peer> result;
     result.reserve(peers_.size());
     for (const auto& [_, peer] : peers_)
-        result.push_back(&peer);
+        result.push_back(peer);
     return result;
 }
 
@@ -173,9 +157,9 @@ void PeerManager::set_dead_timeout(std::chrono::milliseconds timeout) {
     dead_timeout_ = timeout;
 }
 
-std::vector<Peer*> PeerManager::stale_peers() {
+std::vector<Peer> PeerManager::stale_peers() const {
     std::lock_guard<std::mutex> lock(mtx_);
-    std::vector<Peer*> stale;
+    std::vector<Peer> stale;
     auto now = clock_.now();
     for (auto& [_, peer] : peers_) {
         if (peer.state == PeerState::Dead) continue;
@@ -183,20 +167,20 @@ std::vector<Peer*> PeerManager::stale_peers() {
             ? peer.last_seen : peer.created_at;
         auto age = std::chrono::duration_cast<std::chrono::milliseconds>(now - reference);
         if (age >= dead_timeout_)
-            stale.push_back(&peer);
+            stale.push_back(peer);
     }
     return stale;
 }
 
-std::vector<Peer*> PeerManager::peers_needing_keepalive() {
+std::vector<Peer> PeerManager::peers_needing_keepalive() const {
     std::lock_guard<std::mutex> lock(mtx_);
-    std::vector<Peer*> result;
+    std::vector<Peer> result;
     auto now = clock_.now();
     for (auto& [_, peer] : peers_) {
         if (peer.state != PeerState::Established) continue;
         auto age = std::chrono::duration_cast<std::chrono::milliseconds>(now - peer.last_keepalive);
         if (age >= keepalive_interval_)
-            result.push_back(&peer);
+            result.push_back(peer);
     }
     return result;
 }

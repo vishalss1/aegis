@@ -146,6 +146,11 @@ identity conflicts, capacity drops, and installed state separately.
 Deterministic eviction remains incomplete. Wire-level peer counts, path
 lengths, prefix counts, and decoded bytes are bounded.
 
+Peer-table read APIs return owned snapshots copied while holding the manager
+mutex. Callers cannot retain pointers into the internal peer map or mutate peer
+records after the lock is released. Session read APIs still expose internal
+pointers and remain part of the concurrency work in progress.
+
 ### Onion forwarding has weaker privacy than the README previously claimed
 
 Every relay frame contains the onion source NodeID outside the onion blob, but

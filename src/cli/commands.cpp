@@ -379,10 +379,10 @@ static int cmd_peers(const ParsedInput& input, CliContext& ctx) {
     std::printf("\nKnown Peers in '%s' (%zu total):\n", ctx.tunnel->network_name().c_str(), peers.size());
     std::printf("%-16s %-12s %-22s %-8s\n", "NodeID (prefix)", "State", "Endpoint", "Type");
     std::printf("------------------------------------------------------------\n");
-    for (const auto* p : peers) {
-        std::string nid_str = to_hex(p->node_id.data(), 8) + "...";
+    for (const auto& p : peers) {
+        std::string nid_str = to_hex(p.node_id.data(), 8) + "...";
         std::string state_str = "Unknown";
-        switch (p->state) {
+        switch (p.state) {
             case PeerState::Discovering: state_str = "Discovering"; break;
             case PeerState::Connecting:  state_str = "Connecting"; break;
             case PeerState::Established: state_str = "Established"; break;
@@ -390,9 +390,9 @@ static int cmd_peers(const ParsedInput& input, CliContext& ctx) {
             default: break;
         }
         std::string ep_str = "N/A";
-        if (p->endpoint) {
-            uint32_t ip_h = ntohl(p->endpoint->ip);
-            uint16_t port_h = ntohs(p->endpoint->port);
+        if (p.endpoint) {
+            uint32_t ip_h = ntohl(p.endpoint->ip);
+            uint16_t port_h = ntohs(p.endpoint->port);
             char buf[32];
             snprintf(buf, sizeof(buf), "%u.%u.%u.%u:%u",
                      (ip_h >> 24) & 0xFF, (ip_h >> 16) & 0xFF,
@@ -401,7 +401,7 @@ static int cmd_peers(const ParsedInput& input, CliContext& ctx) {
         }
         std::printf("%-16s %-12s %-22s %-8s\n",
                     nid_str.c_str(), state_str.c_str(), ep_str.c_str(),
-                    p->trusted ? "Trusted" : "Gossiped");
+                    p.trusted ? "Trusted" : "Gossiped");
     }
     std::printf("\n");
     return 0;

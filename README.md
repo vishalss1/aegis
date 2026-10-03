@@ -513,7 +513,7 @@ Unit test coverage:
 | `test_identity` | NodeID hashing, NetworkID equality, keypair round-trip |
 | `test_tunnel` | Nonce counter arithmetic, wire format round-trip, AEAD integration |
 | `test_session` | Authenticated Noise IK integration, the handshake attack matrix, bounded session state, pending-state expiry, INIT replay caching, simultaneous-init convergence, transport replay windows, and rekey grace |
-| `test_peer` | Multi-peer table — states, endpoints, session lookup, health tracking |
+| `test_peer` | Multi-peer table — snapshot isolation, states, endpoints, session lookup, health tracking |
 | `test_routing` | Prefix → next-hop → peer resolution, Direct/Relay/Unknown types, loop rejection, tie-breaking |
 | `test_peer_table` | TYPE_PEER_TABLE wire encoding/decoding, gossip merge, IP-stripping |
 | `test_relay` | `build_onion` / `peel_onion` — layer construction, per-hop decryption, innermost injection |

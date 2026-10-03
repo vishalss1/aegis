@@ -180,8 +180,8 @@ int main() {
         CHECK(stats.changed());
         CHECK(pm.size() == 2);
 
-        const Peer* pc = pm.get_peer(charlie.node_id);
-        CHECK(pc != nullptr);
+        const auto pc = pm.get_peer(charlie.node_id);
+        CHECK(pc.has_value());
         if (pc) {
             CHECK(!pc->trusted);
             CHECK(!pc->endpoint.has_value());

@@ -80,7 +80,7 @@ bool wait_for_established(const PeerManager& pm, const NodeId& node_id, int time
     auto deadline = std::chrono::steady_clock::now() +
                     std::chrono::seconds(timeout_sec);
     while (std::chrono::steady_clock::now() < deadline) {
-        const Peer* p = pm.get_peer(node_id);
+        const auto p = pm.get_peer(node_id);
         if (p && p->state == PeerState::Established)
             return true;
         Sleep(100);
@@ -482,12 +482,12 @@ int run_gossip_test() {
     const char* names[4] = { "A", "B", "C", "D" };
     for (int n = 0; n < 4; n++) {
         printf("[gossip-test]   %s (%zu peer(s)):", names[n], nodes[n]->peers().size());
-        for (const auto* p : nodes[n]->peers().all_peers()) {
-            printf(" %c%c%c%c", (p->node_id == id_a.node_id ? 'A' :
-                                 p->node_id == id_b.node_id ? 'B' :
-                                 p->node_id == id_c.node_id ? 'C' :
-                                 p->node_id == id_d.node_id ? 'D' : '?'),
-                   p->trusted ? 't' : 'l', p->endpoint ? 'e' : '-', ' ');
+        for (const auto& p : nodes[n]->peers().all_peers()) {
+            printf(" %c%c%c%c", (p.node_id == id_a.node_id ? 'A' :
+                                 p.node_id == id_b.node_id ? 'B' :
+                                 p.node_id == id_c.node_id ? 'C' :
+                                 p.node_id == id_d.node_id ? 'D' : '?'),
+                   p.trusted ? 't' : 'l', p.endpoint ? 'e' : '-', ' ');
         }
         printf("\n");
     }
@@ -509,8 +509,7 @@ int run_gossip_test() {
     const auto& pb = tunnel_b.peers();
 
     auto has_peer = [](const PeerManager& pm, const NodeId& id) {
-        const Peer* p = pm.get_peer(id);
-        return p != nullptr;
+        return pm.get_peer(id).has_value();
     };
 
     // A must know C and D; D must know A and B; B must know D.
@@ -531,7 +530,7 @@ int run_gossip_test() {
 
     // Learned peers are untrusted and carry no endpoint (identity hiding).
     auto untrusted_no_endpoint = [](const PeerManager& pm, const NodeId& id) {
-        const Peer* p = pm.get_peer(id);
+        const auto p = pm.get_peer(id);
         return p && !p->trusted && !p->endpoint.has_value();
     };
     pass = untrusted_no_endpoint(pa, id_d.node_id) && pass;   // A learned D via B
@@ -853,7 +852,7 @@ int run_lifecycle_test() {
         return (*sess)->id;
     };
     auto peer_state = [](const Tunnel& t, const NodeId& peer) -> PeerState {
-        const Peer* p = t.peers().get_peer(peer);
+        const auto p = t.peers().get_peer(peer);
         return p ? p->state : PeerState::Unknown;
     };
     auto has_prefix_route = [](const RoutingEngine& re, uint32_t prefix, uint8_t plen) {

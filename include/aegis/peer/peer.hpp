@@ -66,13 +66,13 @@ public:
     bool add_peer(const Peer& peer);
     void remove_peer(const NodeId& node_id);
 
-    Peer* get_peer(const NodeId& node_id);
-    const Peer* get_peer(const NodeId& node_id) const;
+    // Read APIs return owned snapshots. No pointer or reference into the
+    // internal map may outlive the mutex that protects it.
+    std::optional<Peer> get_peer(const NodeId& node_id) const;
     bool has_peer(const NodeId& node_id) const;
     size_t size() const;
 
-    std::vector<Peer*> all_peers();
-    std::vector<const Peer*> all_peers() const;
+    std::vector<Peer> all_peers() const;
 
     void mark_seen(const NodeId& node_id, std::optional<Endpoint> endpoint = std::nullopt);
     void mark_connecting(const NodeId& node_id);
@@ -86,8 +86,8 @@ public:
     std::chrono::milliseconds keepalive_interval() const { return keepalive_interval_; }
     std::chrono::milliseconds dead_timeout() const { return dead_timeout_; }
 
-    std::vector<Peer*> stale_peers();
-    std::vector<Peer*> peers_needing_keepalive();
+    std::vector<Peer> stale_peers() const;
+    std::vector<Peer> peers_needing_keepalive() const;
 
 private:
     std::map<NodeId, Peer> peers_;

@@ -388,7 +388,7 @@ void Tunnel::tx_loop() {
         }
 
         if (route->type == NextHopType::Direct) {
-            Peer* peer = peers_.get_peer(route->destination);
+            auto peer = peers_.get_peer(route->destination);
             if (!peer || !peer->endpoint) {
                 aegis_log( "[tunnel] peer %02x%02x... has no endpoint, dropping\n",
                         (*route).destination[0], (*route).destination[1]);
@@ -417,7 +417,7 @@ void Tunnel::tx_loop() {
         std::vector<Key> path_keys;
         path_keys.reserve(path.size());
         for (const auto& hop : path) {
-            const Peer* hp = peers_.get_peer(hop);
+            auto hp = peers_.get_peer(hop);
             if (!hp) break;
             path_keys.push_back(hp->public_key);
         }
@@ -447,7 +447,7 @@ void Tunnel::tx_loop() {
             continue;
         }
 
-        Peer* first = peers_.get_peer(route->next_hop);
+        auto first = peers_.get_peer(route->next_hop);
         if (!first || !first->endpoint) {
             aegis_log( "[tunnel] first hop %02x%02x... has no endpoint, dropping\n",
                     route->next_hop[0], route->next_hop[1]);
@@ -487,7 +487,7 @@ void Tunnel::send_keepalive(const Peer& peer) {
 }
 
 void Tunnel::rekey_peer(const NodeId& node_id) {
-    Peer* p = peers_.get_peer(node_id);
+    auto p = peers_.get_peer(node_id);
     if (!p || !p->endpoint)
         return;
     TunnelPeer tp;
@@ -507,27 +507,27 @@ void Tunnel::rekey_due() {
         config_.rekey_interval_ms > 0 ? config_.rekey_interval_ms
                                       : REKEY_INTERVAL_MS);
     auto now = clock_.now();
-    for (auto* peer : peers_.all_peers()) {
-        if (peer->node_id == identity_.node_id)
+    for (const auto& peer : peers_.all_peers()) {
+        if (peer.node_id == identity_.node_id)
             continue;
-        if (peer->state != PeerState::Established)
+        if (peer.state != PeerState::Established)
             continue;
         // Deterministic roles: only the lower NodeID rekeys. The other side
         // auto-answers the re-INIT from its rx path, so exactly one side
         // drives each pair's rekey and the two never race.
-        if (!(identity_.node_id < peer->node_id))
+        if (!(identity_.node_id < peer.node_id))
             continue;
-        auto sess = session_manager_->get_session(peer->node_id);
+        auto sess = session_manager_->get_session(peer.node_id);
         if (!sess)
             continue;
         if (now - (*sess)->established_at < interval)
             continue;
-        auto attempt = rekey_attempts_.find(peer->node_id);
+        auto attempt = rekey_attempts_.find(peer.node_id);
         if (attempt != rekey_attempts_.end() &&
             now - attempt->second < interval)
             continue;  // failed rekey already this interval; retry later
-        rekey_attempts_[peer->node_id] = now;
-        rekey_peer(peer->node_id);
+        rekey_attempts_[peer.node_id] = now;
+        rekey_peer(peer.node_id);
     }
 }
 
@@ -540,19 +540,19 @@ void Tunnel::maintenance_loop() {
         // 1) Keep-alives: established peers silent past the interval get an
         //    empty-payload frame, so liveness is measured end-to-end (their
         //    response is any decrypted packet, which advances last_keepalive).
-        for (auto* peer : peers_.peers_needing_keepalive())
-            send_keepalive(*peer);
+        for (const auto& peer : peers_.peers_needing_keepalive())
+            send_keepalive(peer);
 
         // 2) Dead detection: a peer silent past the dead timeout loses its
         //    session and its routes. Learned peers stay listed but unroutable
         //    (step 15 policy); the connect loop re-establishes configured
         //    peers, re-installing routes only after the handshake succeeds.
-        for (auto* peer : peers_.stale_peers()) {
-            peers_.mark_dead(peer->node_id);
-            session_manager_->remove_session(peer->node_id);
-            routing_.remove_route(peer->node_id);
+        for (const auto& peer : peers_.stale_peers()) {
+            peers_.mark_dead(peer.node_id);
+            session_manager_->remove_session(peer.node_id);
+            routing_.remove_route(peer.node_id);
             aegis_log( "[tunnel] peer %02x%02x... marked dead\n",
-                    peer->node_id[0], peer->node_id[1]);
+                    peer.node_id[0], peer.node_id[1]);
         }
 
         // 3) Garbage-collect sessions retired by a rekey.
@@ -575,7 +575,7 @@ void Tunnel::refresh_endpoints_from_discovery() {
     for (const auto& [id, presence] : discovery_.presences()) {
         if (presence.network_id != identity_.network_id)
             continue;  // cross-network: visible but never reachable
-        Peer* peer = peers_.get_peer(id);
+        auto peer = peers_.get_peer(id);
         if (!peer)
             continue;  // presence alone never creates a peer entry
         if (!peer->trusted)
@@ -893,7 +893,7 @@ void Tunnel::handle_relay(const uint8_t* data, size_t len, uint32_t session_id) 
     const uint8_t* blob = msg->payload.data() + NODE_ID_SIZE;
     size_t blob_len = msg->payload.size() - NODE_ID_SIZE;
 
-    const Peer* sp = peers_.get_peer(source);
+    const auto sp = peers_.get_peer(source);
     if (!sp) {
         aegis_log( "[tunnel] relay from unknown source %02x%02x..., dropping\n",
                 source[0], source[1]);
@@ -924,7 +924,7 @@ void Tunnel::handle_relay(const uint8_t* data, size_t len, uint32_t session_id) 
         return;
     }
 
-    const Peer* nh = peers_.get_peer(peeled->next_hop);
+    const auto nh = peers_.get_peer(peeled->next_hop);
     if (!nh || !nh->endpoint) {
         aegis_log( "[tunnel] relay next hop %02x%02x... unreachable, dropping\n",
                 peeled->next_hop[0], peeled->next_hop[1]);
@@ -959,14 +959,14 @@ std::vector<AdvertisedPeer> Tunnel::build_advertised_peers() const {
     out.push_back(std::move(self));
 
     auto routes = routing_.routes();
-    for (const auto* peer : peers_.all_peers()) {
-        if (peer->node_id == identity_.node_id)
+    for (const auto& peer : peers_.all_peers()) {
+        if (peer.node_id == identity_.node_id)
             continue;
         AdvertisedPeer ap;
-        ap.node_id = peer->node_id;
-        ap.public_key = peer->public_key;
+        ap.node_id = peer.node_id;
+        ap.public_key = peer.public_key;
         for (const auto& r : routes) {
-            if (r.destination != peer->node_id)
+            if (r.destination != peer.node_id)
                 continue;
             ap.prefixes.emplace_back(r.prefix, r.prefix_length);
             // Advertise our FULL hop list to this peer (first hop through the
@@ -995,7 +995,7 @@ void Tunnel::send_peer_table(const NodeId& to_peer) {
         aegis_log( "[tunnel] encrypt peer table failed\n");
         return;
     }
-    Peer* peer = peers_.get_peer(to_peer);
+    auto peer = peers_.get_peer(to_peer);
     if (!peer || !peer->endpoint)
         return;
     aegis_log( "[tunnel] sent peer table (%zu peer(s)) to %02x%02x...\n",
@@ -1004,11 +1004,11 @@ void Tunnel::send_peer_table(const NodeId& to_peer) {
 }
 
 void Tunnel::announce_peer_table(const std::optional<NodeId>& exclude) {
-    for (auto* peer : peers_.all_peers()) {
-        if (exclude && peer->node_id == *exclude)
+    for (const auto& peer : peers_.all_peers()) {
+        if (exclude && peer.node_id == *exclude)
             continue;
-        if (session_established(peer->node_id))
-            send_peer_table(peer->node_id);
+        if (session_established(peer.node_id))
+            send_peer_table(peer.node_id);
     }
 }
 
@@ -1036,9 +1036,9 @@ void Tunnel::handle_peer_table(const NodeId& sender, const uint8_t* data, size_t
 
 bool Tunnel::broadcast_chat(const std::string& text) {
     if (!running_) return false;
-    std::vector<Peer*> established_peers;
-    for (auto* p : peers_.all_peers()) {
-        if (session_established(p->node_id)) {
+    std::vector<Peer> established_peers;
+    for (const auto& p : peers_.all_peers()) {
+        if (session_established(p.node_id)) {
             established_peers.push_back(p);
         }
     }
@@ -1047,11 +1047,11 @@ bool Tunnel::broadcast_chat(const std::string& text) {
         return false;
     }
     bool sent_any = false;
-    for (auto* peer : established_peers) {
+    for (const auto& peer : established_peers) {
         auto msg = session_manager_->encrypt_message(
-            peer->node_id, TYPE_CHAT_MSG, (const uint8_t*)text.data(), text.size());
-        if (msg && peer->endpoint) {
-            transport_.send(msg->data(), msg->size(), *peer->endpoint);
+            peer.node_id, TYPE_CHAT_MSG, (const uint8_t*)text.data(), text.size());
+        if (msg && peer.endpoint) {
+            transport_.send(msg->data(), msg->size(), *peer.endpoint);
             sent_any = true;
         }
     }
@@ -1095,9 +1095,9 @@ bool Tunnel::send_file(const std::string& filepath, const std::optional<NodeId>&
         return false;
     }
 
-    std::vector<Peer*> established_peers;
-    for (auto* p : peers_.all_peers()) {
-        if (session_established(p->node_id)) {
+    std::vector<Peer> established_peers;
+    for (const auto& p : peers_.all_peers()) {
+        if (session_established(p.node_id)) {
             established_peers.push_back(p);
         }
     }
@@ -1120,13 +1120,13 @@ bool Tunnel::send_file(const std::string& filepath, const std::optional<NodeId>&
     std::memcpy(ptr, &fn_len, 2); ptr += 2;
     std::memcpy(ptr, filename.data(), fn_len);
 
-    for (auto* peer : established_peers) {
-        if (target_peer && peer->node_id != *target_peer) continue;
+    for (const auto& peer : established_peers) {
+        if (target_peer && peer.node_id != *target_peer) continue;
         
         auto frame = session_manager_->encrypt_message(
-            peer->node_id, TYPE_FILE_HEADER, header_payload.data(), header_payload.size());
-        if (frame && peer->endpoint) {
-            transport_.send(frame->data(), frame->size(), *peer->endpoint);
+            peer.node_id, TYPE_FILE_HEADER, header_payload.data(), header_payload.size());
+        if (frame && peer.endpoint) {
+            transport_.send(frame->data(), frame->size(), *peer.endpoint);
         }
     }
 
@@ -1145,13 +1145,13 @@ bool Tunnel::send_file(const std::string& filepath, const std::optional<NodeId>&
         std::memcpy(cptr, &dlen, 4); cptr += 4;
         std::memcpy(cptr, buffer.data(), bytes_read);
 
-        for (auto* peer : established_peers) {
-            if (target_peer && peer->node_id != *target_peer) continue;
+        for (const auto& peer : established_peers) {
+            if (target_peer && peer.node_id != *target_peer) continue;
 
             auto frame = session_manager_->encrypt_message(
-                peer->node_id, TYPE_FILE_CHUNK, chunk_payload.data(), chunk_payload.size());
-            if (frame && peer->endpoint) {
-                transport_.send(frame->data(), frame->size(), *peer->endpoint);
+                peer.node_id, TYPE_FILE_CHUNK, chunk_payload.data(), chunk_payload.size());
+            if (frame && peer.endpoint) {
+                transport_.send(frame->data(), frame->size(), *peer.endpoint);
             }
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -1168,20 +1168,20 @@ bool Tunnel::delete_network() {
         return false;
     }
     std::printf("[Aegis] Destroying network... Broadcasting teardown signal to all peers.\n");
-    std::vector<Peer*> established_peers;
-    for (auto* p : peers_.all_peers()) {
-        if (session_established(p->node_id)) {
+    std::vector<Peer> established_peers;
+    for (const auto& p : peers_.all_peers()) {
+        if (session_established(p.node_id)) {
             established_peers.push_back(p);
         }
     }
     std::vector<uint8_t> payload(32);
     std::memcpy(payload.data(), identity_.node_id.data(), 32);
 
-    for (auto* peer : established_peers) {
+    for (const auto& peer : established_peers) {
         auto msg = session_manager_->encrypt_message(
-            peer->node_id, TYPE_NETWORK_TEARDOWN, payload.data(), payload.size());
-        if (msg && peer->endpoint) {
-            transport_.send(msg->data(), msg->size(), *peer->endpoint);
+            peer.node_id, TYPE_NETWORK_TEARDOWN, payload.data(), payload.size());
+        if (msg && peer.endpoint) {
+            transport_.send(msg->data(), msg->size(), *peer.endpoint);
         }
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
