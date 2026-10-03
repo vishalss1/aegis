@@ -18,6 +18,8 @@ static const char* SAMPLE = R"(
 interface:
   address: 10.10.0.1/24
   listen_port: 51820
+  underlay_mtu: 1500
+  max_relay_depth: 8
 
 identity:
   network_id: 000102030405060708090a0b0c0d0e0f000102030405060708090a0b0c0d0e0f
@@ -45,6 +47,11 @@ int main() {
         const AppConfig& app = cfg.get();
         CHECK(app.iface.address == "10.10.0.1/24");
         CHECK(app.iface.listen_port == 51820);
+        CHECK(app.iface.underlay_mtu == 1500);
+        CHECK(app.iface.max_relay_depth == 8);
+        const auto overlay_mtu = safe_overlay_mtu(
+            app.iface.underlay_mtu, app.iface.max_relay_depth);
+        CHECK(overlay_mtu && *overlay_mtu == 916);
         CHECK(app.network_id.has_value());
         CHECK(app.network_id->size() == 32);
         CHECK((*app.network_id)[0] == 0x00 && (*app.network_id)[1] == 0x01);
@@ -90,6 +97,8 @@ int main() {
             "  listen_port: 51820\n"));
         CHECK(!cfg.get().network_id.has_value());
         CHECK(cfg.get().peers.empty());
+        CHECK(cfg.get().iface.underlay_mtu == DEFAULT_UNDERLAY_MTU);
+        CHECK(cfg.get().iface.max_relay_depth == ONION_MAX_HOPS);
     }
 
     // ---- 4. Errors ----------------------------------------------------------
@@ -99,6 +108,15 @@ int main() {
         CHECK(!cfg.parse_yaml("interface:\n  address: 10.0.0.1/24\n"));      // no port
         CHECK(!cfg.parse_yaml("interface:\n  address: 10.0.0.1/24\n  listen_port: 0\n"));  // port 0
         CHECK(!cfg.parse_yaml("interface:\n  address: 10.0.0.1/24\n  listen_port: 70000\n"));  // port range
+        CHECK(!cfg.parse_yaml(
+            "interface:\n  address: 10.0.0.1/24\n  listen_port: 51820\n"
+            "  underlay_mtu: 1159\n  max_relay_depth: 8\n"));  // unsafe MTU
+        CHECK(!cfg.parse_yaml(
+            "interface:\n  address: 10.0.0.1/24\n  listen_port: 51820\n"
+            "  underlay_mtu: 1500\n  max_relay_depth: 0\n"));  // depth below range
+        CHECK(!cfg.parse_yaml(
+            "interface:\n  address: 10.0.0.1/24\n  listen_port: 51820\n"
+            "  underlay_mtu: 1500\n  max_relay_depth: 9\n"));  // depth above range
         CHECK(!cfg.parse_yaml("foo:\n  bar: 1\n"));                          // unknown top-level
         CHECK(!cfg.parse_yaml("interface:\n  bogus: 1\n"));                  // unknown key
         CHECK(!cfg.parse_yaml(

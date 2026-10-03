@@ -444,6 +444,10 @@ interface:
   address: 10.10.0.1/24
   # Physical UDP port — Winsock binds here for all overlay traffic
   listen_port: 51820
+  # Physical IPv4 path MTU used to derive the virtual adapter MTU
+  underlay_mtu: 1500
+  # Maximum Route::path peer count (1 = direct only, 8 = protocol maximum)
+  max_relay_depth: 8
   # Optional STUN server for WAN public IP:port discovery (RFC 5389)
   stun_server: stun.l.google.com:19302
 
@@ -474,6 +478,9 @@ peer:
 - Each `peer` entry must have both `endpoint` and `public_key`; missing either fails parsing.
 - `public_key` must be exactly 32 bytes (64 hex characters).
 - `listen_port` must be in range 1–65535.
+- `underlay_mtu` must leave at least a 576-byte overlay MTU after framing.
+- `max_relay_depth` must be in range 1–8; its worst-case overhead determines
+  the Wintun IPv4 MTU.
 
 ---
 

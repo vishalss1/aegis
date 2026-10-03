@@ -113,6 +113,10 @@ static int cmd_config(const ParsedInput& input, CliContext& ctx) {
         yaml += "interface:\n";
         yaml += "  address: " + (ctx.active_config.iface.address.empty() ? "10.10.0.1/24" : ctx.active_config.iface.address) + "\n";
         yaml += "  listen_port: " + std::to_string(ctx.active_config.iface.listen_port ? ctx.active_config.iface.listen_port : 51820) + "\n";
+        yaml += "  underlay_mtu: " +
+            std::to_string(ctx.active_config.iface.underlay_mtu) + "\n";
+        yaml += "  max_relay_depth: " +
+            std::to_string(ctx.active_config.iface.max_relay_depth) + "\n";
         if (ctx.active_config.iface.stun_server) {
             yaml += "  stun_server: " + *ctx.active_config.iface.stun_server + "\n";
         }

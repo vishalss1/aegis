@@ -23,6 +23,14 @@ Tunnel::Tunnel(ProtocolClock& clock, RandomSource& random)
 Tunnel::~Tunnel() { stop(); }
 
 bool Tunnel::start(const TunnelConfig& config, const std::string& adapter_name) {
+    const auto overlay_mtu = safe_overlay_mtu(
+        config.underlay_mtu, config.max_relay_depth);
+    if (!overlay_mtu) {
+        aegis_log("[tunnel] invalid MTU contract: underlay=%u route-depth=%u\n",
+                  config.underlay_mtu,
+                  static_cast<unsigned>(config.max_relay_depth));
+        return false;
+    }
     config_ = config;
     network_name_ = config_.network_name;
 
@@ -61,7 +69,9 @@ bool Tunnel::start(const TunnelConfig& config, const std::string& adapter_name) 
     size_t converted = 0;
     mbstowcs_s(&converted, wname, adapter_name.c_str(), _TRUNCATE);
 
-    if (!adapter_.create(config.local_ip, config.local_prefix, wname)) {
+    if (!adapter_.create(
+            config.local_ip, config.local_prefix, wname,
+            static_cast<uint32_t>(*overlay_mtu))) {
         aegis_log( "[tunnel] adapter creation failed\n");
         return false;
     }
@@ -406,6 +416,13 @@ void Tunnel::tx_loop() {
         // see one layer and forward the rest, so intermediate nodes never
         // learn the full path or the payload.
         const auto& path = route->path;
+        if (path.size() > config_.max_relay_depth) {
+            aegis_log("[tunnel] relay path depth %zu exceeds configured "
+                      "maximum %u, dropping packet\n",
+                      path.size(),
+                      static_cast<unsigned>(config_.max_relay_depth));
+            continue;
+        }
         std::vector<Key> path_keys;
         path_keys.reserve(path.size());
         for (const auto& hop : path) {

@@ -91,6 +91,17 @@ bool parse_port(const std::string& value, uint16_t& out) {
     return true;
 }
 
+bool parse_bounded_uint32(const std::string& value, uint32_t minimum,
+                          uint32_t maximum, uint32_t& out) {
+    if (value.empty()) return false;
+    for (char c : value)
+        if (c < '0' || c > '9') return false;
+    const unsigned long parsed = std::strtoul(value.c_str(), nullptr, 10);
+    if (parsed < minimum || parsed > maximum) return false;
+    out = static_cast<uint32_t>(parsed);
+    return true;
+}
+
 }  // namespace
 
 bool Config::parse_yaml(const std::string& content) {
@@ -143,6 +154,22 @@ bool Config::parse_yaml(const std::string& content) {
             }
             if (key == "listen_port") {
                 if (!parse_port(value, cfg.iface.listen_port)) return false;
+                continue;
+            }
+            if (key == "underlay_mtu") {
+                if (!parse_bounded_uint32(
+                        value, 1, static_cast<uint32_t>(MAXIMUM_IPV4_MTU),
+                        cfg.iface.underlay_mtu))
+                    return false;
+                continue;
+            }
+            if (key == "max_relay_depth") {
+                uint32_t depth = 0;
+                if (!parse_bounded_uint32(
+                        value, static_cast<uint32_t>(DIRECT_ROUTE_DEPTH),
+                        static_cast<uint32_t>(ONION_MAX_HOPS), depth))
+                    return false;
+                cfg.iface.max_relay_depth = static_cast<uint8_t>(depth);
                 continue;
             }
             if (key == "stun_server") {
@@ -242,6 +269,13 @@ bool Config::parse_yaml(const std::string& content) {
 
     if (cfg.iface.address.empty() || cfg.iface.listen_port == 0) {
         fprintf(stderr, "[config] parse_yaml: interface.address and listen_port are required\n");
+        return false;
+    }
+    if (!safe_overlay_mtu(
+            cfg.iface.underlay_mtu, cfg.iface.max_relay_depth)) {
+        fprintf(stderr,
+                "[config] parse_yaml: underlay_mtu cannot support the "
+                "configured max_relay_depth\n");
         return false;
     }
     for (const auto& p : cfg.peers) {

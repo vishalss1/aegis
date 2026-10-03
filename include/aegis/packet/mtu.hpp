@@ -11,6 +11,9 @@
 // or two through ONION_MAX_HOPS for a relayed route whose path includes the
 // destination. The outer transport is currently IPv4 UDP.
 inline constexpr size_t DIRECT_ROUTE_DEPTH = 1;
+inline constexpr size_t DEFAULT_UNDERLAY_MTU = 1500;
+inline constexpr size_t MINIMUM_IPV4_MTU = 576;
+inline constexpr size_t MAXIMUM_IPV4_MTU = 65535;
 inline constexpr size_t OUTER_IPV4_HEADER_SIZE = 20;
 inline constexpr size_t OUTER_UDP_HEADER_SIZE = 8;
 inline constexpr size_t OUTER_IPV4_UDP_OVERHEAD =
@@ -37,4 +40,18 @@ wire_overhead_for_route_depth(size_t route_depth) noexcept {
         overhead += RELAY_SOURCE_OVERHEAD + route_depth * ONION_OVERHEAD;
     }
     return overhead;
+}
+
+// The largest inner IPv4 packet that is guaranteed to fit the configured
+// underlay at the permitted route depth. Values that cannot preserve IPv4's
+// 576-byte minimum reassembly size are rejected instead of configuring an
+// unusably small virtual interface.
+[[nodiscard]] constexpr std::optional<size_t>
+safe_overlay_mtu(size_t underlay_mtu, size_t route_depth) noexcept {
+    if (underlay_mtu > MAXIMUM_IPV4_MTU)
+        return std::nullopt;
+    const auto overhead = wire_overhead_for_route_depth(route_depth);
+    if (!overhead || underlay_mtu < *overhead + MINIMUM_IPV4_MTU)
+        return std::nullopt;
+    return underlay_mtu - *overhead;
 }

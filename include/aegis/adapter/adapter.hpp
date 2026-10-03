@@ -27,13 +27,15 @@ public:
 
     bool create(uint32_t ip = htonl((10 << 24) | (10 << 16) | (0 << 8) | 1),
                 uint8_t prefix = 24,
-                const wchar_t* adapter_name = L"Aegis Tunnel");
+                const wchar_t* adapter_name = L"Aegis Tunnel",
+                uint32_t mtu = 1500);
     void close();
 
     bool read_packet(std::vector<uint8_t>& out, DWORD timeout_ms = 5000);
     bool write_packet(const std::vector<uint8_t>& data);
 
     uint32_t interface_index() const { return if_index_; }
+    uint32_t mtu() const { return mtu_; }
     bool is_open() const { return adapter_ != nullptr; }
 
     static void print_packet(const uint8_t* data, size_t len);
@@ -41,6 +43,7 @@ public:
 private:
     bool load_wintun_dll();
     bool configure_ip(uint32_t ip, uint8_t prefix);
+    bool configure_mtu(uint32_t mtu);
 
     HMODULE wintun_dll_ = nullptr;
 
@@ -59,4 +62,5 @@ private:
     WINTUN_ADAPTER_HANDLE adapter_ = nullptr;
     WINTUN_SESSION_HANDLE session_ = nullptr;
     NET_IFINDEX if_index_ = 0;
+    uint32_t mtu_ = 0;
 };

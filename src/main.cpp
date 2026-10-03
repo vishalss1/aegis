@@ -988,6 +988,8 @@ static int run_config(const std::string& path) {
     }
     tcfg.listen_port = app.iface.listen_port;
     tcfg.stun_server = app.iface.stun_server;
+    tcfg.underlay_mtu = app.iface.underlay_mtu;
+    tcfg.max_relay_depth = app.iface.max_relay_depth;
 
     if (app.network_id)
         tcfg.identity = Identity::create(*app.network_id);

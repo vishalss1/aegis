@@ -152,6 +152,14 @@ int main() {
         CHECK(!wire_overhead_for_route_depth(0).has_value());
         CHECK(!wire_overhead_for_route_depth(
             ONION_MAX_HOPS + 1).has_value());
+
+        CHECK(safe_overlay_mtu(1500, 1) == 1428);
+        CHECK(safe_overlay_mtu(1500, 2) == 1276);
+        CHECK(safe_overlay_mtu(1500, ONION_MAX_HOPS) == 916);
+        CHECK(safe_overlay_mtu(1160, ONION_MAX_HOPS) ==
+              MINIMUM_IPV4_MTU);
+        CHECK(!safe_overlay_mtu(1159, ONION_MAX_HOPS).has_value());
+        CHECK(!safe_overlay_mtu(MAXIMUM_IPV4_MTU + 1, 1).has_value());
     }
 
     printf("\n%d / %d passed\n", passed, tests);

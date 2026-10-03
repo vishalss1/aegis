@@ -11,6 +11,7 @@
 #include "aegis/discovery/discovery.hpp"
 #include "aegis/crypto/random.hpp"
 #include "aegis/protocol/sources.hpp"
+#include "aegis/packet/mtu.hpp"
 #include <array>
 #include <cstdint>
 #include <string>
@@ -48,6 +49,8 @@ struct TunnelConfig {
     uint32_t local_ip;                  // network byte order (adapter convention)
     uint8_t  local_prefix;              // e.g. 24
     uint16_t listen_port;               // host byte order
+    uint32_t underlay_mtu = static_cast<uint32_t>(DEFAULT_UNDERLAY_MTU);
+    uint8_t max_relay_depth = static_cast<uint8_t>(ONION_MAX_HOPS);
     std::optional<std::string> stun_server; // e.g. "stun.l.google.com:19302"
     std::vector<TunnelPeer> peers;      // bootstrap candidates
 

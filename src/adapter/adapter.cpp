@@ -1,4 +1,5 @@
 #include "aegis/adapter/adapter.hpp"
+#include "aegis/packet/mtu.hpp"
 #include "aegis/packet/packet.hpp"
 
 Adapter::Adapter() {
@@ -56,7 +57,12 @@ bool Adapter::load_wintun_dll() {
     return true;
 }
 
-bool Adapter::create(uint32_t ip, uint8_t prefix, const wchar_t* adapter_name) {
+bool Adapter::create(uint32_t ip, uint8_t prefix, const wchar_t* adapter_name,
+                     uint32_t mtu) {
+    if (mtu < MINIMUM_IPV4_MTU || mtu > MAXIMUM_IPV4_MTU) {
+        fprintf(stderr, "[adapter] invalid IPv4 MTU %u\n", mtu);
+        return false;
+    }
     fprintf(stderr, "[adapter] create: loading dll\n");
     if (!load_wintun_dll())
         return false;
@@ -110,6 +116,10 @@ interface_ready:
         close();
         return false;
     }
+    if (!configure_mtu(mtu)) {
+        close();
+        return false;
+    }
 
     // Use same ring capacity as WireGuard example
     session_ = WintunStartSession_(adapter_, 0x400000);
@@ -123,11 +133,12 @@ interface_ready:
 
     {
         uint32_t ip_net = ntohl(ip);
-        fprintf(stderr, "[adapter] up  if_index=%lu  ip=%u.%u.%u.%u/%u\n",
+        fprintf(stderr,
+                "[adapter] up  if_index=%lu  ip=%u.%u.%u.%u/%u  mtu=%u\n",
                 if_index_,
                 (ip_net >> 24) & 0xFF, (ip_net >> 16) & 0xFF,
                 (ip_net >>  8) & 0xFF,  ip_net        & 0xFF,
-                prefix);
+                prefix, mtu_);
     }
     return true;
 }
@@ -146,6 +157,32 @@ void Adapter::close() {
         wintun_dll_ = nullptr;
     }
     if_index_ = 0;
+    mtu_ = 0;
+}
+
+bool Adapter::configure_mtu(uint32_t mtu) {
+    MIB_IPINTERFACE_ROW row{};
+    InitializeIpInterfaceEntry(&row);
+    row.Family = AF_INET;
+    row.InterfaceIndex = if_index_;
+
+    ULONG ret = GetIpInterfaceEntry(&row);
+    if (ret != NO_ERROR) {
+        fprintf(stderr, "[adapter] GetIpInterfaceEntry failed (error %lu)\n",
+                ret);
+        return false;
+    }
+    row.SitePrefixLength = 0;
+    row.NlMtu = mtu;
+    ret = SetIpInterfaceEntry(&row);
+    if (ret != NO_ERROR) {
+        fprintf(stderr, "[adapter] SetIpInterfaceEntry(NlMtu=%u) failed "
+                        "(error %lu)\n", mtu, ret);
+        return false;
+    }
+    mtu_ = mtu;
+    fprintf(stderr, "[adapter] IPv4 MTU %u configured\n", mtu_);
+    return true;
 }
 
 bool Adapter::configure_ip(uint32_t ip, uint8_t prefix) {

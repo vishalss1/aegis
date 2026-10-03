@@ -1,6 +1,7 @@
 #pragma once
 
 #include "aegis/identity/identity.hpp"
+#include "aegis/packet/mtu.hpp"
 #include <cstdint>
 #include <string>
 #include <optional>
@@ -18,6 +19,8 @@ struct PeerConfig {
 struct InterfaceConfig {
     std::string address;                   // "10.10.0.1/24"
     uint16_t listen_port = 0;
+    uint32_t underlay_mtu = static_cast<uint32_t>(DEFAULT_UNDERLAY_MTU);
+    uint8_t max_relay_depth = static_cast<uint8_t>(ONION_MAX_HOPS);
     std::optional<std::string> stun_server; // "stun.l.google.com:19302"
 };
 

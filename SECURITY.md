@@ -175,9 +175,10 @@ oversized gossip frames from allocating without bound.
 
 ### MTU and reliability are not managed
 
-The adapter MTU is not reduced for session and onion overhead, and the overlay
-does not fragment or reassemble packets. Large IP packets can exceed the path
-MTU and be lost.
+The adapter MTU is reduced for the configured underlay MTU and maximum route
+depth, but transport-side datagram rejection and decrypted inner-length
+validation are not yet complete. The overlay does not fragment or reassemble
+packets.
 
 The transport has no bounded per-peer queues, congestion pacing, relay quotas,
 or backpressure. UDP packet loss is not repaired for general tunnel traffic.
