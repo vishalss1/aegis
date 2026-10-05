@@ -1,4 +1,5 @@
 #include "aegis/transport/transport.hpp"
+#include "aegis/transport/send_queue.hpp"
 #include "aegis/transport/handshake_rate_limiter.hpp"
 #include "aegis/transport/handshake_cookie.hpp"
 #include "aegis/platform/platform.hpp"
@@ -223,7 +224,57 @@ int main() {
         rx.close();
     }
 
-    // ---- 6. Handshake limiter: per-IP and global fixed-window budgets ------
+    // ---- 6. Send queues enforce item/byte caps and drain peers fairly ------
+    {
+        SendQueueLimits limits;
+        limits.max_items_per_peer = 2;
+        limits.max_bytes_per_peer = 6;
+        limits.max_items_global = 3;
+        limits.max_bytes_global = 10;
+        BoundedSendQueue queue(limits);
+        const std::array<uint8_t, 4> payload{1, 2, 3, 4};
+
+        CHECK(queue.enqueue(1, payload.data(), 3) == SendQueueResult::Queued);
+        CHECK(queue.enqueue(1, payload.data(), 3) == SendQueueResult::Queued);
+        CHECK(queue.enqueue(1, payload.data(), 1) ==
+              SendQueueResult::PerPeerItemLimit);
+        CHECK(queue.enqueue(2, payload.data(), 4) == SendQueueResult::Queued);
+        CHECK(queue.enqueue(2, payload.data(), 1) ==
+              SendQueueResult::GlobalItemLimit);
+        CHECK(queue.size() == 3);
+        CHECK(queue.bytes() == 10);
+        CHECK(queue.peer_count() == 2);
+
+        const auto first = queue.pop();
+        const auto second = queue.pop();
+        const auto third = queue.pop();
+        CHECK(first && first->peer_key == 1 && first->bytes.size() == 3);
+        CHECK(second && second->peer_key == 2 && second->bytes.size() == 4);
+        CHECK(third && third->peer_key == 1 && third->bytes.size() == 3);
+        CHECK(queue.empty());
+        CHECK(!queue.pop().has_value());
+
+        SendQueueLimits byte_limits;
+        byte_limits.max_items_per_peer = 3;
+        byte_limits.max_bytes_per_peer = 4;
+        byte_limits.max_items_global = 4;
+        byte_limits.max_bytes_global = 6;
+        BoundedSendQueue byte_queue(byte_limits);
+        CHECK(byte_queue.enqueue(1, payload.data(), 3) ==
+              SendQueueResult::Queued);
+        CHECK(byte_queue.enqueue(1, payload.data(), 2) ==
+              SendQueueResult::PerPeerByteLimit);
+        CHECK(byte_queue.enqueue(2, payload.data(), 3) ==
+              SendQueueResult::Queued);
+        CHECK(byte_queue.enqueue(3, payload.data(), 1) ==
+              SendQueueResult::GlobalByteLimit);
+        byte_queue.clear();
+        CHECK(byte_queue.empty());
+        CHECK(byte_queue.bytes() == 0);
+        CHECK(byte_queue.peer_count() == 0);
+    }
+
+    // ---- 7. Handshake limiter: per-IP and global fixed-window budgets ------
     {
         ManualClock clock;
         HandshakeRateLimitConfig config;
@@ -248,7 +299,7 @@ int main() {
         CHECK(limiter.tracked_sources() == 1);
     }
 
-    // ---- 7. Handshake limiter: source tracking is bounded and expires ------
+    // ---- 8. Handshake limiter: source tracking is bounded and expires ------
     {
         ManualClock clock;
         HandshakeRateLimitConfig config;
@@ -268,7 +319,7 @@ int main() {
         CHECK(limiter.tracked_sources() == 1);
     }
 
-    // ---- 8. Stateless retry cookies bind endpoint, session, and INIT --------
+    // ---- 9. Stateless retry cookies bind endpoint, session, and INIT --------
     {
         ManualClock clock;
         IncrementingRandom random;
@@ -304,7 +355,7 @@ int main() {
         CHECK(second && cookies.verify(*second, source, session_id, init));
     }
 
-    // ---- 9. Cookie issuance fails closed without secure randomness ----------
+    // ---- 10. Cookie issuance fails closed without secure randomness ---------
     {
         ManualClock clock;
         FailingRandom random;

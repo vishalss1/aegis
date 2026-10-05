@@ -129,7 +129,7 @@ A few design choices that shaped how Aegis works.
          │  ┌───────────────┴───────────────────────┐   │
          │  │          Transport Layer              │   │
          │  │  Winsock UDP · keep-alives            │   │
-         │  │  Datagram I/O · background rx thread  │   │
+         │  │  Bounded per-peer tx · background I/O │   │
          │  └───────────────┬───────────────────────┘   │
          └──────────────────┼───────────────────────────┘
                             │ Encrypted UDP datagrams
@@ -176,6 +176,7 @@ A few design choices that shaped how Aegis works.
 | **NodeID Addressing** | Peers are addressed as `NodeID = BLAKE2b(PublicKey)`. Received gossip enforces that binding, and Noise IK authenticates it for adjacent sessions. |
 | **Noise IK + ChaCha20-Poly1305** | Authenticated Noise IK derives directional session keys with fresh ephemerals and transcript key confirmation; ChaCha20-Poly1305 authenticates data frames. |
 | **Bounded Handshake Admission** | Per-IP/global INIT limits and rotating stateless retry cookies prove endpoint reachability before responder-side Noise DH or peer/session allocation. |
+| **Bounded Transport Queues** | Per-peer and global item/byte caps bound outbound UDP memory. New datagrams are dropped at capacity, and active peers drain round-robin. |
 | **Multi-hop Onion Routing** | Each hop decrypts one layer and learns the next hop. Relays also receive the source NodeID, and unpadded packet size and timing remain visible. |
 | **Peer Table Gossip** | Full mesh convergence without a coordinator. Every new session triggers a fan-out of the peer table; a periodic 3-second gossip loop ensures far-end peers propagate across multi-hop chains. |
 | **Identity-Hiding Gossip** | Peer tables carry NodeID + public key + IP prefix routes. Physical endpoints are never transmitted in gossip — non-adjacent nodes cannot learn each other's real IP. |
@@ -608,7 +609,7 @@ Unit test coverage:
 | `test_handshake_v2` | Canonical Noise IK INIT/RESP envelope framing and malformed-frame rejection |
 | `test_noise_dependency` | Pinned Noise-C suite availability and unsupported-algorithm confinement |
 | `test_noise_ik` | Noise vectors, transcript/split verification, malformed-message rejection, and failed-state destruction |
-| `test_transport` | Winsock loopback, MTU-derived datagram limits, socket lifecycle, bounded handshake admission, and stateless retry cookies |
+| `test_transport` | Winsock loopback, bounded per-peer/global send queues, MTU-derived datagram limits, socket lifecycle, bounded handshake admission, and stateless retry cookies |
 | `test_crypto` | X25519 keygen, shared secret derivation, determinism |
 | `test_random` | Checked random-source injection and CSPRNG generation |
 | `test_primitives` | SHA-256/BLAKE2s transcript hashes, HMAC/HKDF vectors, constant-time comparison |

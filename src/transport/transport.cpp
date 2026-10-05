@@ -12,6 +12,7 @@ bool Transport::bind(uint16_t port, const SocketOptions& opts) {
     if (sock_ != INVALID_SOCKET) close();
     oversize_send_drops_.store(0, std::memory_order_relaxed);
     oversize_receive_drops_.store(0, std::memory_order_relaxed);
+    send_queue_drops_.store(0, std::memory_order_relaxed);
 
     sock_ = socket(AF_INET, SOCK_DGRAM, 0);
     if (sock_ == INVALID_SOCKET) {
@@ -40,11 +41,25 @@ bool Transport::bind(uint16_t port, const SocketOptions& opts) {
     }
 
     local_port_ = port;
+    {
+        std::lock_guard<std::mutex> lock(send_mutex_);
+        send_queue_.clear();
+        send_running_ = true;
+    }
+    send_thread_ = std::thread(&Transport::send_loop, this);
     return true;
 }
 
 void Transport::close() {
     stop_receive();
+    {
+        std::lock_guard<std::mutex> lock(send_mutex_);
+        send_running_ = false;
+        send_queue_.clear();
+    }
+    send_cv_.notify_all();
+    if (send_thread_.joinable())
+        send_thread_.join();
     if (sock_ != INVALID_SOCKET) {
         closesocket(sock_);
         sock_ = INVALID_SOCKET;
@@ -65,18 +80,53 @@ bool Transport::send(const uint8_t* data, size_t len, const Endpoint& dest) {
         return false;
     }
     if (len > 0 && !data) return false;
-    if (sock_ == INVALID_SOCKET) return false;
+    const uint64_t peer_key =
+        (static_cast<uint64_t>(dest.ip) << 16) |
+        static_cast<uint64_t>(dest.port);
+    {
+        std::lock_guard<std::mutex> lock(send_mutex_);
+        if (sock_ == INVALID_SOCKET || !send_running_)
+            return false;
+        if (send_queue_.enqueue(peer_key, data, len) !=
+            SendQueueResult::Queued) {
+            send_queue_drops_.fetch_add(1, std::memory_order_relaxed);
+            return false;
+        }
+    }
+    send_cv_.notify_one();
+    return true;
+}
 
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = dest.ip;
-    addr.sin_port = dest.port;
-    int ret = sendto(sock_, (const char*)data, (int)len, 0,
-                     (const sockaddr*)&addr, sizeof(addr));
-    if (ret == SOCKET_ERROR)
-        fprintf(stderr, "[transport] sendto %08x:%04x failed: %d\n",
-                ntohl(dest.ip), ntohs(dest.port), platform_last_error());
-    return ret != SOCKET_ERROR;
+void Transport::send_loop() {
+    while (true) {
+        std::optional<QueuedDatagram> datagram;
+        {
+            std::unique_lock<std::mutex> lock(send_mutex_);
+            send_cv_.wait(lock, [this] {
+                return !send_running_ || !send_queue_.empty();
+            });
+            if (!send_running_)
+                return;
+            datagram = send_queue_.pop();
+        }
+        if (!datagram)
+            continue;
+
+        Endpoint dest{};
+        dest.ip = static_cast<uint32_t>(datagram->peer_key >> 16);
+        dest.port = static_cast<uint16_t>(datagram->peer_key & 0xFFFFu);
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = dest.ip;
+        addr.sin_port = dest.port;
+        const int length = static_cast<int>(datagram->bytes.size());
+        const int ret = sendto(
+            sock_, reinterpret_cast<const char*>(datagram->bytes.data()),
+            length, 0, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr));
+        if (ret == SOCKET_ERROR)
+            fprintf(stderr, "[transport] sendto %08x:%04x failed: %d\n",
+                    ntohl(dest.ip), ntohs(dest.port), platform_last_error());
+    }
 }
 
 bool Transport::start_receive(OnReceiveCallback callback) {

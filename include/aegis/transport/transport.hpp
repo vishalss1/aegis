@@ -1,10 +1,13 @@
 #pragma once
 
+#include "aegis/transport/send_queue.hpp"
 #include <cstdint>
 #include <cstddef>
 #include <functional>
 #include <thread>
 #include <atomic>
+#include <condition_variable>
+#include <mutex>
 #include <winsock2.h>
 
 inline constexpr size_t IPV4_UDP_MAX_DATAGRAM_SIZE = 65507;
@@ -50,6 +53,10 @@ public:
     bool bind(uint16_t local_port, const SocketOptions& opts = {});
     void close();
 
+    // Copies a datagram into the destination's bounded FIFO. Returns false if
+    // the socket is closed, the datagram is invalid/oversized, or a per-peer
+    // or global queue limit would be exceeded. Accepted datagrams are drained
+    // asynchronously, one per active peer in round-robin order.
     bool send(const uint8_t* data, size_t len, const Endpoint& dest);
 
     // Maximum UDP payload permitted by the configured physical IPv4 MTU.
@@ -65,6 +72,9 @@ public:
     uint64_t oversize_receive_drops() const {
         return oversize_receive_drops_.load(std::memory_order_relaxed);
     }
+    uint64_t send_queue_drops() const {
+        return send_queue_drops_.load(std::memory_order_relaxed);
+    }
 
     bool start_receive(OnReceiveCallback callback);
     void stop_receive();
@@ -75,11 +85,18 @@ public:
 private:
     SOCKET sock_ = INVALID_SOCKET;
     uint16_t local_port_ = 0;
+    std::thread send_thread_;
     std::thread recv_thread_;
+    bool send_running_ = false;
     std::atomic<bool> running_{false};
     std::atomic<size_t> max_datagram_size_{IPV4_UDP_MAX_DATAGRAM_SIZE};
     std::atomic<uint64_t> oversize_send_drops_{0};
     std::atomic<uint64_t> oversize_receive_drops_{0};
+    std::atomic<uint64_t> send_queue_drops_{0};
+    std::mutex send_mutex_;
+    std::condition_variable send_cv_;
+    BoundedSendQueue send_queue_;
 
+    void send_loop();
     void recv_loop(OnReceiveCallback callback);
 };

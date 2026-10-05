@@ -1007,10 +1007,15 @@ void Tunnel::handle_handshake_init_frame(const uint8_t* data, size_t len,
     out.reserve(PACKET_HEADER_SIZE + response->message.size());
     out.insert(out.end(), header_bytes.begin(), header_bytes.end());
     out.insert(out.end(), response->message.begin(), response->message.end());
-    transport_.send(out.data(), out.size(), sender);
+    if (!transport_.send(out.data(), out.size(), sender)) {
+        session_manager_->remove_session(response->peer_id);
+        aegis_log("[tunnel] handshake response queue full, session removed\n");
+        return;
+    }
 
-    // Mark done only after the response is on the wire so the responder
-    // doesn't start sending data before the initiator can decrypt it.
+    // Mark done only after the response is accepted by the destination FIFO.
+    // Later frames for this endpoint cannot overtake it, so the responder does
+    // not enqueue data before the initiator's handshake response.
     std::lock_guard<std::mutex> lock(hs_mtx_);
     pending_handshakes_[response->peer_id] = {
         response->peer_id, header.session_id, true};
