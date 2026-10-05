@@ -173,10 +173,12 @@ window; and peer and route tables are capped. The replay cache and other state
 are not yet comprehensively bounded. Peer-table wire limits also prevent
 oversized gossip frames from allocating without bound.
 
-### MTU and reliability are not managed
+### Packets are MTU-bounded but reliability is not provided
 
 The adapter MTU is reduced for the configured underlay MTU and maximum route
-depth, and transport rejects oversized outbound and inbound UDP payloads.
+depth, and transport rejects oversized outbound and inbound UDP payloads. The
+complete contract and overhead budget are documented in the
+[overlay MTU policy](README.md#overlay-mtu-policy).
 The tunnel rejects oversized, malformed, truncated, and trailing-byte inner
 IPv4 packets before Wintun injection and reports drop counters. The overlay
 does not fragment or reassemble packets.
@@ -222,8 +224,8 @@ untrusted candidates until an authenticated handshake validates them.
 
 ## Operational Guidance
 
-Until the authenticated handshake, persistent state limits, and MTU policy are
-implemented:
+Given the remaining authorization, onion-nonce, reliability, and file-transfer
+limitations:
 
 - Do not use Aegis for sensitive or production traffic.
 - Do not expose its UDP listener directly to the public Internet.

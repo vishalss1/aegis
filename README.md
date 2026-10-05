@@ -20,7 +20,7 @@ An experimental, user-space **encrypted overlay network** built in **C++** — e
 
 ## Table of Contents
 
-[Security Status](#security-status) · [What Is Aegis](#what-is-aegis) · [Engineering Decisions](#engineering-decisions) · [Architecture](#architecture) · [Features](#features) · [Onion Security Model](#onion-security-model) · [CI/CD](#cicd-pipeline) · [Tech Stack](#tech-stack) · [Quick Start](#quick-start) · [Usage](#usage) · [Config Format](#configuration-file) · [Testing](#testing)
+[Security Status](#security-status) · [What Is Aegis](#what-is-aegis) · [Engineering Decisions](#engineering-decisions) · [Architecture](#architecture) · [Features](#features) · [Onion Security Model](#onion-security-model) · [CI/CD](#cicd-pipeline) · [Tech Stack](#tech-stack) · [Quick Start](#quick-start) · [Usage](#usage) · [Config Format](#configuration-file) · [MTU Policy](#overlay-mtu-policy) · [Testing](#testing)
 
 ---
 
@@ -30,8 +30,7 @@ An experimental, user-space **encrypted overlay network** built in **C++** — e
 > Aegis is an experimental prototype and is not ready to protect sensitive or
 > production traffic. Adjacent sessions now authenticate static peer identities
 > with Noise IK, and gossip enforces the NodeID/public-key binding at its merge
-> boundary, but membership authorization, route ownership, MTU,
-> resource-exhaustion, and reliability
+> boundary, but membership authorization, route ownership, and reliability
 > protections remain incomplete. See
 > [SECURITY.md](SECURITY.md) for the current guarantees and known limitations.
 
@@ -481,6 +480,104 @@ peer:
 - `underlay_mtu` must leave at least a 576-byte overlay MTU after framing.
 - `max_relay_depth` must be in range 1–8; its worst-case overhead determines
   the Wintun IPv4 MTU.
+
+## Overlay MTU Policy
+
+Aegis uses an explicit MTU contract so an inner IPv4 packet plus all Aegis and
+IPv4/UDP framing fits the configured physical path MTU. Aegis does not perform
+path-MTU discovery, overlay fragmentation, or overlay reassembly. Packets that
+exceed a configured limit are dropped rather than fragmented by Aegis.
+
+`underlay_mtu` is the maximum complete outer IPv4 packet size, including the
+outer IPv4 and UDP headers. `max_relay_depth` is the greatest permitted
+`Route::path` length: depth 1 is a direct peer, while depths 2 through 8 are
+relayed paths that include the destination.
+
+The Wintun IPv4 MTU is calculated at startup from the worst permitted route:
+
+```text
+overlay MTU = underlay_mtu - wire overhead(max_relay_depth)
+```
+
+Configuration is rejected unless the result is at least IPv4's 576-byte
+minimum reassembly size. For example, an eight-hop route requires an underlay
+MTU of at least 1,160 bytes.
+
+### Wire-overhead calculation
+
+| Component | Bytes | Applies to |
+|:--|--:|:--|
+| Outer IPv4 header | 20 | Every packet |
+| Outer UDP header | 8 | Every packet |
+| Encrypted session frame | 44 | Every packet: 16-byte header, 12-byte nonce, 16-byte tag |
+| Relay source NodeID | 32 | Relayed packets only |
+| Onion layer | 60 per hop | Relayed packets only: 32-byte next hop, 12-byte nonce, 16-byte tag |
+
+For route depth `d`:
+
+```text
+direct (d = 1):   wire overhead = 28 + 44 = 72
+relayed (d >= 2): wire overhead = 28 + 44 + 32 + (60 * d)
+```
+
+With the default 1,500-byte underlay MTU, the complete budget is:
+
+| Route depth | Route type | Wire overhead | Safe overlay MTU |
+|--:|:--|--:|--:|
+| 1 | Direct | 72 | 1,428 |
+| 2 | Relayed | 224 | 1,276 |
+| 3 | Relayed | 284 | 1,216 |
+| 4 | Relayed | 344 | 1,156 |
+| 5 | Relayed | 404 | 1,096 |
+| 6 | Relayed | 464 | 1,036 |
+| 7 | Relayed | 524 | 976 |
+| 8 | Relayed | 584 | 916 |
+
+The configured Wintun MTU uses the row for `max_relay_depth`. Outbound
+processing also checks the resolved route's actual depth before encryption.
+
+### Enforcement and diagnostics
+
+The contract is enforced at several boundaries:
+
+1. Configuration rejects invalid route depths or an underlay/depth combination
+   that would produce an overlay MTU below 576 bytes.
+2. Wintun is configured with the worst-case overlay MTU so the Windows network
+   stack does not normally submit larger inner packets.
+3. The tunnel rejects an outbound inner packet that exceeds the budget for its
+   resolved route.
+4. UDP transport rejects outbound and inbound datagrams larger than
+   `underlay_mtu - 28`.
+5. Before Wintun injection, the tunnel requires an exact, checksum-valid IPv4
+   packet whose declared total length equals the decrypted buffer length and
+   whose size does not exceed the configured overlay MTU.
+
+The interactive `/status` command reports the active `Overlay MTU` and these
+drop counters:
+
+- `outbound`: inner packets too large for their resolved routes.
+- `inbound`: decrypted inner packets larger than the overlay MTU.
+- `invalid`: malformed, truncated, or trailing-byte inner IPv4 packets.
+- `wire-send` and `wire-receive`: UDP datagrams outside the transport budget.
+
+The first drop in each tunnel category, and then every hundredth drop, is also
+logged.
+
+### Operational requirements
+
+Set `underlay_mtu` no higher than the smallest physical IPv4 path MTU that any
+configured Aegis route may traverse. Because Aegis does not discover path MTU,
+an overly large value can still cause outer IP fragmentation or loss below the
+Aegis layer.
+
+Use a common conservative `underlay_mtu` and `max_relay_depth` across a mesh.
+Nodes may technically use different values, but a sender with a larger overlay
+MTU can produce an inner packet that a more conservative receiver rejects.
+
+If the resulting overlay MTU is too restrictive, reducing relay depth increases
+the available payload budget. Overlay fragmentation must be specified and
+implemented as a separate bounded protocol before packets larger than this
+contract can be carried safely.
 
 ---
 
