@@ -227,10 +227,10 @@ int main() {
     // ---- 6. Send queues enforce item/byte caps and drain peers fairly ------
     {
         SendQueueLimits limits;
-        limits.max_items_per_peer = 2;
-        limits.max_bytes_per_peer = 6;
-        limits.max_items_global = 3;
-        limits.max_bytes_global = 10;
+        limits.data.max_items_per_peer = 2;
+        limits.data.max_bytes_per_peer = 6;
+        limits.data.max_items_global = 3;
+        limits.data.max_bytes_global = 10;
         BoundedSendQueue queue(limits);
         const std::array<uint8_t, 4> payload{1, 2, 3, 4};
 
@@ -255,10 +255,10 @@ int main() {
         CHECK(!queue.pop().has_value());
 
         SendQueueLimits byte_limits;
-        byte_limits.max_items_per_peer = 3;
-        byte_limits.max_bytes_per_peer = 4;
-        byte_limits.max_items_global = 4;
-        byte_limits.max_bytes_global = 6;
+        byte_limits.data.max_items_per_peer = 3;
+        byte_limits.data.max_bytes_per_peer = 4;
+        byte_limits.data.max_items_global = 4;
+        byte_limits.data.max_bytes_global = 6;
         BoundedSendQueue byte_queue(byte_limits);
         CHECK(byte_queue.enqueue(1, payload.data(), 3) ==
               SendQueueResult::Queued);
@@ -274,7 +274,56 @@ int main() {
         CHECK(byte_queue.peer_count() == 0);
     }
 
-    // ---- 7. Handshake limiter: per-IP and global fixed-window budgets ------
+    // ---- 7. Control has reserved capacity and strict dequeue priority -------
+    {
+        CHECK(TRANSPORT_QUEUE_MAX_ITEMS_PER_PEER == 64);
+        CHECK(TRANSPORT_QUEUE_MAX_BYTES_PER_PEER == 256 * 1024);
+        CHECK(TRANSPORT_QUEUE_MAX_ITEMS_GLOBAL == 1024);
+        CHECK(TRANSPORT_QUEUE_MAX_BYTES_GLOBAL == 4 * 1024 * 1024);
+
+        SendQueueLimits limits;
+        limits.data.max_items_per_peer = 1;
+        limits.data.max_bytes_per_peer = 4;
+        limits.data.max_items_global = 2;
+        limits.data.max_bytes_global = 8;
+        limits.control.max_items_per_peer = 1;
+        limits.control.max_bytes_per_peer = 4;
+        limits.control.max_items_global = 2;
+        limits.control.max_bytes_global = 8;
+        BoundedSendQueue queue(limits);
+        const std::array<uint8_t, 2> payload{1, 2};
+
+        CHECK(queue.enqueue(1, payload.data(), payload.size()) ==
+              SendQueueResult::Queued);
+        CHECK(queue.enqueue(1, payload.data(), payload.size()) ==
+              SendQueueResult::PerPeerItemLimit);
+        CHECK(queue.enqueue(
+                  1, payload.data(), payload.size(), SendPriority::Control) ==
+              SendQueueResult::Queued);
+        CHECK(queue.enqueue(2, payload.data(), payload.size()) ==
+              SendQueueResult::Queued);
+        CHECK(queue.enqueue(
+                  2, payload.data(), payload.size(), SendPriority::Control) ==
+              SendQueueResult::Queued);
+        CHECK(queue.data_size() == 2);
+        CHECK(queue.control_size() == 2);
+
+        const auto first = queue.pop();
+        const auto second = queue.pop();
+        const auto third = queue.pop();
+        const auto fourth = queue.pop();
+        CHECK(first && first->priority == SendPriority::Control &&
+              first->peer_key == 1);
+        CHECK(second && second->priority == SendPriority::Control &&
+              second->peer_key == 2);
+        CHECK(third && third->priority == SendPriority::Data &&
+              third->peer_key == 1);
+        CHECK(fourth && fourth->priority == SendPriority::Data &&
+              fourth->peer_key == 2);
+        CHECK(queue.empty());
+    }
+
+    // ---- 8. Handshake limiter: per-IP and global fixed-window budgets ------
     {
         ManualClock clock;
         HandshakeRateLimitConfig config;
@@ -299,7 +348,7 @@ int main() {
         CHECK(limiter.tracked_sources() == 1);
     }
 
-    // ---- 8. Handshake limiter: source tracking is bounded and expires ------
+    // ---- 9. Handshake limiter: source tracking is bounded and expires ------
     {
         ManualClock clock;
         HandshakeRateLimitConfig config;
@@ -319,7 +368,7 @@ int main() {
         CHECK(limiter.tracked_sources() == 1);
     }
 
-    // ---- 9. Stateless retry cookies bind endpoint, session, and INIT --------
+    // ---- 10. Stateless retry cookies bind endpoint, session, and INIT -------
     {
         ManualClock clock;
         IncrementingRandom random;
@@ -355,7 +404,7 @@ int main() {
         CHECK(second && cookies.verify(*second, source, session_id, init));
     }
 
-    // ---- 10. Cookie issuance fails closed without secure randomness ---------
+    // ---- 11. Cookie issuance fails closed without secure randomness ---------
     {
         ManualClock clock;
         FailingRandom random;

@@ -376,7 +376,9 @@ bool Tunnel::handshake_peer(const TunnelPeer& peer, bool force) {
                     pending->second.cookie->end());
             }
             pending->second.cookie_updated = false;
-            transport_.send(wire.data(), wire.size(), peer.endpoint);
+            transport_.send(
+                wire.data(), wire.size(), peer.endpoint,
+                SendPriority::Control);
             if (hs_cv_.wait_for(lock, std::chrono::seconds(1),
                     [&] { return !running_ ||
                              pending_handshakes_[peer.node_id].done ||
@@ -563,8 +565,11 @@ void Tunnel::send_keepalive(const Peer& peer) {
                 peer.node_id[0], peer.node_id[1]);
         return;
     }
-    if (peer.endpoint)
-        transport_.send(frame->data(), frame->size(), *peer.endpoint);
+    if (peer.endpoint) {
+        transport_.send(
+            frame->data(), frame->size(), *peer.endpoint,
+            SendPriority::Control);
+    }
 }
 
 void Tunnel::rekey_peer(const NodeId& node_id) {
@@ -979,7 +984,9 @@ void Tunnel::handle_handshake_init_frame(const uint8_t* data, size_t len,
                   challenge_wire.begin());
         std::copy(cookie->begin(), cookie->end(),
                   challenge_wire.begin() + PACKET_HEADER_SIZE);
-        transport_.send(challenge_wire.data(), challenge_wire.size(), sender);
+        transport_.send(
+            challenge_wire.data(), challenge_wire.size(), sender,
+            SendPriority::Control);
         return;
     }
 
@@ -1007,7 +1014,8 @@ void Tunnel::handle_handshake_init_frame(const uint8_t* data, size_t len,
     out.reserve(PACKET_HEADER_SIZE + response->message.size());
     out.insert(out.end(), header_bytes.begin(), header_bytes.end());
     out.insert(out.end(), response->message.begin(), response->message.end());
-    if (!transport_.send(out.data(), out.size(), sender)) {
+    if (!transport_.send(
+            out.data(), out.size(), sender, SendPriority::Control)) {
         session_manager_->remove_session(response->peer_id);
         aegis_log("[tunnel] handshake response queue full, session removed\n");
         return;

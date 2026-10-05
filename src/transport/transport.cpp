@@ -74,7 +74,8 @@ bool Transport::set_max_datagram_size(size_t maximum) {
     return true;
 }
 
-bool Transport::send(const uint8_t* data, size_t len, const Endpoint& dest) {
+bool Transport::send(const uint8_t* data, size_t len, const Endpoint& dest,
+                     SendPriority priority) {
     if (len > max_datagram_size_.load(std::memory_order_relaxed)) {
         oversize_send_drops_.fetch_add(1, std::memory_order_relaxed);
         return false;
@@ -87,7 +88,7 @@ bool Transport::send(const uint8_t* data, size_t len, const Endpoint& dest) {
         std::lock_guard<std::mutex> lock(send_mutex_);
         if (sock_ == INVALID_SOCKET || !send_running_)
             return false;
-        if (send_queue_.enqueue(peer_key, data, len) !=
+        if (send_queue_.enqueue(peer_key, data, len, priority) !=
             SendQueueResult::Queued) {
             send_queue_drops_.fetch_add(1, std::memory_order_relaxed);
             return false;

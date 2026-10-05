@@ -183,9 +183,11 @@ The tunnel rejects oversized, malformed, truncated, and trailing-byte inner
 IPv4 packets before Wintun injection and reports drop counters. The overlay
 does not fragment or reassemble packets.
 
-Transport send queues have per-destination and global item/byte bounds with a
-drop-new policy, but there is no congestion pacing, relay quota, or adaptive
-backpressure. UDP packet loss is not repaired for general tunnel traffic.
+Transport send queues have separate per-destination and global control/data
+item and byte bounds with a drop-new policy. Handshake and keep-alive traffic
+has reserved capacity and strict dequeue priority. There is no congestion
+pacing, relay quota, or adaptive backpressure. UDP packet loss is not repaired
+for general tunnel traffic.
 
 ### File transfer is not reliable or safe for hostile input
 

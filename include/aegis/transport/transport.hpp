@@ -53,11 +53,12 @@ public:
     bool bind(uint16_t local_port, const SocketOptions& opts = {});
     void close();
 
-    // Copies a datagram into the destination's bounded FIFO. Returns false if
-    // the socket is closed, the datagram is invalid/oversized, or a per-peer
-    // or global queue limit would be exceeded. Accepted datagrams are drained
-    // asynchronously, one per active peer in round-robin order.
-    bool send(const uint8_t* data, size_t len, const Endpoint& dest);
+    // Copies a datagram into the destination's bounded priority FIFO. Returns
+    // false if the socket is closed, the datagram is invalid/oversized, or its
+    // queue class is full. Control capacity is reserved from data traffic and
+    // drains first; peers within each class drain round-robin.
+    bool send(const uint8_t* data, size_t len, const Endpoint& dest,
+              SendPriority priority = SendPriority::Data);
 
     // Maximum UDP payload permitted by the configured physical IPv4 MTU.
     // The default is the protocol maximum so non-tunnel users remain usable;
