@@ -1,4 +1,5 @@
 #include "aegis/packet/relay.hpp"
+#include "aegis/packet/mtu.hpp"
 #include "aegis/identity/identity.hpp"
 #include <cstdio>
 #include <cstring>
@@ -165,6 +166,40 @@ int main() {
             many_keys.push_back(hop.keypair.public_key);
         }
         CHECK(!build_onion(src.keypair, many, many_keys, packet, packet_len).has_value());
+    }
+
+    // ---- 8. Calculated wire budgets match real onions at every relay depth --
+    {
+        std::vector<NodeId> all_hops;
+        std::vector<Key> all_keys;
+        for (size_t index = 0; index < ONION_MAX_HOPS; ++index) {
+            Identity hop = Identity::create(net);
+            all_hops.push_back(hop.node_id);
+            all_keys.push_back(hop.keypair.public_key);
+        }
+
+        for (size_t depth = 2; depth <= ONION_MAX_HOPS; ++depth) {
+            const auto end_offset =
+                static_cast<std::vector<NodeId>::difference_type>(depth);
+            std::vector<NodeId> depth_hops(
+                all_hops.begin(), all_hops.begin() + end_offset);
+            std::vector<Key> depth_keys(
+                all_keys.begin(), all_keys.begin() + end_offset);
+            const auto onion = build_onion(
+                src.keypair, depth_hops, depth_keys, packet, packet_len);
+            const auto overhead = wire_overhead_for_route_depth(depth);
+
+            CHECK(onion.has_value());
+            CHECK(overhead.has_value());
+            if (onion && overhead) {
+                const size_t relay_payload_size = NODE_ID_SIZE + onion->size();
+                const size_t encrypted_datagram_size =
+                    SESSION_FRAME_OVERHEAD + relay_payload_size;
+                const size_t physical_wire_size =
+                    OUTER_IPV4_UDP_OVERHEAD + encrypted_datagram_size;
+                CHECK(physical_wire_size == packet_len + *overhead);
+            }
+        }
     }
 
     printf("--- relay / onion: %d/%d passed ---\n", passed, tests);

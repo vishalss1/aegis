@@ -1,5 +1,6 @@
 #include "aegis/packet/packet.hpp"
 #include "aegis/packet/mtu.hpp"
+#include <array>
 #include <cstdio>
 #include <cstring>
 #include <vector>
@@ -154,9 +155,21 @@ int main() {
         CHECK(!wire_overhead_for_route_depth(
             ONION_MAX_HOPS + 1).has_value());
 
-        CHECK(safe_overlay_mtu(1500, 1) == 1428);
-        CHECK(safe_overlay_mtu(1500, 2) == 1276);
-        CHECK(safe_overlay_mtu(1500, ONION_MAX_HOPS) == 916);
+        constexpr std::array<size_t, ONION_MAX_HOPS> expected_mtu = {
+            1428, 1276, 1216, 1156, 1096, 1036, 976, 916
+        };
+        for (size_t depth = 1; depth <= ONION_MAX_HOPS; ++depth) {
+            const auto overhead = wire_overhead_for_route_depth(depth);
+            const auto mtu = safe_overlay_mtu(DEFAULT_UNDERLAY_MTU, depth);
+            CHECK(overhead.has_value());
+            CHECK(mtu.has_value());
+            CHECK(mtu && *mtu == expected_mtu[depth - 1]);
+            CHECK(mtu && overhead &&
+                  *mtu + *overhead == DEFAULT_UNDERLAY_MTU);
+            CHECK(mtu && overhead &&
+                  *mtu + 1 + *overhead > DEFAULT_UNDERLAY_MTU);
+        }
+
         CHECK(safe_overlay_mtu(1160, ONION_MAX_HOPS) ==
               MINIMUM_IPV4_MTU);
         CHECK(!safe_overlay_mtu(1159, ONION_MAX_HOPS).has_value());

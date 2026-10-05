@@ -506,7 +506,7 @@ Unit test coverage:
 
 | Test Binary | What It Covers |
 |:------------|:---------------|
-| `test_packet` | IP parsing, exact decrypted-packet validation, encrypted frames, layer typing, and route-depth wire overhead |
+| `test_packet` | IP parsing, exact decrypted-packet validation, encrypted frames, layer typing, and the full route-depth MTU budget matrix |
 | `test_wire` | Bounded network-byte-order readers/writers and atomic failure behavior |
 | `test_handshake_v2` | Canonical Noise IK INIT/RESP envelope framing and malformed-frame rejection |
 | `test_noise_dependency` | Pinned Noise-C suite availability and unsupported-algorithm confinement |
@@ -523,7 +523,7 @@ Unit test coverage:
 | `test_peer` | Multi-peer table — concurrent lifecycle/snapshot safety, states, endpoints, session lookup, health tracking |
 | `test_routing` | Prefix → next-hop → peer resolution, Direct/Relay/Unknown types, loop rejection, tie-breaking |
 | `test_peer_table` | TYPE_PEER_TABLE wire encoding/decoding, gossip merge, IP-stripping |
-| `test_relay` | `build_onion` / `peel_onion` — layer construction, per-hop decryption, innermost injection |
+| `test_relay` | `build_onion` / `peel_onion` — layer construction, per-hop decryption, innermost injection, and wire-budget agreement across relay depths |
 | `test_discovery` | LAN presence broadcast format, NetworkID extraction, endpoint parsing |
 | `test_config` | YAML parsing, strict validation, unknown-key rejection, malformed value errors |
 | `test_invite` | AEGIS1 invite code encoding, decoding, validation, round-trip |
