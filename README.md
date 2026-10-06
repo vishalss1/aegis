@@ -177,6 +177,7 @@ A few design choices that shaped how Aegis works.
 | **Noise IK + ChaCha20-Poly1305** | Authenticated Noise IK derives directional session keys with fresh ephemerals and transcript key confirmation; ChaCha20-Poly1305 authenticates data frames. |
 | **Bounded Handshake Admission** | Per-IP/global INIT limits and rotating stateless retry cookies prove endpoint reachability before responder-side Noise DH or peer/session allocation. |
 | **Bounded Transport Queues** | Separate control/data item and byte caps bound outbound UDP memory. Handshakes and keep-alives use reserved control capacity and drain first; peers within each class drain round-robin. |
+| **Relay Forwarding Quotas** | Per-authenticated-sender and global packet/byte token buckets bound forwarded relay traffic. Idle quota state expires and total tracking is capped at 256 peers. |
 | **Multi-hop Onion Routing** | Each hop decrypts one layer and learns the next hop. Relays also receive the source NodeID, and unpadded packet size and timing remain visible. |
 | **Peer Table Gossip** | Full mesh convergence without a coordinator. Every new session triggers a fan-out of the peer table; a periodic 3-second gossip loop ensures far-end peers propagate across multi-hop chains. |
 | **Identity-Hiding Gossip** | Peer tables carry NodeID + public key + IP prefix routes. Physical endpoints are never transmitted in gossip — non-adjacent nodes cannot learn each other's real IP. |
@@ -621,7 +622,7 @@ Unit test coverage:
 | `test_peer` | Multi-peer table — concurrent lifecycle/snapshot safety, states, endpoints, session lookup, health tracking |
 | `test_routing` | Prefix → next-hop → peer resolution, Direct/Relay/Unknown types, loop rejection, tie-breaking |
 | `test_peer_table` | TYPE_PEER_TABLE wire encoding/decoding, gossip merge, IP-stripping |
-| `test_relay` | `build_onion` / `peel_onion` — layer construction, per-hop decryption, innermost injection, and wire-budget agreement across relay depths |
+| `test_relay` | `build_onion` / `peel_onion` — layer construction, per-hop decryption, wire-budget agreement, and deterministic relay quota enforcement |
 | `test_discovery` | LAN presence broadcast format, NetworkID extraction, endpoint parsing |
 | `test_config` | YAML parsing, strict validation, unknown-key rejection, malformed value errors |
 | `test_invite` | AEGIS1 invite code encoding, decoding, validation, round-trip |

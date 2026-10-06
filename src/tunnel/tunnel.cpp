@@ -16,6 +16,7 @@ Tunnel::Tunnel()
 
 Tunnel::Tunnel(ProtocolClock& clock, RandomSource& random)
     : discovery_(clock), clock_(clock), random_(random),
+      relay_forward_limiter_(clock),
       handshake_rate_limiter_(clock),
       handshake_cookie_manager_(clock, random),
       peers_(PEER_MANAGER_MAX_PEERS, clock) {}
@@ -37,6 +38,7 @@ bool Tunnel::start(const TunnelConfig& config, const std::string& adapter_name) 
     oversize_outbound_drops_.store(0, std::memory_order_relaxed);
     oversize_inbound_drops_.store(0, std::memory_order_relaxed);
     invalid_inbound_drops_.store(0, std::memory_order_relaxed);
+    relay_forward_limiter_.reset();
 
     const size_t datagram_budget =
         config.underlay_mtu - OUTER_IPV4_UDP_OVERHEAD;
@@ -1035,7 +1037,8 @@ void Tunnel::handle_relay(const uint8_t* data, size_t len, uint32_t session_id) 
     if (!msg || msg->packet_type != TYPE_RELAY) return;
     auto sess = session_manager_->get_session_by_id(session_id);
     if (!sess) return;
-    peers_.mark_seen(sess->peer_id);
+    const NodeId authenticated_sender = sess->peer_id;
+    peers_.mark_seen(authenticated_sender);
 
     // Payload = [32] source NodeID || onion blob. The source is who we peel
     // with — every layer was keyed to the source's static key, and a relay is
@@ -1083,6 +1086,22 @@ void Tunnel::handle_relay(const uint8_t* data, size_t len, uint32_t session_id) 
     if (!nh || !nh->endpoint) {
         aegis_log( "[tunnel] relay next hop %02x%02x... unreachable, dropping\n",
                 peeled->next_hop[0], peeled->next_hop[1]);
+        return;
+    }
+
+    const size_t forwarded_size =
+        SESSION_FRAME_OVERHEAD + RELAY_SOURCE_OVERHEAD + peeled->inner.size();
+    const auto quota = relay_forward_limiter_.allow(
+        authenticated_sender, forwarded_size);
+    if (quota != RelayQuotaResult::Allowed) {
+        const auto quota_stats = relay_forward_limiter_.stats();
+        const uint64_t drops = quota_stats.total_drops();
+        if (drops == 1 || drops % 100 == 0) {
+            aegis_log("[tunnel] relay quota drop from %02x%02x... "
+                      "(%llu drop(s))\n",
+                      authenticated_sender[0], authenticated_sender[1],
+                      static_cast<unsigned long long>(drops));
+        }
         return;
     }
 

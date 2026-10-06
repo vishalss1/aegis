@@ -78,6 +78,7 @@ set(AEGIS_SOURCES
     src/peer/peer_table.cpp
     src/packet/packet.cpp
     src/packet/relay.cpp
+    src/packet/relay_limiter.cpp
     src/discovery/discovery.cpp
     src/config/config.cpp
     src/invite/invite.cpp

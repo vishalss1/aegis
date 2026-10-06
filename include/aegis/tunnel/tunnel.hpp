@@ -12,6 +12,7 @@
 #include "aegis/crypto/random.hpp"
 #include "aegis/protocol/sources.hpp"
 #include "aegis/packet/mtu.hpp"
+#include "aegis/packet/relay_limiter.hpp"
 #include <array>
 #include <cstdint>
 #include <string>
@@ -136,6 +137,7 @@ private:
     bool is_creator_ = false;
     ProtocolClock& clock_;
     RandomSource& random_;
+    RelayForwardLimiter relay_forward_limiter_;
     HandshakeRateLimiter handshake_rate_limiter_;
     HandshakeCookieManager handshake_cookie_manager_;
     std::unique_ptr<SessionManager> session_manager_;

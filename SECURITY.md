@@ -185,9 +185,10 @@ does not fragment or reassemble packets.
 
 Transport send queues have separate per-destination and global control/data
 item and byte bounds with a drop-new policy. Handshake and keep-alive traffic
-has reserved capacity and strict dequeue priority. There is no congestion
-pacing, relay quota, or adaptive backpressure. UDP packet loss is not repaired
-for general tunnel traffic.
+has reserved capacity and strict dequeue priority. Forwarded relay traffic has
+per-authenticated-sender and global packet/byte token buckets, with bounded
+peer state and idle expiry. There is no originating-traffic pacing or adaptive
+backpressure. UDP packet loss is not repaired for general tunnel traffic.
 
 ### File transfer is not reliable or safe for hostile input
 

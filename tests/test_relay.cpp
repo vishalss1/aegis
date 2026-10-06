@@ -1,12 +1,23 @@
 #include "aegis/packet/relay.hpp"
+#include "aegis/packet/relay_limiter.hpp"
 #include "aegis/packet/mtu.hpp"
 #include "aegis/identity/identity.hpp"
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <vector>
 
 static int tests  = 0;
 static int passed = 0;
+
+class ManualClock final : public ProtocolClock {
+public:
+    [[nodiscard]] time_point now() const noexcept override { return now_; }
+    void advance(std::chrono::milliseconds duration) { now_ += duration; }
+
+private:
+    time_point now_{};
+};
 
 #define CHECK(cond) do { \
     tests++; \
@@ -200,6 +211,69 @@ int main() {
                 CHECK(physical_wire_size == packet_len + *overhead);
             }
         }
+    }
+
+    // ---- 9. Relay forwarding uses per-peer and global token buckets --------
+    {
+        ManualClock clock;
+        RelayQuotaConfig config;
+        config.per_peer_packets_per_second = 2.0;
+        config.per_peer_packet_burst = 2;
+        config.per_peer_bytes_per_second = 100.0;
+        config.per_peer_byte_burst = 100;
+        config.global_packets_per_second = 10.0;
+        config.global_packet_burst = 3;
+        config.global_bytes_per_second = 100.0;
+        config.global_byte_burst = 150;
+        config.max_peers = 2;
+        config.idle_ttl = std::chrono::milliseconds(1000);
+        RelayForwardLimiter limiter(clock, config);
+
+        CHECK(limiter.allow(b.node_id, 60) == RelayQuotaResult::Allowed);
+        CHECK(limiter.allow(b.node_id, 41) ==
+              RelayQuotaResult::PeerLimited);
+        CHECK(limiter.allow(b.node_id, 40) == RelayQuotaResult::Allowed);
+        CHECK(limiter.allow(b.node_id, 1) ==
+              RelayQuotaResult::PeerLimited);
+
+        // Failed peer admission consumed no global capacity: C can still use
+        // the exact 50 bytes left in the global bucket.
+        CHECK(limiter.allow(c.node_id, 51) ==
+              RelayQuotaResult::GlobalLimited);
+        CHECK(limiter.allow(c.node_id, 50) == RelayQuotaResult::Allowed);
+        CHECK(limiter.tracked_peers() == 2);
+
+        clock.advance(std::chrono::milliseconds(100));
+        CHECK(limiter.allow(d.node_id, 1) ==
+              RelayQuotaResult::CapacityLimited);
+
+        // Idle state expires, and both packet and byte tokens refill.
+        clock.advance(std::chrono::milliseconds(900));
+        CHECK(limiter.allow(d.node_id, 1) == RelayQuotaResult::Allowed);
+        CHECK(limiter.tracked_peers() == 1);
+
+        const auto stats = limiter.stats();
+        CHECK(stats.admitted_packets == 4);
+        CHECK(stats.admitted_bytes == 151);
+        CHECK(stats.peer_drops == 2);
+        CHECK(stats.global_drops == 1);
+        CHECK(stats.capacity_drops == 1);
+        CHECK(stats.total_drops() == 4);
+
+        limiter.reset();
+        CHECK(limiter.tracked_peers() == 0);
+        CHECK(limiter.stats().admitted_packets == 0);
+        CHECK(limiter.allow(b.node_id, 100) == RelayQuotaResult::Allowed);
+    }
+
+    // ---- 10. Invalid relay quota configurations fail closed ----------------
+    {
+        ManualClock clock;
+        RelayQuotaConfig invalid;
+        invalid.per_peer_packets_per_second = 0.0;
+        RelayForwardLimiter limiter(clock, invalid);
+        CHECK(limiter.allow(b.node_id, 1) == RelayQuotaResult::Invalid);
+        CHECK(limiter.tracked_peers() == 0);
     }
 
     printf("--- relay / onion: %d/%d passed ---\n", passed, tests);
