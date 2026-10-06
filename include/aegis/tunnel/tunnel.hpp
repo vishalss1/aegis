@@ -3,6 +3,7 @@
 #include "aegis/session/session.hpp"
 #include "aegis/peer/peer.hpp"
 #include "aegis/peer/peer_table.hpp"
+#include "aegis/peer/gossip.hpp"
 #include "aegis/routing/routing.hpp"
 #include "aegis/transport/transport.hpp"
 #include "aegis/transport/handshake_rate_limiter.hpp"
@@ -143,6 +144,7 @@ private:
     std::unique_ptr<SessionManager> session_manager_;
     PeerManager peers_;
     RoutingEngine routing_;
+    GossipDeltaTracker gossip_delta_tracker_;
 
 
     std::thread tx_thread_;
@@ -155,7 +157,8 @@ private:
     std::atomic<uint64_t> oversize_inbound_drops_{0};
     std::atomic<uint64_t> invalid_inbound_drops_{0};
     uint32_t unrouted_count_ = 0;
-    static constexpr int GOSSIP_INTERVAL_MS = 3000;
+    size_t gossip_round_ = 0;
+    std::mutex gossip_send_mtx_;
 
     // Step 15 lifecycle defaults (used when TunnelConfig leaves them at 0).
     static constexpr int KEEPALIVE_INTERVAL_MS = 25000;
@@ -244,7 +247,8 @@ private:
     // current table is sent to the new peer; on learning new peers the table
     // is re-announced to all other established peers so knowledge fans out.
     std::vector<AdvertisedPeer> build_advertised_peers() const;
-    void send_peer_table(const NodeId& to_peer);
-    void announce_peer_table(const std::optional<NodeId>& exclude);
+    void send_peer_table(const NodeId& to_peer, bool force_full = false);
+    void announce_peer_table(const std::optional<NodeId>& exclude,
+                             bool force_full = false);
     void handle_peer_table(const NodeId& sender, const uint8_t* data, size_t len);
 };

@@ -61,7 +61,7 @@ A few design choices that shaped how Aegis works.
 
 **A mesh with no fixed entry point.** Nodes are provisioned with a list of bootstrap candidates via out-of-band config. Joining follows an availability-based policy — each candidate gets its own background connect loop with exponential backoff. The node comes up and starts routing immediately even if zero peers are reachable. Whichever candidate becomes available first is used; no node is a server.
 
-**Peer table gossip with IP-stripping.** Once a session exists, every node fans out its full peer table so the mesh converges on all members. Endpoints are omitted from gossip, which limits physical-address propagation. Gossip validates advertised NodeID/public-key bindings, but does not authenticate prefix ownership, path origin, or the advertising member's honesty.
+**Peer table gossip with IP-stripping.** Once a session exists, every node sends bounded peer-table deltas so the mesh converges without repeating unchanged entries. Periodic full resynchronization repairs lost UDP deltas. Endpoints are omitted from gossip, which limits physical-address propagation. Gossip validates advertised NodeID/public-key bindings, but does not authenticate prefix ownership, path origin, or the advertising member's honesty.
 
 **NetworkID gates sessions, not discovery.** A mismatched NetworkID is rejected before a session is created. NetworkID is currently sent in cleartext and must be treated as a mesh selector or bearer value, not peer authentication. LAN presence broadcasts are unauthenticated and network-agnostic.
 
@@ -179,7 +179,7 @@ A few design choices that shaped how Aegis works.
 | **Bounded Transport Queues** | Separate control/data item and byte caps bound outbound UDP memory. Handshakes and keep-alives use reserved control capacity and drain first; peers within each class drain round-robin. |
 | **Relay Forwarding Quotas** | Per-authenticated-sender and global packet/byte token buckets bound forwarded relay traffic. Idle quota state expires and total tracking is capped at 256 peers. |
 | **Multi-hop Onion Routing** | Each hop decrypts one layer and learns the next hop. Relays also receive the source NodeID, and unpadded packet size and timing remain visible. |
-| **Peer Table Gossip** | Full mesh convergence without a coordinator. Every new session triggers a fan-out of the peer table; a periodic 3-second gossip loop ensures far-end peers propagate across multi-hop chains. |
+| **Peer Table Gossip** | Full mesh convergence without a coordinator. Changes fan out as bounded, coalesced per-recipient deltas; 2.4–3.6 second jittered rounds and periodic full resynchronization propagate far-end peers and recover loss. |
 | **Identity-Hiding Gossip** | Peer tables carry NodeID + public key + IP prefix routes. Physical endpoints are never transmitted in gossip — non-adjacent nodes cannot learn each other's real IP. |
 | **NetworkID Mesh Segmentation** | NetworkID mismatches are rejected before session creation. This separates accidental cross-mesh traffic but is not static peer authentication. |
 | **Join-Any-Available Bootstrap** | No fixed entry point, no dedicated server. Each configured candidate gets its own background connect loop with exponential backoff (1s → 30s cap). The node routes immediately; sessions form as peers become reachable. |
@@ -621,7 +621,7 @@ Unit test coverage:
 | `test_session` | Authenticated Noise IK integration, concurrent lifecycle/snapshot safety, bounded session state, pending-state expiry, INIT replay caching, simultaneous-init convergence, transport replay windows, and rekey grace |
 | `test_peer` | Multi-peer table — concurrent lifecycle/snapshot safety, states, endpoints, session lookup, health tracking |
 | `test_routing` | Prefix → next-hop → peer resolution, Direct/Relay/Unknown types, loop rejection, tie-breaking |
-| `test_peer_table` | TYPE_PEER_TABLE wire encoding/decoding, gossip merge, IP-stripping |
+| `test_peer_table` | TYPE_PEER_TABLE encoding/merge, IP-stripping, per-recipient delta coalescing, bounded batching, and jitter scheduling |
 | `test_relay` | `build_onion` / `peel_onion` — layer construction, per-hop decryption, wire-budget agreement, and deterministic relay quota enforcement |
 | `test_discovery` | LAN presence broadcast format, NetworkID extraction, endpoint parsing |
 | `test_config` | YAML parsing, strict validation, unknown-key rejection, malformed value errors |

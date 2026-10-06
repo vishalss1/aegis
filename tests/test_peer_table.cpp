@@ -1,5 +1,7 @@
 #include "aegis/peer/peer_table.hpp"
+#include "aegis/peer/gossip.hpp"
 #include "aegis/identity/identity.hpp"
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <vector>
@@ -438,6 +440,133 @@ int main() {
         CHECK(stats.changed());
         CHECK(pm.get_peer(charlie.node_id)->public_key ==
               charlie.keypair.public_key);
+    }
+
+    // ---- 12. Gossip deltas coalesce unchanged per-recipient state -----------
+    {
+        AdvertisedPeer c;
+        c.node_id = charlie.node_id;
+        c.public_key = charlie.keypair.public_key;
+        c.prefixes.emplace_back(pt_ip(10, 31, 0, 0), 24);
+        c.prefixes.emplace_back(pt_ip(10, 30, 0, 0), 24);
+        AdvertisedPeer d;
+        d.node_id = dave.node_id;
+        d.public_key = dave.keypair.public_key;
+        d.path = {dave.node_id};
+
+        GossipDeltaTracker tracker;
+        auto initial = tracker.prepare(bob.node_id, {c, d}, false);
+        CHECK(initial.size() == 2);
+        for (const auto& batch : make_gossip_batches(initial))
+            tracker.commit(bob.node_id, batch.completed_revisions);
+        CHECK(tracker.prepare(bob.node_id, {c, d}, false).empty());
+
+        // Prefix ordering is canonical and does not create a false delta.
+        std::reverse(c.prefixes.begin(), c.prefixes.end());
+        CHECK(tracker.prepare(bob.node_id, {c, d}, false).empty());
+
+        c.prefixes.emplace_back(pt_ip(10, 32, 0, 0), 24);
+        const auto delta = tracker.prepare(bob.node_id, {c, d}, false);
+        CHECK(delta.size() == 1);
+        CHECK(delta.size() == 1 && delta[0].peer.node_id == charlie.node_id);
+        CHECK(tracker.prepare(bob.node_id, {c, d}, true).size() == 2);
+
+        const auto other_recipient =
+            tracker.prepare(alice.node_id, {c, d}, false);
+        CHECK(other_recipient.size() == 2);
+        for (const auto& batch : make_gossip_batches(other_recipient))
+            tracker.commit(alice.node_id, batch.completed_revisions);
+        CHECK(tracker.recipient_count() == 2);
+        tracker.retain_recipients({bob.node_id});
+        CHECK(tracker.recipient_count() == 1);
+        tracker.reset();
+        CHECK(tracker.recipient_count() == 0);
+        CHECK(tracker.prepare(bob.node_id, {c, d}, false).size() == 2);
+    }
+
+    // ---- 13. Gossip batches obey count, size, and prefix bounds -------------
+    {
+        std::vector<GossipUpdate> updates;
+        for (size_t index = 0; index < 129; ++index) {
+            GossipUpdate update;
+            update.peer.node_id[0] = static_cast<uint8_t>(index >> 8);
+            update.peer.node_id[1] = static_cast<uint8_t>(index & 0xFF);
+            update.peer.public_key[0] = 1;
+            update.revision = index + 1;
+            if (index == 0) {
+                for (uint32_t prefix = 0; prefix < 33; ++prefix)
+                    update.peer.prefixes.emplace_back(prefix, 32);
+            }
+            updates.push_back(std::move(update));
+        }
+
+        constexpr size_t test_payload_budget = 500;
+        const auto batches = make_gossip_batches(
+            updates, test_payload_budget);
+        CHECK(batches.size() >= 2);
+        size_t wire_entries = 0;
+        size_t first_peer_prefixes = 0;
+        size_t completions = 0;
+        bool all_bounded = true;
+        for (const auto& batch : batches) {
+            const auto wire = serialize_peer_table(batch.peers);
+            all_bounded &= wire.has_value() &&
+                           batch.peers.size() <= PEER_TABLE_MAX_PEERS &&
+                           (!wire || wire->size() <= test_payload_budget);
+            wire_entries += batch.peers.size();
+            completions += batch.completed_revisions.size();
+            for (const auto& peer : batch.peers) {
+                all_bounded &= peer.prefixes.size() <= PEER_TABLE_MAX_PREFIXES;
+                if (peer.node_id == updates[0].peer.node_id)
+                    first_peer_prefixes += peer.prefixes.size();
+            }
+        }
+        CHECK(all_bounded);
+        CHECK(wire_entries == 131);
+        CHECK(first_peer_prefixes == 33);
+        CHECK(completions == 129);
+
+        const auto tiny_batches = make_gossip_batches(updates, 100);
+        bool oversized_peer_committed = false;
+        for (const auto& batch : tiny_batches) {
+            for (const auto& [node_id, revision] :
+                 batch.completed_revisions) {
+                (void)revision;
+                oversized_peer_committed |=
+                    node_id == updates[0].peer.node_id;
+            }
+        }
+        CHECK(!oversized_peer_committed);
+
+        GossipUpdate split_update;
+        split_update.peer.node_id = charlie.node_id;
+        split_update.peer.public_key = charlie.keypair.public_key;
+        split_update.revision = 1;
+        for (uint32_t host = 1; host <= 33; ++host) {
+            split_update.peer.prefixes.emplace_back(
+                pt_ip(10, 90, 0, static_cast<uint8_t>(host)), 32);
+        }
+        PeerManager split_peers;
+        RoutingEngine split_routes;
+        for (const auto& batch : make_gossip_batches({split_update}, 500)) {
+            const auto stats = merge_peer_table(
+                split_peers, split_routes, batch.peers,
+                bob.node_id, alice.node_id);
+            CHECK(stats.malformed == 0);
+        }
+        CHECK(split_peers.has_peer(charlie.node_id));
+        CHECK(split_routes.size() == 33);
+    }
+
+    // ---- 14. Gossip scheduling applies bounded symmetric jitter -------------
+    {
+        CHECK(jittered_gossip_interval(uint64_t{0}).count() == 2400);
+        CHECK(jittered_gossip_interval(uint64_t{600}).count() == 3000);
+        CHECK(jittered_gossip_interval(uint64_t{1200}).count() == 3600);
+        CHECK(jittered_gossip_interval(std::nullopt).count() == 3000);
+        CHECK(jittered_gossip_interval(
+                  uint64_t{1}, std::chrono::milliseconds(100),
+                  std::chrono::milliseconds(101)).count() == 100);
     }
 
     printf("--- peer table: %d/%d passed ---\n", passed, tests);

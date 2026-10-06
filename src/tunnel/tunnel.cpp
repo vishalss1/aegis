@@ -39,6 +39,8 @@ bool Tunnel::start(const TunnelConfig& config, const std::string& adapter_name) 
     oversize_inbound_drops_.store(0, std::memory_order_relaxed);
     invalid_inbound_drops_.store(0, std::memory_order_relaxed);
     relay_forward_limiter_.reset();
+    gossip_delta_tracker_.reset();
+    gossip_round_ = 0;
 
     const size_t datagram_budget =
         config.underlay_mtu - OUTER_IPV4_UDP_OVERHEAD;
@@ -253,7 +255,7 @@ void Tunnel::connect_loop(const TunnelPeer& peer) {
             // then wait quietly until the session drops (dead peer, rekey
             // teardown, stop). Re-install only on (re)establishment.
             install_configured_routes(peer);
-            send_peer_table(peer.node_id);
+            send_peer_table(peer.node_id, /*force_full=*/true);
             announce_peer_table(peer.node_id);
             backoff_ms = CONNECT_BACKOFF_BASE_MS;
 
@@ -547,14 +549,18 @@ void Tunnel::tx_loop() {
 void Tunnel::gossip_loop() {
     aegis_log( "[tunnel] gossip loop started\n");
     while (running_) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(GOSSIP_INTERVAL_MS));
-        if (!running_) break;
-        // Full-table announce to every established peer. Periodic re-announce
-        // is what carries far-end peers across a chain: the immediate
-        // learn-triggered fan-out only reaches the nodes adjacent to the peer
-        // we just learned from, so a node that never learns anything new
-        // (e.g. B in A-B-C) would otherwise never relay C/D onward to A.
-        announce_peer_table(std::nullopt);
+        const auto interval = jittered_gossip_interval(random_.u64());
+        {
+            std::unique_lock<std::mutex> lock(hs_mtx_);
+            if (hs_cv_.wait_for(lock, interval, [this] { return !running_; }))
+                break;
+        }
+        ++gossip_round_;
+        const bool force_full =
+            gossip_round_ % GOSSIP_FULL_RESYNC_ROUNDS == 0;
+        // Deltas propagate changed knowledge without repeating the complete
+        // table. A periodic full resync repairs a delta lost by UDP.
+        announce_peer_table(std::nullopt, force_full);
     }
     aegis_log( "[tunnel] gossip loop ended\n");
 }
@@ -1156,33 +1162,61 @@ std::vector<AdvertisedPeer> Tunnel::build_advertised_peers() const {
     return out;
 }
 
-void Tunnel::send_peer_table(const NodeId& to_peer) {
-    auto advertised = build_advertised_peers();
-    auto payload = serialize_peer_table(advertised);
-    if (!payload) {
-        aegis_log("[tunnel] peer table exceeds protocol limits\n");
-        return;
-    }
-    auto enc = session_manager_->encrypt_message(
-        to_peer, TYPE_PEER_TABLE, payload->data(), payload->size());
-    if (!enc) {
-        aegis_log( "[tunnel] encrypt peer table failed\n");
-        return;
-    }
+void Tunnel::send_peer_table(const NodeId& to_peer, bool force_full) {
+    std::lock_guard<std::mutex> send_lock(gossip_send_mtx_);
     auto peer = peers_.get_peer(to_peer);
     if (!peer || !peer->endpoint)
         return;
-    aegis_log( "[tunnel] sent peer table (%zu peer(s)) to %02x%02x...\n",
-            advertised.size(), to_peer[0], to_peer[1]);
-    transport_.send(enc->data(), enc->size(), *peer->endpoint);
+
+    auto advertised = build_advertised_peers();
+    const auto updates = gossip_delta_tracker_.prepare(
+        to_peer, advertised, force_full);
+    if (updates.empty())
+        return;
+
+    const size_t max_payload_bytes =
+        transport_.max_datagram_size() > SESSION_FRAME_OVERHEAD
+            ? transport_.max_datagram_size() - SESSION_FRAME_OVERHEAD
+            : 0;
+    const auto batches = make_gossip_batches(updates, max_payload_bytes);
+    size_t sent_batches = 0;
+    size_t sent_entries = 0;
+    for (const auto& batch : batches) {
+        const auto payload = serialize_peer_table(batch.peers);
+        if (!payload)
+            break;
+        const auto enc = session_manager_->encrypt_message(
+            to_peer, TYPE_PEER_TABLE, payload->data(), payload->size());
+        if (!enc || !transport_.send(
+                enc->data(), enc->size(), *peer->endpoint)) {
+            break;
+        }
+        gossip_delta_tracker_.commit(to_peer, batch.completed_revisions);
+        ++sent_batches;
+        sent_entries += batch.peers.size();
+    }
+    if (sent_batches > 0) {
+        aegis_log("[tunnel] sent %s peer table to %02x%02x...: "
+                  "%zu logical update(s), %zu wire entr%s in %zu batch(es)\n",
+                  force_full ? "full" : "delta", to_peer[0], to_peer[1],
+                  updates.size(), sent_entries,
+                  sent_entries == 1 ? "y" : "ies", sent_batches);
+    }
 }
 
-void Tunnel::announce_peer_table(const std::optional<NodeId>& exclude) {
-    for (const auto& peer : peers_.all_peers()) {
+void Tunnel::announce_peer_table(
+    const std::optional<NodeId>& exclude, bool force_full) {
+    const auto all_peers = peers_.all_peers();
+    std::set<NodeId> retained;
+    for (const auto& peer : all_peers)
+        retained.insert(peer.node_id);
+    gossip_delta_tracker_.retain_recipients(retained);
+
+    for (const auto& peer : all_peers) {
         if (exclude && peer.node_id == *exclude)
             continue;
         if (session_established(peer.node_id))
-            send_peer_table(peer.node_id);
+            send_peer_table(peer.node_id, force_full);
     }
 }
 
