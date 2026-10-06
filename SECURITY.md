@@ -56,6 +56,10 @@ The implementation currently provides the following limited properties:
 - File-transfer header and chunk payloads use dedicated bounded codecs,
   canonical network byte order, exact declared lengths, and complete frame
   consumption before transfer state is modified.
+- File transfers are limited to 1 GiB with 255-byte Windows-safe basenames.
+  Traversal separators, control/invalid characters, trailing dots/spaces, and
+  reserved device names are rejected. Chunk IDs, indices, counts, and exact
+  per-position payload sizes must agree with the authenticated header.
 - STUN requests and responses use bounded codecs with exact declared lengths;
   the full padded attribute list is validated before accepting an address.
 - AEGIS1 invite payloads use bounded codecs, canonical base64url, exact name
@@ -193,13 +197,14 @@ per-authenticated-sender and global packet/byte token buckets, with bounded
 peer state and idle expiry. There is no originating-traffic pacing or adaptive
 backpressure. UDP packet loss is not repaired for general tunnel traffic.
 
-### File transfer is not reliable or safe for hostile input
+### File transfer reliability and resource controls are incomplete
 
 File transfer sends 32 KiB chunks with a fixed delay and no acknowledgement,
 retransmission, completion digest, or resume support. Completion is based on a
 received-chunk counter rather than a verified chunk set. Transfer state is
-owned and synchronized per tunnel instance, but received filenames are not yet
-handled as hostile path input.
+owned and synchronized per tunnel instance, and individual metadata is bounded
+and validated, but concurrent transfers and aggregate disk allocation are not
+yet capped per peer.
 
 ### Routing does not validate path liveness
 

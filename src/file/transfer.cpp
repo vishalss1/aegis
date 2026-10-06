@@ -1,10 +1,109 @@
 #include "aegis/file/transfer.hpp"
 #include "aegis/protocol/wire.hpp"
-#include <limits>
+
+namespace {
+
+char ascii_upper(char value) {
+    if (value >= 'a' && value <= 'z')
+        return static_cast<char>(value - ('a' - 'A'));
+    return value;
+}
+
+bool ascii_iequals(std::string_view left, std::string_view right) noexcept {
+    if (left.size() != right.size())
+        return false;
+    for (size_t i = 0; i < left.size(); ++i) {
+        if (ascii_upper(left[i]) != right[i])
+            return false;
+    }
+    return true;
+}
+
+bool is_reserved_windows_name(std::string_view filename) noexcept {
+    const size_t dot = filename.find('.');
+    const std::string_view stem = filename.substr(0, dot);
+    if (ascii_iequals(stem, "CON") || ascii_iequals(stem, "PRN") ||
+        ascii_iequals(stem, "AUX") || ascii_iequals(stem, "NUL") ||
+        ascii_iequals(stem, "CONIN$") || ascii_iequals(stem, "CONOUT$"))
+        return true;
+    if (stem.size() == 4 && stem[3] >= '1' && stem[3] <= '9') {
+        const std::string_view prefix = stem.substr(0, 3);
+        return ascii_iequals(prefix, "COM") || ascii_iequals(prefix, "LPT");
+    }
+    return false;
+}
+
+} // namespace
+
+bool is_safe_file_name(std::string_view filename) noexcept {
+    if (filename.empty() || filename.size() > FILE_TRANSFER_MAX_NAME_BYTES ||
+        filename == "." || filename == ".." || filename.back() == '.' ||
+        filename.back() == ' ' || is_reserved_windows_name(filename))
+        return false;
+
+    for (const unsigned char value : filename) {
+        if (value < 32 || value == 127 || value == '"' || value == '*' ||
+            value == '/' || value == ':' || value == '<' || value == '>' ||
+            value == '?' || value == '\\' || value == '|')
+            return false;
+    }
+    return true;
+}
+
+std::optional<std::string> sanitize_file_name(std::string_view path) {
+    const size_t separator = path.find_last_of("/\\");
+    const std::string_view filename = separator == std::string_view::npos
+        ? path
+        : path.substr(separator + 1);
+    if (!is_safe_file_name(filename))
+        return std::nullopt;
+    return std::string(filename);
+}
+
+uint32_t file_transfer_chunk_count(uint64_t file_size) noexcept {
+    if (file_size > FILE_TRANSFER_MAX_FILE_SIZE)
+        return 0;
+    if (file_size == 0)
+        return 1;
+    return static_cast<uint32_t>(
+        1 + ((file_size - 1) / FILE_TRANSFER_CHUNK_SIZE));
+}
+
+bool is_valid_file_header(const FileTransferHeader& header) noexcept {
+    const uint32_t expected_chunks =
+        file_transfer_chunk_count(header.file_size);
+    return header.transfer_id != 0 && expected_chunks != 0 &&
+           header.total_chunks == expected_chunks &&
+           is_safe_file_name(header.filename);
+}
+
+bool is_valid_file_chunk(const FileTransferChunk& chunk) noexcept {
+    return chunk.transfer_id != 0 &&
+           chunk.chunk_index < FILE_TRANSFER_MAX_CHUNKS &&
+           chunk.data.size() <= FILE_TRANSFER_CHUNK_SIZE;
+}
+
+bool is_valid_file_chunk_for_header(
+    const FileTransferHeader& header,
+    const FileTransferChunk& chunk) noexcept {
+    if (!is_valid_file_header(header) || !is_valid_file_chunk(chunk) ||
+        chunk.transfer_id != header.transfer_id ||
+        chunk.chunk_index >= header.total_chunks)
+        return false;
+
+    size_t expected_size = FILE_TRANSFER_CHUNK_SIZE;
+    if (chunk.chunk_index + 1 == header.total_chunks) {
+        const uint64_t preceding_bytes =
+            static_cast<uint64_t>(chunk.chunk_index) *
+            FILE_TRANSFER_CHUNK_SIZE;
+        expected_size = static_cast<size_t>(header.file_size - preceding_bytes);
+    }
+    return chunk.data.size() == expected_size;
+}
 
 std::optional<std::vector<uint8_t>> serialize_file_header(
     const FileTransferHeader& header) {
-    if (header.filename.size() > std::numeric_limits<uint16_t>::max())
+    if (!is_valid_file_header(header))
         return std::nullopt;
 
     std::vector<uint8_t> payload(
@@ -41,12 +140,14 @@ std::optional<FileTransferHeader> deserialize_file_header(
     header.total_chunks = *total_chunks;
     header.filename.assign(
         reinterpret_cast<const char*>(filename->data()), filename->size());
+    if (!is_valid_file_header(header))
+        return std::nullopt;
     return header;
 }
 
 std::optional<std::vector<uint8_t>> serialize_file_chunk(
     const FileTransferChunk& chunk) {
-    if (chunk.data.size() > std::numeric_limits<uint32_t>::max())
+    if (!is_valid_file_chunk(chunk))
         return std::nullopt;
 
     std::vector<uint8_t> payload(FILE_CHUNK_FIXED_SIZE + chunk.data.size());
@@ -75,5 +176,7 @@ std::optional<FileTransferChunk> deserialize_file_chunk(
     chunk.transfer_id = *transfer_id;
     chunk.chunk_index = *chunk_index;
     chunk.data.assign(data->begin(), data->end());
+    if (!is_valid_file_chunk(chunk))
+        return std::nullopt;
     return chunk;
 }

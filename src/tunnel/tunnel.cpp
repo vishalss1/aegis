@@ -855,12 +855,21 @@ void Tunnel::handle_file_chunk_frame(const uint8_t* data, size_t len,
     std::lock_guard<std::mutex> lock(incoming_transfers_mtx_);
     auto it = incoming_transfers_.find(file_chunk->transfer_id);
     if (it == incoming_transfers_.end()) return;
+    const FileTransferHeader expected_header{
+        file_chunk->transfer_id,
+        it->second.file_size,
+        it->second.total_chunks,
+        it->second.filename
+    };
+    if (!is_valid_file_chunk_for_header(expected_header, *file_chunk))
+        return;
 
     std::fstream fs(
         it->second.output_path,
         std::ios::binary | std::ios::in | std::ios::out);
     if (fs.is_open()) {
-        fs.seekp(static_cast<uint64_t>(file_chunk->chunk_index) * 32768,
+        fs.seekp(static_cast<uint64_t>(file_chunk->chunk_index) *
+                     FILE_TRANSFER_CHUNK_SIZE,
                  std::ios::beg);
         fs.write(reinterpret_cast<const char*>(file_chunk->data.data()),
                  static_cast<std::streamsize>(file_chunk->data.size()));
@@ -1265,18 +1274,28 @@ bool Tunnel::send_file(const std::string& filepath, const std::optional<NodeId>&
         std::printf("[Aegis] Error: Cannot open file '%s'\n", filepath.c_str());
         return false;
     }
-    uint64_t file_size = file.tellg();
+    const std::streamoff file_end = file.tellg();
+    if (file_end < 0) {
+        std::printf("[Aegis] Error: Cannot determine file size for '%s'\n",
+                    filepath.c_str());
+        return false;
+    }
+    const uint64_t file_size = static_cast<uint64_t>(file_end);
     file.seekg(0, std::ios::beg);
 
-    std::string filename = filepath;
-    size_t last_slash = filename.find_last_of("/\\");
-    if (last_slash != std::string::npos) {
-        filename = filename.substr(last_slash + 1);
+    const auto filename = sanitize_file_name(filepath);
+    if (!filename) {
+        std::printf("[Aegis] Error: File name is not a safe Windows basename.\n");
+        return false;
     }
 
-    constexpr uint32_t CHUNK_SIZE = 32768; // 32 KB per chunk
-    uint32_t total_chunks = (uint32_t)((file_size + CHUNK_SIZE - 1) / CHUNK_SIZE);
-    if (total_chunks == 0) total_chunks = 1;
+    const uint32_t total_chunks = file_transfer_chunk_count(file_size);
+    if (total_chunks == 0) {
+        std::printf("[Aegis] Error: File exceeds the %llu-byte transfer limit.\n",
+                    static_cast<unsigned long long>(
+                        FILE_TRANSFER_MAX_FILE_SIZE));
+        return false;
+    }
 
     uint64_t transfer_id = 0;
     for (int attempt = 0; attempt < 16 && transfer_id == 0; ++attempt) {
@@ -1304,10 +1323,11 @@ bool Tunnel::send_file(const std::string& filepath, const std::optional<NodeId>&
     }
 
     std::printf("[Aegis] Sending file '%s' (%.2f KB, %u chunks) to %zu peer(s)...\n",
-                filename.c_str(), (double)file_size / 1024.0, total_chunks, established_peers.size());
+                filename->c_str(), (double)file_size / 1024.0, total_chunks, established_peers.size());
 
-    const auto header_payload = serialize_file_header(
-        FileTransferHeader{transfer_id, file_size, total_chunks, filename});
+    const FileTransferHeader outgoing_header{
+        transfer_id, file_size, total_chunks, *filename};
+    const auto header_payload = serialize_file_header(outgoing_header);
     if (!header_payload) {
         aegis_log("[tunnel] unable to encode file header\n");
         return false;
@@ -1325,13 +1345,23 @@ bool Tunnel::send_file(const std::string& filepath, const std::optional<NodeId>&
     }
 
     // Stream file chunks
-    std::vector<uint8_t> buffer(CHUNK_SIZE);
+    std::vector<uint8_t> buffer(FILE_TRANSFER_CHUNK_SIZE);
     for (uint32_t chunk_idx = 0; chunk_idx < total_chunks; chunk_idx++) {
-        file.read((char*)buffer.data(), CHUNK_SIZE);
-        size_t bytes_read = file.gcount();
+        file.read(reinterpret_cast<char*>(buffer.data()),
+                  FILE_TRANSFER_CHUNK_SIZE);
+        const std::streamsize read_count = file.gcount();
+        if (read_count < 0) {
+            aegis_log("[tunnel] unable to read file chunk\n");
+            return false;
+        }
+        const size_t bytes_read = static_cast<size_t>(read_count);
 
         FileTransferChunk chunk{transfer_id, chunk_idx, {}};
         chunk.data.assign(buffer.begin(), buffer.begin() + bytes_read);
+        if (!is_valid_file_chunk_for_header(outgoing_header, chunk)) {
+            aegis_log("[tunnel] inconsistent file chunk metadata\n");
+            return false;
+        }
         const auto chunk_payload = serialize_file_chunk(chunk);
         if (!chunk_payload) {
             aegis_log("[tunnel] unable to encode file chunk\n");
@@ -1351,7 +1381,7 @@ bool Tunnel::send_file(const std::string& filepath, const std::optional<NodeId>&
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
 
-    std::printf("[Aegis] File '%s' transfer complete!\n", filename.c_str());
+    std::printf("[Aegis] File '%s' transfer complete!\n", filename->c_str());
     return true;
 }
 
