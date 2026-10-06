@@ -192,6 +192,7 @@ private:
     struct IncomingFileTransfer {
         std::string filename;
         uint64_t file_size = 0;
+        uint32_t chunk_size = 0;
         uint32_t total_chunks = 0;
         uint32_t received_chunks = 0;
         std::string output_path;

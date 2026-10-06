@@ -10,6 +10,7 @@ add_test(NAME test_wire COMMAND test_wire)
 
 add_executable(test_file_transfer test_file_transfer.cpp ../src/file/transfer.cpp)
 target_include_directories(test_file_transfer PRIVATE ../include)
+target_link_libraries(test_file_transfer OpenSSL::Crypto)
 add_test(NAME test_file_transfer COMMAND test_file_transfer)
 
 add_executable(test_handshake_v2 test_handshake_v2.cpp ../src/session/handshake_v2.cpp)

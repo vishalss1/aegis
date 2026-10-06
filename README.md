@@ -570,6 +570,12 @@ counters reset whenever its transport is bound.
 The first drop in each tunnel category, and then every hundredth drop, is also
 logged.
 
+File transfers negotiate their authenticated chunk size from the active
+overlay MTU. Chunk data is limited to
+`min(overlay_mtu, session_plaintext_limit) - file_chunk_header`, so the
+complete encrypted file frame remains inside both the configured path budget
+and the 4 KiB session-plaintext ceiling.
+
 ### Operational requirements
 
 Set `underlay_mtu` no higher than the smallest physical IPv4 path MTU that any
@@ -612,7 +618,7 @@ Unit test coverage:
 |:------------|:---------------|
 | `test_packet` | IP parsing, exact decrypted-packet validation, encrypted frames, layer typing, and the full route-depth MTU budget matrix |
 | `test_wire` | Bounded network-byte-order readers/writers and atomic failure behavior |
-| `test_file_transfer` | Canonical file header/chunk framing, safe Windows basenames, file/chunk limits, metadata consistency, round trips, truncation, and trailing-byte rejection |
+| `test_file_transfer` | Canonical file framing, safe Windows basenames, MTU-derived chunk sizing across route depths, metadata consistency, round trips, truncation, and trailing-byte rejection |
 | `test_handshake_v2` | Canonical Noise IK INIT/RESP envelope framing and malformed-frame rejection |
 | `test_noise_dependency` | Pinned Noise-C suite availability and unsupported-algorithm confinement |
 | `test_noise_ik` | Noise vectors, transcript/split verification, malformed-message rejection, and failed-state destruction |

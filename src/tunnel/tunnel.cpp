@@ -808,6 +808,10 @@ void Tunnel::handle_file_header_frame(const uint8_t* data, size_t len,
     if (!msg) return;
     const auto file_header = deserialize_file_header(msg->payload);
     if (!file_header) return;
+    const auto local_chunk_size =
+        file_chunk_size_for_overlay_mtu(overlay_mtu_);
+    if (!local_chunk_size || file_header->chunk_size > *local_chunk_size)
+        return;
 
     auto sess = session_manager_->get_session_by_id(header.session_id);
     if (!sess) return;
@@ -821,6 +825,7 @@ void Tunnel::handle_file_header_frame(const uint8_t* data, size_t len,
         IncomingFileTransfer ft;
         ft.filename = file_header->filename;
         ft.file_size = file_header->file_size;
+        ft.chunk_size = file_header->chunk_size;
         ft.total_chunks = file_header->total_chunks;
         ft.received_chunks = 0;
         ft.output_path = out_path;
@@ -858,6 +863,7 @@ void Tunnel::handle_file_chunk_frame(const uint8_t* data, size_t len,
     const FileTransferHeader expected_header{
         file_chunk->transfer_id,
         it->second.file_size,
+        it->second.chunk_size,
         it->second.total_chunks,
         it->second.filename
     };
@@ -869,7 +875,7 @@ void Tunnel::handle_file_chunk_frame(const uint8_t* data, size_t len,
         std::ios::binary | std::ios::in | std::ios::out);
     if (fs.is_open()) {
         fs.seekp(static_cast<uint64_t>(file_chunk->chunk_index) *
-                     FILE_TRANSFER_CHUNK_SIZE,
+                     it->second.chunk_size,
                  std::ios::beg);
         fs.write(reinterpret_cast<const char*>(file_chunk->data.data()),
                  static_cast<std::streamsize>(file_chunk->data.size()));
@@ -1289,7 +1295,13 @@ bool Tunnel::send_file(const std::string& filepath, const std::optional<NodeId>&
         return false;
     }
 
-    const uint32_t total_chunks = file_transfer_chunk_count(file_size);
+    const auto chunk_size = file_chunk_size_for_overlay_mtu(overlay_mtu_);
+    if (!chunk_size) {
+        std::printf("[Aegis] Error: Overlay MTU is too small for file transfer.\n");
+        return false;
+    }
+    const uint32_t total_chunks =
+        file_transfer_chunk_count(file_size, *chunk_size);
     if (total_chunks == 0) {
         std::printf("[Aegis] Error: File exceeds the %llu-byte transfer limit.\n",
                     static_cast<unsigned long long>(
@@ -1326,7 +1338,7 @@ bool Tunnel::send_file(const std::string& filepath, const std::optional<NodeId>&
                 filename->c_str(), (double)file_size / 1024.0, total_chunks, established_peers.size());
 
     const FileTransferHeader outgoing_header{
-        transfer_id, file_size, total_chunks, *filename};
+        transfer_id, file_size, *chunk_size, total_chunks, *filename};
     const auto header_payload = serialize_file_header(outgoing_header);
     if (!header_payload) {
         aegis_log("[tunnel] unable to encode file header\n");
@@ -1345,10 +1357,10 @@ bool Tunnel::send_file(const std::string& filepath, const std::optional<NodeId>&
     }
 
     // Stream file chunks
-    std::vector<uint8_t> buffer(FILE_TRANSFER_CHUNK_SIZE);
+    std::vector<uint8_t> buffer(*chunk_size);
     for (uint32_t chunk_idx = 0; chunk_idx < total_chunks; chunk_idx++) {
         file.read(reinterpret_cast<char*>(buffer.data()),
-                  FILE_TRANSFER_CHUNK_SIZE);
+                  static_cast<std::streamsize>(*chunk_size));
         const std::streamsize read_count = file.gcount();
         if (read_count < 0) {
             aegis_log("[tunnel] unable to read file chunk\n");

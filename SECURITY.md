@@ -60,6 +60,10 @@ The implementation currently provides the following limited properties:
   Traversal separators, control/invalid characters, trailing dots/spaces, and
   reserved device names are rejected. Chunk IDs, indices, counts, and exact
   per-position payload sizes must agree with the authenticated header.
+- File chunk sizes are carried in the authenticated transfer header and must
+  fit the receiver's local overlay MTU. Senders derive them from the smaller
+  of the overlay MTU and the 4 KiB session-plaintext limit after subtracting
+  the file-chunk envelope.
 - STUN requests and responses use bounded codecs with exact declared lengths;
   the full padded attribute list is validated before accepting an address.
 - AEGIS1 invite payloads use bounded codecs, canonical base64url, exact name
@@ -199,7 +203,7 @@ backpressure. UDP packet loss is not repaired for general tunnel traffic.
 
 ### File transfer reliability and resource controls are incomplete
 
-File transfer sends 32 KiB chunks with a fixed delay and no acknowledgement,
+File transfer sends MTU-sized chunks with a fixed delay and no acknowledgement,
 retransmission, completion digest, or resume support. Completion is based on a
 received-chunk counter rather than a verified chunk set. Transfer state is
 owned and synchronized per tunnel instance, and individual metadata is bounded

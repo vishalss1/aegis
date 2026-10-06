@@ -38,6 +38,7 @@ static constexpr uint8_t FLAG_RELAY = 0x01;
 static constexpr uint8_t FLAG_FRAGMENTED = 0x02;
 
 static constexpr size_t PACKET_HEADER_SIZE = 16;
+static constexpr size_t SESSION_MAX_PAYLOAD_SIZE = 4096;
 static constexpr uint8_t PACKET_KNOWN_FLAGS = FLAG_RELAY | FLAG_FRAGMENTED;
 
 inline std::array<uint8_t, PACKET_HEADER_SIZE> serialize_packet_header(

@@ -1,5 +1,6 @@
 #include "aegis/file/transfer.hpp"
 #include "aegis/protocol/wire.hpp"
+#include <algorithm>
 
 namespace {
 
@@ -60,18 +61,31 @@ std::optional<std::string> sanitize_file_name(std::string_view path) {
     return std::string(filename);
 }
 
-uint32_t file_transfer_chunk_count(uint64_t file_size) noexcept {
-    if (file_size > FILE_TRANSFER_MAX_FILE_SIZE)
+std::optional<uint32_t> file_chunk_size_for_overlay_mtu(
+    size_t overlay_mtu) noexcept {
+    const size_t payload_budget =
+        (std::min)(overlay_mtu, SESSION_MAX_PAYLOAD_SIZE);
+    if (payload_budget < FILE_CHUNK_FIXED_SIZE +
+                             FILE_TRANSFER_MIN_CHUNK_SIZE)
+        return std::nullopt;
+    return static_cast<uint32_t>(payload_budget - FILE_CHUNK_FIXED_SIZE);
+}
+
+uint32_t file_transfer_chunk_count(
+    uint64_t file_size, uint32_t chunk_size) noexcept {
+    if (file_size > FILE_TRANSFER_MAX_FILE_SIZE ||
+        chunk_size < FILE_TRANSFER_MIN_CHUNK_SIZE ||
+        chunk_size > FILE_TRANSFER_MAX_CHUNK_SIZE)
         return 0;
     if (file_size == 0)
         return 1;
     return static_cast<uint32_t>(
-        1 + ((file_size - 1) / FILE_TRANSFER_CHUNK_SIZE));
+        1 + ((file_size - 1) / chunk_size));
 }
 
 bool is_valid_file_header(const FileTransferHeader& header) noexcept {
     const uint32_t expected_chunks =
-        file_transfer_chunk_count(header.file_size);
+        file_transfer_chunk_count(header.file_size, header.chunk_size);
     return header.transfer_id != 0 && expected_chunks != 0 &&
            header.total_chunks == expected_chunks &&
            is_safe_file_name(header.filename);
@@ -80,7 +94,7 @@ bool is_valid_file_header(const FileTransferHeader& header) noexcept {
 bool is_valid_file_chunk(const FileTransferChunk& chunk) noexcept {
     return chunk.transfer_id != 0 &&
            chunk.chunk_index < FILE_TRANSFER_MAX_CHUNKS &&
-           chunk.data.size() <= FILE_TRANSFER_CHUNK_SIZE;
+           chunk.data.size() <= FILE_TRANSFER_MAX_CHUNK_SIZE;
 }
 
 bool is_valid_file_chunk_for_header(
@@ -91,11 +105,11 @@ bool is_valid_file_chunk_for_header(
         chunk.chunk_index >= header.total_chunks)
         return false;
 
-    size_t expected_size = FILE_TRANSFER_CHUNK_SIZE;
+    size_t expected_size = header.chunk_size;
     if (chunk.chunk_index + 1 == header.total_chunks) {
         const uint64_t preceding_bytes =
             static_cast<uint64_t>(chunk.chunk_index) *
-            FILE_TRANSFER_CHUNK_SIZE;
+            header.chunk_size;
         expected_size = static_cast<size_t>(header.file_size - preceding_bytes);
     }
     return chunk.data.size() == expected_size;
@@ -114,6 +128,7 @@ std::optional<std::vector<uint8_t>> serialize_file_header(
         header.filename.size());
     if (!writer.write_u64(header.transfer_id) ||
         !writer.write_u64(header.file_size) ||
+        !writer.write_u32(header.chunk_size) ||
         !writer.write_u32(header.total_chunks) ||
         !writer.write_u16(static_cast<uint16_t>(header.filename.size())) ||
         !writer.write_bytes(filename) || !writer.finished())
@@ -126,9 +141,11 @@ std::optional<FileTransferHeader> deserialize_file_header(
     WireReader reader(payload);
     const auto transfer_id = reader.read_u64();
     const auto file_size = reader.read_u64();
+    const auto chunk_size = reader.read_u32();
     const auto total_chunks = reader.read_u32();
     const auto filename_length = reader.read_u16();
-    if (!transfer_id || !file_size || !total_chunks || !filename_length)
+    if (!transfer_id || !file_size || !chunk_size || !total_chunks ||
+        !filename_length)
         return std::nullopt;
     const auto filename = reader.read_bytes(*filename_length);
     if (!filename || !reader.finished())
@@ -137,6 +154,7 @@ std::optional<FileTransferHeader> deserialize_file_header(
     FileTransferHeader header;
     header.transfer_id = *transfer_id;
     header.file_size = *file_size;
+    header.chunk_size = *chunk_size;
     header.total_chunks = *total_chunks;
     header.filename.assign(
         reinterpret_cast<const char*>(filename->data()), filename->size());

@@ -505,7 +505,8 @@ std::optional<std::vector<uint8_t>> SessionManager::encrypt_message(
     const NodeId& peer_id, uint8_t packet_type,
     const uint8_t* plaintext, size_t pt_len, uint8_t flags)
 {
-    if ((pt_len > 0 && !plaintext) || pt_len > 4096 ||
+    if ((pt_len > 0 && !plaintext) ||
+        pt_len > SESSION_MAX_PAYLOAD_SIZE ||
         pt_len > static_cast<size_t>((std::numeric_limits<uint32_t>::max)()))
         return std::nullopt;
 
@@ -525,9 +526,9 @@ std::optional<std::vector<uint8_t>> SessionManager::encrypt_message(
     std::memcpy(nonce.data() + 4, &seq_hi, 4);
     std::memcpy(nonce.data() + 8, &seq_lo, 4);
 
-    // 4096: enough for an MTU-sized IP packet plus onion layers (up to
-    // ONION_MAX_HOPS layers of AEAD overhead) and the relay source NodeID.
-    uint8_t ct_buf[4096];
+    // The fixed limit is enough for an MTU-sized IP packet plus onion layers
+    // (up to ONION_MAX_HOPS layers) and the relay source NodeID.
+    uint8_t ct_buf[SESSION_MAX_PAYLOAD_SIZE];
     uint8_t tag_buf[CHACHA20_POLY1305_TAG_SIZE];
 
     PacketHeader hdr{};
@@ -586,7 +587,7 @@ std::optional<SessionManager::DecryptedMessage> SessionManager::decrypt_message(
         return std::nullopt;
     }
 
-    uint8_t pt_buf[4096];
+    uint8_t pt_buf[SESSION_MAX_PAYLOAD_SIZE];
     if (ct_len > sizeof(pt_buf)) {
         aegis_log( "[session] drop: payload too large (%zu)\n", ct_len);
         return std::nullopt;
