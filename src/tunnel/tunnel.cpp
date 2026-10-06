@@ -199,6 +199,15 @@ TunnelDropStats Tunnel::drop_stats() const {
         invalid_inbound_drops_.load(std::memory_order_relaxed);
     stats.transport_oversize_send = transport_.oversize_send_drops();
     stats.transport_oversize_receive = transport_.oversize_receive_drops();
+    const auto queue_drops = transport_.queue_drop_stats();
+    stats.transport_data_queue_drops = queue_drops.data;
+    stats.transport_control_queue_drops = queue_drops.control;
+    const auto relay = relay_forward_limiter_.stats();
+    stats.relay_admitted_packets = relay.admitted_packets;
+    stats.relay_admitted_bytes = relay.admitted_bytes;
+    stats.relay_peer_drops = relay.peer_drops;
+    stats.relay_global_drops = relay.global_drops;
+    stats.relay_capacity_drops = relay.capacity_drops;
     return stats;
 }
 

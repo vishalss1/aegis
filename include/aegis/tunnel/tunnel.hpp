@@ -70,6 +70,13 @@ struct TunnelDropStats {
     uint64_t invalid_inbound = 0;
     uint64_t transport_oversize_send = 0;
     uint64_t transport_oversize_receive = 0;
+    uint64_t transport_data_queue_drops = 0;
+    uint64_t transport_control_queue_drops = 0;
+    uint64_t relay_admitted_packets = 0;
+    uint64_t relay_admitted_bytes = 0;
+    uint64_t relay_peer_drops = 0;
+    uint64_t relay_global_drops = 0;
+    uint64_t relay_capacity_drops = 0;
 };
 
 class Tunnel {

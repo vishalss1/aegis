@@ -554,13 +554,18 @@ The contract is enforced at several boundaries:
    packet whose declared total length equals the decrypted buffer length and
    whose size does not exceed the configured overlay MTU.
 
-The interactive `/status` command reports the active `Overlay MTU` and these
-drop counters:
+The interactive `/status` command reports the active `Overlay MTU`. Its
+`MTU Drops` line includes these counters:
 
 - `outbound`: inner packets too large for their resolved routes.
 - `inbound`: decrypted inner packets larger than the overlay MTU.
 - `invalid`: malformed, truncated, or trailing-byte inner IPv4 packets.
 - `wire-send` and `wire-receive`: UDP datagrams outside the transport budget.
+
+It also reports `Queue Drops` split between data and reserved control traffic,
+plus `Relay Usage` with admitted packet/byte totals and per-peer, global, and
+peer-capacity quota drops. Relay counters reset when the tunnel starts; queue
+counters reset whenever its transport is bound.
 
 The first drop in each tunnel category, and then every hundredth drop, is also
 logged.
@@ -610,7 +615,7 @@ Unit test coverage:
 | `test_handshake_v2` | Canonical Noise IK INIT/RESP envelope framing and malformed-frame rejection |
 | `test_noise_dependency` | Pinned Noise-C suite availability and unsupported-algorithm confinement |
 | `test_noise_ik` | Noise vectors, transcript/split verification, malformed-message rejection, and failed-state destruction |
-| `test_transport` | Winsock loopback, bounded priority send queues, control-capacity reservation, MTU-derived datagram limits, socket lifecycle, bounded handshake admission, and stateless retry cookies |
+| `test_transport` | Winsock loopback, bounded priority send queues, control-capacity reservation, queue-drop accounting, MTU-derived datagram limits, socket lifecycle, bounded handshake admission, and stateless retry cookies |
 | `test_crypto` | X25519 keygen, shared secret derivation, determinism |
 | `test_random` | Checked random-source injection and CSPRNG generation |
 | `test_primitives` | SHA-256/BLAKE2s transcript hashes, HMAC/HKDF vectors, constant-time comparison |

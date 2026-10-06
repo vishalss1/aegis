@@ -323,7 +323,22 @@ int main() {
         CHECK(queue.empty());
     }
 
-    // ---- 8. Handshake limiter: per-IP and global fixed-window budgets ------
+    // ---- 8. Queue-drop metrics classify traffic and reset cleanly ----------
+    {
+        TransportQueueMetrics metrics;
+        CHECK(metrics.stats().total() == 0);
+        metrics.record_drop(SendPriority::Data);
+        metrics.record_drop(SendPriority::Data);
+        metrics.record_drop(SendPriority::Control);
+        const auto drops = metrics.stats();
+        CHECK(drops.data == 2);
+        CHECK(drops.control == 1);
+        CHECK(drops.total() == 3);
+        metrics.reset();
+        CHECK(metrics.stats().total() == 0);
+    }
+
+    // ---- 9. Handshake limiter: per-IP and global fixed-window budgets ------
     {
         ManualClock clock;
         HandshakeRateLimitConfig config;

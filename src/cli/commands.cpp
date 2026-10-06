@@ -437,6 +437,20 @@ static int cmd_status(const ParsedInput& input, CliContext& ctx) {
                         drops.transport_oversize_send),
                     static_cast<unsigned long long>(
                         drops.transport_oversize_receive));
+        std::printf("Queue Drops:  data=%llu control=%llu\n",
+                    static_cast<unsigned long long>(
+                        drops.transport_data_queue_drops),
+                    static_cast<unsigned long long>(
+                        drops.transport_control_queue_drops));
+        std::printf("Relay Usage:  packets=%llu bytes=%llu peer-drops=%llu "
+                    "global-drops=%llu capacity-drops=%llu\n",
+                    static_cast<unsigned long long>(
+                        drops.relay_admitted_packets),
+                    static_cast<unsigned long long>(drops.relay_admitted_bytes),
+                    static_cast<unsigned long long>(drops.relay_peer_drops),
+                    static_cast<unsigned long long>(drops.relay_global_drops),
+                    static_cast<unsigned long long>(
+                        drops.relay_capacity_drops));
     }
     std::printf("\n");
     return 0;

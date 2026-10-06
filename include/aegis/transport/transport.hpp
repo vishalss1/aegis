@@ -33,6 +33,43 @@ struct Endpoint {
 
 using OnReceiveCallback = std::function<void(const uint8_t* data, size_t len, Endpoint sender)>;
 
+struct TransportQueueDropStats {
+    uint64_t data = 0;
+    uint64_t control = 0;
+
+    [[nodiscard]] uint64_t total() const noexcept {
+        return data + control;
+    }
+};
+
+// Thread-safe accounting kept separate from the socket worker so queue-drop
+// classification and lifecycle reset behavior remain deterministic to test.
+class TransportQueueMetrics {
+public:
+    void record_drop(SendPriority priority) noexcept {
+        if (priority == SendPriority::Control)
+            control_drops_.fetch_add(1, std::memory_order_relaxed);
+        else
+            data_drops_.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    void reset() noexcept {
+        data_drops_.store(0, std::memory_order_relaxed);
+        control_drops_.store(0, std::memory_order_relaxed);
+    }
+
+    [[nodiscard]] TransportQueueDropStats stats() const noexcept {
+        return {
+            data_drops_.load(std::memory_order_relaxed),
+            control_drops_.load(std::memory_order_relaxed)
+        };
+    }
+
+private:
+    std::atomic<uint64_t> data_drops_{0};
+    std::atomic<uint64_t> control_drops_{0};
+};
+
 // Socket options for bind(). `broadcast` enables sending to the network
 // broadcast address; `reuseaddr` allows multiple sockets (e.g. every Aegis
 // node on a LAN) to bind the same discovery port — broadcast datagrams are
@@ -73,8 +110,11 @@ public:
     uint64_t oversize_receive_drops() const {
         return oversize_receive_drops_.load(std::memory_order_relaxed);
     }
+    TransportQueueDropStats queue_drop_stats() const {
+        return queue_metrics_.stats();
+    }
     uint64_t send_queue_drops() const {
-        return send_queue_drops_.load(std::memory_order_relaxed);
+        return queue_metrics_.stats().total();
     }
 
     bool start_receive(OnReceiveCallback callback);
@@ -93,7 +133,7 @@ private:
     std::atomic<size_t> max_datagram_size_{IPV4_UDP_MAX_DATAGRAM_SIZE};
     std::atomic<uint64_t> oversize_send_drops_{0};
     std::atomic<uint64_t> oversize_receive_drops_{0};
-    std::atomic<uint64_t> send_queue_drops_{0};
+    TransportQueueMetrics queue_metrics_;
     std::mutex send_mutex_;
     std::condition_variable send_cv_;
     BoundedSendQueue send_queue_;
