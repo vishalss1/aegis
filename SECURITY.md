@@ -53,6 +53,9 @@ The implementation currently provides the following limited properties:
 - Common packet headers and complete discovery presence payloads use the
   bounded codec and canonical network byte order; session frames reject
   noncanonical reserved/flag fields and oversized plaintext.
+- File-transfer header and chunk payloads use dedicated bounded codecs,
+  canonical network byte order, exact declared lengths, and complete frame
+  consumption before transfer state is modified.
 - STUN requests and responses use bounded codecs with exact declared lengths;
   the full padded attribute list is validated before accepting an address.
 - AEGIS1 invite payloads use bounded codecs, canonical base64url, exact name

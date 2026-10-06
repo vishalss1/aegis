@@ -2,6 +2,7 @@
 #include "aegis/packet/packet.hpp"
 #include "aegis/packet/relay.hpp"
 #include "aegis/crypto/random.hpp"
+#include "aegis/file/transfer.hpp"
 #include "aegis/stun/stun.hpp"
 #include "aegis/platform/logger.hpp"
 #include <cstdio>
@@ -804,41 +805,26 @@ void Tunnel::handle_file_header_frame(const uint8_t* data, size_t len,
                                       Endpoint sender) {
     if (!running_) return;
     auto msg = session_manager_->decrypt_message(data, len);
-    if (!msg || msg->payload.size() < 22) return;
+    if (!msg) return;
+    const auto file_header = deserialize_file_header(msg->payload);
+    if (!file_header) return;
 
     auto sess = session_manager_->get_session_by_id(header.session_id);
     if (!sess) return;
     peers_.mark_seen(sess->peer_id, sender);
 
-    const uint8_t* ptr = msg->payload.data();
-    uint64_t transfer_id;
-    std::memcpy(&transfer_id, ptr, 8);
-    ptr += 8;
-    uint64_t file_size;
-    std::memcpy(&file_size, ptr, 8);
-    ptr += 8;
-    uint32_t total_chunks;
-    std::memcpy(&total_chunks, ptr, 4);
-    ptr += 4;
-    uint16_t fn_len;
-    std::memcpy(&fn_len, ptr, 2);
-    ptr += 2;
-    if (msg->payload.size() < 22 + fn_len) return;
-
-    std::string filename(reinterpret_cast<const char*>(ptr), fn_len);
-
     system("mkdir downloads 2>NUL");
-    std::string out_path = "./downloads/" + filename;
+    std::string out_path = "./downloads/" + file_header->filename;
 
     {
         std::lock_guard<std::mutex> lock(incoming_transfers_mtx_);
         IncomingFileTransfer ft;
-        ft.filename = filename;
-        ft.file_size = file_size;
-        ft.total_chunks = total_chunks;
+        ft.filename = file_header->filename;
+        ft.file_size = file_header->file_size;
+        ft.total_chunks = file_header->total_chunks;
         ft.received_chunks = 0;
         ft.output_path = out_path;
-        incoming_transfers_[transfer_id] = ft;
+        incoming_transfers_[file_header->transfer_id] = ft;
     }
 
     std::ofstream ofs(out_path, std::ios::binary | std::ios::trunc);
@@ -846,7 +832,9 @@ void Tunnel::handle_file_header_frame(const uint8_t* data, size_t len,
     const NodeId peer_id = sess->peer_id;
     std::printf(
         "\n[Incoming File]: '%s' (%.2f KB, %u chunks) from Peer %02x%02x...\n",
-        filename.c_str(), static_cast<double>(file_size) / 1024.0, total_chunks,
+        file_header->filename.c_str(),
+        static_cast<double>(file_header->file_size) / 1024.0,
+        file_header->total_chunks,
         peer_id[0], peer_id[1]);
     std::fflush(stdout);
 }
@@ -856,34 +844,26 @@ void Tunnel::handle_file_chunk_frame(const uint8_t* data, size_t len,
                                      Endpoint sender) {
     if (!running_) return;
     auto msg = session_manager_->decrypt_message(data, len);
-    if (!msg || msg->payload.size() < 16) return;
+    if (!msg) return;
+    const auto file_chunk = deserialize_file_chunk(msg->payload);
+    if (!file_chunk) return;
 
     auto sess = session_manager_->get_session_by_id(header.session_id);
     if (!sess) return;
     peers_.mark_seen(sess->peer_id, sender);
 
-    const uint8_t* ptr = msg->payload.data();
-    uint64_t transfer_id;
-    std::memcpy(&transfer_id, ptr, 8);
-    ptr += 8;
-    uint32_t chunk_idx;
-    std::memcpy(&chunk_idx, ptr, 4);
-    ptr += 4;
-    uint32_t dlen;
-    std::memcpy(&dlen, ptr, 4);
-    ptr += 4;
-    if (msg->payload.size() < 16 + dlen) return;
-
     std::lock_guard<std::mutex> lock(incoming_transfers_mtx_);
-    auto it = incoming_transfers_.find(transfer_id);
+    auto it = incoming_transfers_.find(file_chunk->transfer_id);
     if (it == incoming_transfers_.end()) return;
 
     std::fstream fs(
         it->second.output_path,
         std::ios::binary | std::ios::in | std::ios::out);
     if (fs.is_open()) {
-        fs.seekp(static_cast<uint64_t>(chunk_idx) * 32768, std::ios::beg);
-        fs.write(reinterpret_cast<const char*>(ptr), dlen);
+        fs.seekp(static_cast<uint64_t>(file_chunk->chunk_index) * 32768,
+                 std::ios::beg);
+        fs.write(reinterpret_cast<const char*>(file_chunk->data.data()),
+                 static_cast<std::streamsize>(file_chunk->data.size()));
         fs.close();
     }
     it->second.received_chunks++;
@@ -1326,22 +1306,19 @@ bool Tunnel::send_file(const std::string& filepath, const std::optional<NodeId>&
     std::printf("[Aegis] Sending file '%s' (%.2f KB, %u chunks) to %zu peer(s)...\n",
                 filename.c_str(), (double)file_size / 1024.0, total_chunks, established_peers.size());
 
-    // Build FILE_HEADER payload
-    std::vector<uint8_t> header_payload;
-    header_payload.resize(8 + 8 + 4 + 2 + filename.size());
-    uint8_t* ptr = header_payload.data();
-    std::memcpy(ptr, &transfer_id, 8); ptr += 8;
-    std::memcpy(ptr, &file_size, 8); ptr += 8;
-    std::memcpy(ptr, &total_chunks, 4); ptr += 4;
-    uint16_t fn_len = (uint16_t)filename.size();
-    std::memcpy(ptr, &fn_len, 2); ptr += 2;
-    std::memcpy(ptr, filename.data(), fn_len);
+    const auto header_payload = serialize_file_header(
+        FileTransferHeader{transfer_id, file_size, total_chunks, filename});
+    if (!header_payload) {
+        aegis_log("[tunnel] unable to encode file header\n");
+        return false;
+    }
 
     for (const auto& peer : established_peers) {
         if (target_peer && peer.node_id != *target_peer) continue;
         
         auto frame = session_manager_->encrypt_message(
-            peer.node_id, TYPE_FILE_HEADER, header_payload.data(), header_payload.size());
+            peer.node_id, TYPE_FILE_HEADER, header_payload->data(),
+            header_payload->size());
         if (frame && peer.endpoint) {
             transport_.send(frame->data(), frame->size(), *peer.endpoint);
         }
@@ -1353,20 +1330,20 @@ bool Tunnel::send_file(const std::string& filepath, const std::optional<NodeId>&
         file.read((char*)buffer.data(), CHUNK_SIZE);
         size_t bytes_read = file.gcount();
 
-        std::vector<uint8_t> chunk_payload;
-        chunk_payload.resize(8 + 4 + 4 + bytes_read);
-        uint8_t* cptr = chunk_payload.data();
-        std::memcpy(cptr, &transfer_id, 8); cptr += 8;
-        std::memcpy(cptr, &chunk_idx, 4); cptr += 4;
-        uint32_t dlen = (uint32_t)bytes_read;
-        std::memcpy(cptr, &dlen, 4); cptr += 4;
-        std::memcpy(cptr, buffer.data(), bytes_read);
+        FileTransferChunk chunk{transfer_id, chunk_idx, {}};
+        chunk.data.assign(buffer.begin(), buffer.begin() + bytes_read);
+        const auto chunk_payload = serialize_file_chunk(chunk);
+        if (!chunk_payload) {
+            aegis_log("[tunnel] unable to encode file chunk\n");
+            return false;
+        }
 
         for (const auto& peer : established_peers) {
             if (target_peer && peer.node_id != *target_peer) continue;
 
             auto frame = session_manager_->encrypt_message(
-                peer.node_id, TYPE_FILE_CHUNK, chunk_payload.data(), chunk_payload.size());
+                peer.node_id, TYPE_FILE_CHUNK, chunk_payload->data(),
+                chunk_payload->size());
             if (frame && peer.endpoint) {
                 transport_.send(frame->data(), frame->size(), *peer.endpoint);
             }

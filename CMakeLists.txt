@@ -65,6 +65,7 @@ set(AEGIS_SOURCES
     src/crypto/chacha20poly1305.cpp
     src/crypto/primitives.cpp
     src/crypto/random.cpp
+    src/file/transfer.cpp
     src/tunnel/tunnel.cpp
     src/tunnel/tunnel_test.cpp
     src/session/handshake_v2.cpp
