@@ -36,6 +36,32 @@ bool is_reserved_windows_name(std::string_view filename) noexcept {
 
 } // namespace
 
+bool FileChunkTracker::reset(uint32_t total_chunks) {
+    if (total_chunks == 0 || total_chunks > FILE_TRANSFER_MAX_CHUNKS)
+        return false;
+    received_.assign(total_chunks, false);
+    received_count_ = 0;
+    return true;
+}
+
+FileChunkReceipt FileChunkTracker::record(uint32_t chunk_index) noexcept {
+    if (chunk_index >= received_.size())
+        return FileChunkReceipt::OutOfRange;
+    if (received_[chunk_index])
+        return FileChunkReceipt::Duplicate;
+    received_[chunk_index] = true;
+    ++received_count_;
+    return FileChunkReceipt::Accepted;
+}
+
+bool FileChunkTracker::received(uint32_t chunk_index) const noexcept {
+    return chunk_index < received_.size() && received_[chunk_index];
+}
+
+bool FileChunkTracker::complete() const noexcept {
+    return !received_.empty() && received_count_ == received_.size();
+}
+
 bool is_safe_file_name(std::string_view filename) noexcept {
     if (filename.empty() || filename.size() > FILE_TRANSFER_MAX_NAME_BYTES ||
         filename == "." || filename == ".." || filename.back() == '.' ||

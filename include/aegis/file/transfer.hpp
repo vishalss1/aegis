@@ -1,5 +1,6 @@
 #pragma once
 
+#include "aegis/identity/identity.hpp"
 #include "aegis/packet/header.hpp"
 #include <cstddef>
 #include <cstdint>
@@ -34,6 +35,43 @@ struct FileTransferChunk {
     uint64_t transfer_id = 0;
     uint32_t chunk_index = 0;
     std::vector<uint8_t> data;
+};
+
+struct FileTransferKey {
+    NodeId sender{};
+    uint64_t transfer_id = 0;
+
+    [[nodiscard]] bool operator<(const FileTransferKey& other) const noexcept {
+        if (sender < other.sender)
+            return true;
+        if (other.sender < sender)
+            return false;
+        return transfer_id < other.transfer_id;
+    }
+};
+
+enum class FileChunkReceipt {
+    Accepted,
+    Duplicate,
+    OutOfRange
+};
+
+class FileChunkTracker {
+public:
+    [[nodiscard]] bool reset(uint32_t total_chunks);
+    [[nodiscard]] FileChunkReceipt record(uint32_t chunk_index) noexcept;
+    [[nodiscard]] bool received(uint32_t chunk_index) const noexcept;
+    [[nodiscard]] bool complete() const noexcept;
+    [[nodiscard]] uint32_t received_count() const noexcept {
+        return received_count_;
+    }
+    [[nodiscard]] size_t total_chunks() const noexcept {
+        return received_.size();
+    }
+
+private:
+    std::vector<bool> received_;
+    uint32_t received_count_ = 0;
 };
 
 // Local paths are reduced to one basename. Received names must already be a

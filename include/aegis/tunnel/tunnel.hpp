@@ -14,6 +14,7 @@
 #include "aegis/protocol/sources.hpp"
 #include "aegis/packet/mtu.hpp"
 #include "aegis/packet/relay_limiter.hpp"
+#include "aegis/file/transfer.hpp"
 #include <array>
 #include <cstdint>
 #include <string>
@@ -194,10 +195,10 @@ private:
         uint64_t file_size = 0;
         uint32_t chunk_size = 0;
         uint32_t total_chunks = 0;
-        uint32_t received_chunks = 0;
         std::string output_path;
+        FileChunkTracker chunks;
     };
-    std::map<uint64_t, IncomingFileTransfer> incoming_transfers_;
+    std::map<FileTransferKey, IncomingFileTransfer> incoming_transfers_;
     std::mutex incoming_transfers_mtx_;
 
     // Step 15: last rekey attempt per peer, so a failed rekey is throttled to

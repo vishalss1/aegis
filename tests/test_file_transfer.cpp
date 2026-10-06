@@ -2,6 +2,7 @@
 #include "aegis/packet/mtu.hpp"
 #include <algorithm>
 #include <cstdio>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -173,6 +174,40 @@ int main() {
         7, 0, FILE_TRANSFER_MIN_CHUNK_SIZE, 1, "empty.bin"};
     const FileTransferChunk empty_chunk{7, 0, {}};
     CHECK(is_valid_file_chunk_for_header(empty_header, empty_chunk));
+
+    FileChunkTracker tracker;
+    CHECK(!tracker.reset(0));
+    CHECK(!tracker.reset(FILE_TRANSFER_MAX_CHUNKS + 1));
+    CHECK(tracker.reset(3));
+    CHECK(tracker.record(1) == FileChunkReceipt::Accepted);
+    CHECK(tracker.record(1) == FileChunkReceipt::Duplicate);
+    CHECK(tracker.received_count() == 1);
+    CHECK(!tracker.complete());
+    CHECK(tracker.record(3) == FileChunkReceipt::OutOfRange);
+    CHECK(tracker.record(0) == FileChunkReceipt::Accepted);
+    CHECK(tracker.record(2) == FileChunkReceipt::Accepted);
+    CHECK(tracker.received_count() == 3);
+    CHECK(tracker.complete());
+    CHECK(tracker.reset(1));
+    CHECK(tracker.received_count() == 0);
+    CHECK(!tracker.received(0));
+
+    NodeId alice{};
+    NodeId bob{};
+    alice[0] = 1;
+    bob[0] = 2;
+    std::map<FileTransferKey, FileChunkTracker> transfers;
+    const FileTransferKey alice_42{alice, 42};
+    const FileTransferKey bob_42{bob, 42};
+    const FileTransferKey alice_43{alice, 43};
+    CHECK(transfers[alice_42].reset(2));
+    CHECK(transfers[bob_42].reset(2));
+    CHECK(transfers[alice_43].reset(2));
+    CHECK(transfers.size() == 3);
+    CHECK(transfers[alice_42].record(0) == FileChunkReceipt::Accepted);
+    CHECK(transfers[alice_42].record(0) == FileChunkReceipt::Duplicate);
+    CHECK(transfers[bob_42].received_count() == 0);
+    CHECK(transfers[alice_43].received_count() == 0);
 
     if (encoded_chunk) {
         auto truncated = *encoded_chunk;

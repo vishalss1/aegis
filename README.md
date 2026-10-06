@@ -188,7 +188,7 @@ A few design choices that shaped how Aegis works.
 | **Endpoint Self-Healing** | LAN presences provide endpoint hints for configured peers. Broadcasts are unauthenticated, so these hints can be spoofed and must not yet be considered validated endpoints. |
 | **YAML Config Mode** | `--config <file>` — strict YAML subset parser. Validates all fields, rejects unknown keys. Auto-elevates via UAC (`ShellExecuteW "runas"`) when launched without Administrator rights. |
 | **Replay Protection** | Per-session sliding window of 2048 sequence numbers. Out-of-window and duplicate sequence numbers are silently discarded. |
-| **Layered Packet Processing** | IP parsing, session framing, relay wrapping, UDP transport, and file-transfer payload framing are separate modules with bounded codecs and exact-length validation. File transfers reject unsafe Windows names and inconsistent size/chunk metadata. |
+| **Layered Packet Processing** | IP parsing, session framing, relay wrapping, UDP transport, and file-transfer payload framing are separate modules with bounded codecs and exact-length validation. File transfers reject unsafe Windows names and inconsistent metadata, key state by authenticated sender plus transfer ID, and count only unique chunks. |
 
 ---
 
@@ -618,7 +618,7 @@ Unit test coverage:
 |:------------|:---------------|
 | `test_packet` | IP parsing, exact decrypted-packet validation, encrypted frames, layer typing, and the full route-depth MTU budget matrix |
 | `test_wire` | Bounded network-byte-order readers/writers and atomic failure behavior |
-| `test_file_transfer` | Canonical file framing, safe Windows basenames, MTU-derived chunk sizing across route depths, metadata consistency, round trips, truncation, and trailing-byte rejection |
+| `test_file_transfer` | Canonical file framing, safe Windows basenames, MTU-derived sizing, sender/transfer isolation, duplicate-safe receipt bitmaps, metadata consistency, and malformed-frame rejection |
 | `test_handshake_v2` | Canonical Noise IK INIT/RESP envelope framing and malformed-frame rejection |
 | `test_noise_dependency` | Pinned Noise-C suite availability and unsupported-algorithm confinement |
 | `test_noise_ik` | Noise vectors, transcript/split verification, malformed-message rejection, and failed-state destruction |

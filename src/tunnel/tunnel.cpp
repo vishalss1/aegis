@@ -2,7 +2,6 @@
 #include "aegis/packet/packet.hpp"
 #include "aegis/packet/relay.hpp"
 #include "aegis/crypto/random.hpp"
-#include "aegis/file/transfer.hpp"
 #include "aegis/stun/stun.hpp"
 #include "aegis/platform/logger.hpp"
 #include <cstdio>
@@ -827,9 +826,12 @@ void Tunnel::handle_file_header_frame(const uint8_t* data, size_t len,
         ft.file_size = file_header->file_size;
         ft.chunk_size = file_header->chunk_size;
         ft.total_chunks = file_header->total_chunks;
-        ft.received_chunks = 0;
         ft.output_path = out_path;
-        incoming_transfers_[file_header->transfer_id] = ft;
+        if (!ft.chunks.reset(file_header->total_chunks))
+            return;
+        const FileTransferKey key{
+            sess->peer_id, file_header->transfer_id};
+        incoming_transfers_[key] = std::move(ft);
     }
 
     std::ofstream ofs(out_path, std::ios::binary | std::ios::trunc);
@@ -858,7 +860,8 @@ void Tunnel::handle_file_chunk_frame(const uint8_t* data, size_t len,
     peers_.mark_seen(sess->peer_id, sender);
 
     std::lock_guard<std::mutex> lock(incoming_transfers_mtx_);
-    auto it = incoming_transfers_.find(file_chunk->transfer_id);
+    const FileTransferKey key{sess->peer_id, file_chunk->transfer_id};
+    auto it = incoming_transfers_.find(key);
     if (it == incoming_transfers_.end()) return;
     const FileTransferHeader expected_header{
         file_chunk->transfer_id,
@@ -869,21 +872,25 @@ void Tunnel::handle_file_chunk_frame(const uint8_t* data, size_t len,
     };
     if (!is_valid_file_chunk_for_header(expected_header, *file_chunk))
         return;
+    if (it->second.chunks.received(file_chunk->chunk_index))
+        return;
 
     std::fstream fs(
         it->second.output_path,
         std::ios::binary | std::ios::in | std::ios::out);
-    if (fs.is_open()) {
-        fs.seekp(static_cast<uint64_t>(file_chunk->chunk_index) *
-                     it->second.chunk_size,
-                 std::ios::beg);
-        fs.write(reinterpret_cast<const char*>(file_chunk->data.data()),
-                 static_cast<std::streamsize>(file_chunk->data.size()));
-        fs.close();
-    }
-    it->second.received_chunks++;
+    if (!fs.is_open()) return;
+    fs.seekp(static_cast<uint64_t>(file_chunk->chunk_index) *
+                 it->second.chunk_size,
+             std::ios::beg);
+    fs.write(reinterpret_cast<const char*>(file_chunk->data.data()),
+             static_cast<std::streamsize>(file_chunk->data.size()));
+    if (!fs) return;
+    fs.close();
+    if (it->second.chunks.record(file_chunk->chunk_index) !=
+        FileChunkReceipt::Accepted)
+        return;
 
-    if (it->second.received_chunks >= it->second.total_chunks) {
+    if (it->second.chunks.complete()) {
         std::printf("\n[File Received]: '%s' (%.2f KB) saved to %s\n",
                     it->second.filename.c_str(),
                     static_cast<double>(it->second.file_size) / 1024.0,

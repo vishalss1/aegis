@@ -64,6 +64,9 @@ The implementation currently provides the following limited properties:
   fit the receiver's local overlay MTU. Senders derive them from the smaller
   of the overlay MTU and the 4 KiB session-plaintext limit after subtracting
   the file-chunk envelope.
+- Incoming transfer state is keyed by `(authenticated sender NodeID, transfer
+  ID)`. A bounded receipt bitmap ensures duplicate chunks neither rewrite file
+  data nor advance completion, and failed disk writes are not marked received.
 - STUN requests and responses use bounded codecs with exact declared lengths;
   the full padded attribute list is validated before accepting an address.
 - AEGIS1 invite payloads use bounded codecs, canonical base64url, exact name
@@ -204,11 +207,10 @@ backpressure. UDP packet loss is not repaired for general tunnel traffic.
 ### File transfer reliability and resource controls are incomplete
 
 File transfer sends MTU-sized chunks with a fixed delay and no acknowledgement,
-retransmission, completion digest, or resume support. Completion is based on a
-received-chunk counter rather than a verified chunk set. Transfer state is
-owned and synchronized per tunnel instance, and individual metadata is bounded
-and validated, but concurrent transfers and aggregate disk allocation are not
-yet capped per peer.
+retransmission, completion digest, or resume support. Completion requires every
+chunk index in the receipt bitmap. Transfer state is owned and synchronized per
+tunnel instance, and individual metadata is bounded and validated, but
+concurrent transfers and aggregate disk allocation are not yet capped per peer.
 
 ### Routing does not validate path liveness
 
