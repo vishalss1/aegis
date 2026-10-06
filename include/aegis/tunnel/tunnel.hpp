@@ -197,9 +197,13 @@ private:
         uint32_t total_chunks = 0;
         std::string output_path;
         FileChunkTracker chunks;
+        bool completion_reported = false;
     };
     std::map<FileTransferKey, IncomingFileTransfer> incoming_transfers_;
     std::mutex incoming_transfers_mtx_;
+    std::map<FileTransferKey, FileSendWindow> outgoing_transfers_;
+    std::mutex outgoing_transfers_mtx_;
+    std::condition_variable outgoing_transfers_cv_;
 
     // Step 15: last rekey attempt per peer, so a failed rekey is throttled to
     // one attempt per rekey interval instead of spamming handshakes. Guarded by
@@ -238,6 +242,10 @@ private:
                                   const PacketHeader& header, Endpoint sender);
     void handle_file_chunk_frame(const uint8_t* data, size_t len,
                                  const PacketHeader& header, Endpoint sender);
+    void handle_file_ack_frame(const uint8_t* data, size_t len,
+                               const PacketHeader& header, Endpoint sender);
+    void send_file_ack(const NodeId& peer_id, Endpoint endpoint,
+                       const FileTransferAck& ack);
     void handle_network_teardown_frame(const uint8_t* data, size_t len,
                                        const PacketHeader& header);
     void handle_handshake_response_frame(const uint8_t* data, size_t len,

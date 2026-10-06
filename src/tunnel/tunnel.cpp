@@ -181,8 +181,15 @@ void Tunnel::stop() {
     connect_threads_.clear();
     transport_.close();
     adapter_.close();
-    std::lock_guard<std::mutex> lock(incoming_transfers_mtx_);
-    incoming_transfers_.clear();
+    {
+        std::lock_guard<std::mutex> lock(incoming_transfers_mtx_);
+        incoming_transfers_.clear();
+    }
+    {
+        std::lock_guard<std::mutex> outgoing_lock(outgoing_transfers_mtx_);
+        outgoing_transfers_.clear();
+    }
+    outgoing_transfers_cv_.notify_all();
 }
 
 bool Tunnel::session_established(const NodeId& node_id) const {
@@ -723,6 +730,9 @@ void Tunnel::rx_callback(const uint8_t* data, size_t len, Endpoint sender) {
     case TYPE_FILE_CHUNK:
         handle_file_chunk_frame(data, len, *header, sender);
         break;
+    case TYPE_FILE_ACK:
+        handle_file_ack_frame(data, len, *header, sender);
+        break;
     case TYPE_NETWORK_TEARDOWN:
         handle_network_teardown_frame(data, len, *header);
         break;
@@ -818,23 +828,42 @@ void Tunnel::handle_file_header_frame(const uint8_t* data, size_t len,
 
     system("mkdir downloads 2>NUL");
     std::string out_path = "./downloads/" + file_header->filename;
-
+    FileTransferAck ack;
+    ack.transfer_id = file_header->transfer_id;
+    ack.header_received = true;
+    bool created = false;
     {
         std::lock_guard<std::mutex> lock(incoming_transfers_mtx_);
-        IncomingFileTransfer ft;
-        ft.filename = file_header->filename;
-        ft.file_size = file_header->file_size;
-        ft.chunk_size = file_header->chunk_size;
-        ft.total_chunks = file_header->total_chunks;
-        ft.output_path = out_path;
-        if (!ft.chunks.reset(file_header->total_chunks))
-            return;
         const FileTransferKey key{
             sess->peer_id, file_header->transfer_id};
-        incoming_transfers_[key] = std::move(ft);
+        auto existing = incoming_transfers_.find(key);
+        if (existing != incoming_transfers_.end()) {
+            if (existing->second.filename != file_header->filename ||
+                existing->second.file_size != file_header->file_size ||
+                existing->second.chunk_size != file_header->chunk_size ||
+                existing->second.total_chunks != file_header->total_chunks)
+                return;
+            ack.ranges = existing->second.chunks.acknowledged_ranges();
+        } else {
+            std::ofstream ofs(out_path, std::ios::binary | std::ios::trunc);
+            if (!ofs.is_open())
+                return;
+            IncomingFileTransfer ft;
+            ft.filename = file_header->filename;
+            ft.file_size = file_header->file_size;
+            ft.chunk_size = file_header->chunk_size;
+            ft.total_chunks = file_header->total_chunks;
+            ft.output_path = out_path;
+            if (!ft.chunks.reset(file_header->total_chunks))
+                return;
+            incoming_transfers_.emplace(key, std::move(ft));
+            created = true;
+        }
     }
+    send_file_ack(sess->peer_id, sender, ack);
 
-    std::ofstream ofs(out_path, std::ios::binary | std::ios::trunc);
+    if (!created)
+        return;
 
     const NodeId peer_id = sess->peer_id;
     std::printf(
@@ -859,45 +888,89 @@ void Tunnel::handle_file_chunk_frame(const uint8_t* data, size_t len,
     if (!sess) return;
     peers_.mark_seen(sess->peer_id, sender);
 
-    std::lock_guard<std::mutex> lock(incoming_transfers_mtx_);
-    const FileTransferKey key{sess->peer_id, file_chunk->transfer_id};
-    auto it = incoming_transfers_.find(key);
-    if (it == incoming_transfers_.end()) return;
-    const FileTransferHeader expected_header{
-        file_chunk->transfer_id,
-        it->second.file_size,
-        it->second.chunk_size,
-        it->second.total_chunks,
-        it->second.filename
-    };
-    if (!is_valid_file_chunk_for_header(expected_header, *file_chunk))
-        return;
-    if (it->second.chunks.received(file_chunk->chunk_index))
-        return;
+    FileTransferAck ack;
+    ack.transfer_id = file_chunk->transfer_id;
+    ack.header_received = true;
+    {
+        std::lock_guard<std::mutex> lock(incoming_transfers_mtx_);
+        const FileTransferKey key{sess->peer_id, file_chunk->transfer_id};
+        auto it = incoming_transfers_.find(key);
+        if (it == incoming_transfers_.end()) return;
+        const FileTransferHeader expected_header{
+            file_chunk->transfer_id,
+            it->second.file_size,
+            it->second.chunk_size,
+            it->second.total_chunks,
+            it->second.filename
+        };
+        if (!is_valid_file_chunk_for_header(expected_header, *file_chunk))
+            return;
 
-    std::fstream fs(
-        it->second.output_path,
-        std::ios::binary | std::ios::in | std::ios::out);
-    if (!fs.is_open()) return;
-    fs.seekp(static_cast<uint64_t>(file_chunk->chunk_index) *
-                 it->second.chunk_size,
-             std::ios::beg);
-    fs.write(reinterpret_cast<const char*>(file_chunk->data.data()),
-             static_cast<std::streamsize>(file_chunk->data.size()));
-    if (!fs) return;
-    fs.close();
-    if (it->second.chunks.record(file_chunk->chunk_index) !=
-        FileChunkReceipt::Accepted)
-        return;
+        if (!it->second.chunks.received(file_chunk->chunk_index)) {
+            std::fstream fs(
+                it->second.output_path,
+                std::ios::binary | std::ios::in | std::ios::out);
+            if (!fs.is_open()) return;
+            fs.seekp(static_cast<uint64_t>(file_chunk->chunk_index) *
+                         it->second.chunk_size,
+                     std::ios::beg);
+            fs.write(reinterpret_cast<const char*>(file_chunk->data.data()),
+                     static_cast<std::streamsize>(file_chunk->data.size()));
+            if (!fs) return;
+            fs.close();
+            if (it->second.chunks.record(file_chunk->chunk_index) !=
+                FileChunkReceipt::Accepted)
+                return;
+        }
+        ack.ranges = it->second.chunks.acknowledged_ranges(
+            file_chunk->chunk_index);
 
-    if (it->second.chunks.complete()) {
-        std::printf("\n[File Received]: '%s' (%.2f KB) saved to %s\n",
-                    it->second.filename.c_str(),
-                    static_cast<double>(it->second.file_size) / 1024.0,
-                    it->second.output_path.c_str());
-        std::fflush(stdout);
-        incoming_transfers_.erase(it);
+        if (it->second.chunks.complete() &&
+            !it->second.completion_reported) {
+            std::printf("\n[File Received]: '%s' (%.2f KB) saved to %s\n",
+                        it->second.filename.c_str(),
+                        static_cast<double>(it->second.file_size) / 1024.0,
+                        it->second.output_path.c_str());
+            std::fflush(stdout);
+            it->second.completion_reported = true;
+        }
     }
+    send_file_ack(sess->peer_id, sender, ack);
+}
+
+void Tunnel::send_file_ack(const NodeId& peer_id, Endpoint endpoint,
+                           const FileTransferAck& ack) {
+    const auto payload = serialize_file_ack(ack);
+    if (!payload)
+        return;
+    const auto frame = session_manager_->encrypt_message(
+        peer_id, TYPE_FILE_ACK, payload->data(), payload->size());
+    if (frame)
+        transport_.send(
+            frame->data(), frame->size(), endpoint, SendPriority::Control);
+}
+
+void Tunnel::handle_file_ack_frame(const uint8_t* data, size_t len,
+                                   const PacketHeader& header,
+                                   Endpoint sender) {
+    if (!running_) return;
+    const auto msg = session_manager_->decrypt_message(data, len);
+    if (!msg) return;
+    const auto ack = deserialize_file_ack(msg->payload);
+    if (!ack) return;
+    const auto sess = session_manager_->get_session_by_id(header.session_id);
+    if (!sess) return;
+    peers_.mark_seen(sess->peer_id, sender);
+
+    const FileTransferKey key{sess->peer_id, ack->transfer_id};
+    {
+        std::lock_guard<std::mutex> lock(outgoing_transfers_mtx_);
+        auto it = outgoing_transfers_.find(key);
+        if (it == outgoing_transfers_.end())
+            return;
+        it->second.acknowledge(*ack, clock_.now());
+    }
+    outgoing_transfers_cv_.notify_all();
 }
 
 void Tunnel::handle_network_teardown_frame(const uint8_t* data, size_t len,
@@ -1332,7 +1405,8 @@ bool Tunnel::send_file(const std::string& filepath, const std::optional<NodeId>&
 
     std::vector<Peer> established_peers;
     for (const auto& p : peers_.all_peers()) {
-        if (session_established(p.node_id)) {
+        if (session_established(p.node_id) && p.endpoint &&
+            (!target_peer || p.node_id == *target_peer)) {
             established_peers.push_back(p);
         }
     }
@@ -1352,55 +1426,126 @@ bool Tunnel::send_file(const std::string& filepath, const std::optional<NodeId>&
         return false;
     }
 
-    for (const auto& peer : established_peers) {
-        if (target_peer && peer.node_id != *target_peer) continue;
-        
-        auto frame = session_manager_->encrypt_message(
-            peer.node_id, TYPE_FILE_HEADER, header_payload->data(),
-            header_payload->size());
-        if (frame && peer.endpoint) {
-            transport_.send(frame->data(), frame->size(), *peer.endpoint);
+    std::vector<FileTransferKey> transfer_keys;
+    {
+        std::lock_guard<std::mutex> lock(outgoing_transfers_mtx_);
+        for (const auto& peer : established_peers) {
+            const FileTransferKey key{peer.node_id, transfer_id};
+            FileSendWindow window;
+            if (!window.reset(total_chunks, clock_.now()))
+                return false;
+            outgoing_transfers_.insert_or_assign(key, std::move(window));
+            transfer_keys.push_back(key);
         }
     }
+    const std::vector<FileTransferKey> all_transfer_keys = transfer_keys;
 
-    // Stream file chunks
-    std::vector<uint8_t> buffer(*chunk_size);
-    for (uint32_t chunk_idx = 0; chunk_idx < total_chunks; chunk_idx++) {
-        file.read(reinterpret_cast<char*>(buffer.data()),
-                  static_cast<std::streamsize>(*chunk_size));
-        const std::streamsize read_count = file.gcount();
-        if (read_count < 0) {
-            aegis_log("[tunnel] unable to read file chunk\n");
-            return false;
-        }
-        const size_t bytes_read = static_cast<size_t>(read_count);
-
-        FileTransferChunk chunk{transfer_id, chunk_idx, {}};
-        chunk.data.assign(buffer.begin(), buffer.begin() + bytes_read);
-        if (!is_valid_file_chunk_for_header(outgoing_header, chunk)) {
-            aegis_log("[tunnel] inconsistent file chunk metadata\n");
-            return false;
-        }
-        const auto chunk_payload = serialize_file_chunk(chunk);
-        if (!chunk_payload) {
-            aegis_log("[tunnel] unable to encode file chunk\n");
-            return false;
-        }
-
-        for (const auto& peer : established_peers) {
-            if (target_peer && peer.node_id != *target_peer) continue;
-
-            auto frame = session_manager_->encrypt_message(
-                peer.node_id, TYPE_FILE_CHUNK, chunk_payload->data(),
-                chunk_payload->size());
-            if (frame && peer.endpoint) {
-                transport_.send(frame->data(), frame->size(), *peer.endpoint);
+    struct PendingFileSend {
+        NodeId peer_id{};
+        Endpoint endpoint{};
+        FileSendAction action;
+    };
+    bool failed = false;
+    while (running_ && !transfer_keys.empty() && !failed) {
+        std::vector<PendingFileSend> sends;
+        std::vector<FileTransferKey> active;
+        {
+            std::lock_guard<std::mutex> lock(outgoing_transfers_mtx_);
+            const auto now = clock_.now();
+            for (const auto& key : transfer_keys) {
+                auto state = outgoing_transfers_.find(key);
+                if (state == outgoing_transfers_.end()) {
+                    failed = true;
+                    break;
+                }
+                if (state->second.complete()) {
+                    outgoing_transfers_.erase(state);
+                    continue;
+                }
+                FileSendAction action = state->second.poll(now);
+                if (state->second.failed()) {
+                    failed = true;
+                    break;
+                }
+                active.push_back(key);
+                if (!action.send_header && action.chunks.empty())
+                    continue;
+                const auto peer = std::find_if(
+                    established_peers.begin(), established_peers.end(),
+                    [&](const Peer& candidate) {
+                        return candidate.node_id == key.sender;
+                    });
+                if (peer == established_peers.end() || !peer->endpoint) {
+                    failed = true;
+                    break;
+                }
+                sends.push_back({key.sender, *peer->endpoint,
+                                 std::move(action)});
             }
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        transfer_keys = std::move(active);
+        if (failed || transfer_keys.empty())
+            break;
+
+        for (const auto& pending : sends) {
+            if (pending.action.send_header) {
+                const auto frame = session_manager_->encrypt_message(
+                    pending.peer_id, TYPE_FILE_HEADER,
+                    header_payload->data(), header_payload->size());
+                if (frame)
+                    transport_.send(frame->data(), frame->size(),
+                                    pending.endpoint);
+            }
+            for (const uint32_t chunk_index : pending.action.chunks) {
+                const uint64_t offset =
+                    static_cast<uint64_t>(chunk_index) * *chunk_size;
+                const size_t length = static_cast<size_t>((std::min)(
+                    static_cast<uint64_t>(*chunk_size), file_size - offset));
+                std::vector<uint8_t> bytes(length);
+                file.clear();
+                file.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
+                file.read(reinterpret_cast<char*>(bytes.data()),
+                          static_cast<std::streamsize>(length));
+                if (file.gcount() != static_cast<std::streamsize>(length)) {
+                    failed = true;
+                    break;
+                }
+                const FileTransferChunk chunk{
+                    transfer_id, chunk_index, std::move(bytes)};
+                const auto payload = serialize_file_chunk(chunk);
+                if (!payload) {
+                    failed = true;
+                    break;
+                }
+                const auto frame = session_manager_->encrypt_message(
+                    pending.peer_id, TYPE_FILE_CHUNK,
+                    payload->data(), payload->size());
+                if (frame)
+                    transport_.send(frame->data(), frame->size(),
+                                    pending.endpoint);
+            }
+            if (failed)
+                break;
+        }
+        if (!failed && !transfer_keys.empty()) {
+            std::unique_lock<std::mutex> lock(outgoing_transfers_mtx_);
+            outgoing_transfers_cv_.wait_for(
+                lock, std::chrono::milliseconds(25));
+        }
     }
 
-    std::printf("[Aegis] File '%s' transfer complete!\n", filename->c_str());
+    {
+        std::lock_guard<std::mutex> lock(outgoing_transfers_mtx_);
+        for (const auto& key : all_transfer_keys)
+            outgoing_transfers_.erase(key);
+    }
+    if (failed || !running_) {
+        std::printf("[Aegis] File '%s' transfer failed after retries.\n",
+                    filename->c_str());
+        return false;
+    }
+    std::printf("[Aegis] File '%s' transfer acknowledged by all peers.\n",
+                filename->c_str());
     return true;
 }
 

@@ -2,9 +2,12 @@
 
 #include "aegis/identity/identity.hpp"
 #include "aegis/packet/header.hpp"
+#include "aegis/protocol/sources.hpp"
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <map>
 #include <span>
 #include <string>
 #include <string_view>
@@ -12,6 +15,9 @@
 
 inline constexpr size_t FILE_HEADER_FIXED_SIZE = 26;
 inline constexpr size_t FILE_CHUNK_FIXED_SIZE = 16;
+inline constexpr size_t FILE_ACK_FIXED_SIZE = 12;
+inline constexpr size_t FILE_ACK_RANGE_SIZE = 8;
+inline constexpr size_t FILE_ACK_MAX_RANGES = 32;
 inline constexpr size_t FILE_TRANSFER_MAX_NAME_BYTES = 255;
 inline constexpr uint32_t FILE_TRANSFER_MIN_CHUNK_SIZE = 512;
 inline constexpr uint32_t FILE_TRANSFER_MAX_CHUNK_SIZE =
@@ -35,6 +41,17 @@ struct FileTransferChunk {
     uint64_t transfer_id = 0;
     uint32_t chunk_index = 0;
     std::vector<uint8_t> data;
+};
+
+struct FileAckRange {
+    uint32_t first = 0;
+    uint32_t count = 0;
+};
+
+struct FileTransferAck {
+    uint64_t transfer_id = 0;
+    bool header_received = false;
+    std::vector<FileAckRange> ranges;
 };
 
 struct FileTransferKey {
@@ -68,10 +85,67 @@ public:
     [[nodiscard]] size_t total_chunks() const noexcept {
         return received_.size();
     }
+    [[nodiscard]] std::vector<FileAckRange> acknowledged_ranges(
+        std::optional<uint32_t> focus = std::nullopt,
+        size_t maximum = FILE_ACK_MAX_RANGES) const;
 
 private:
     std::vector<bool> received_;
     uint32_t received_count_ = 0;
+    uint32_t contiguous_received_ = 0;
+};
+
+struct FileSendAction {
+    bool send_header = false;
+    std::vector<uint32_t> chunks;
+};
+
+struct FileSendWindowConfig {
+    size_t window_size = 32;
+    uint32_t retry_limit = 5;
+    std::chrono::milliseconds initial_rto{250};
+    std::chrono::milliseconds minimum_rto{100};
+    std::chrono::milliseconds maximum_rto{2000};
+};
+
+class FileSendWindow {
+public:
+    explicit FileSendWindow(FileSendWindowConfig config = {});
+
+    [[nodiscard]] bool reset(
+        uint32_t total_chunks, ProtocolClock::time_point now);
+    [[nodiscard]] FileSendAction poll(ProtocolClock::time_point now);
+    void acknowledge(
+        const FileTransferAck& ack, ProtocolClock::time_point now);
+
+    [[nodiscard]] bool complete() const noexcept;
+    [[nodiscard]] bool failed() const noexcept { return failed_; }
+    [[nodiscard]] uint32_t acknowledged_count() const noexcept {
+        return acknowledged_count_;
+    }
+    [[nodiscard]] std::chrono::milliseconds rto() const noexcept {
+        return rto_;
+    }
+
+private:
+    struct InFlightChunk {
+        ProtocolClock::time_point sent_at{};
+        uint32_t retransmissions = 0;
+    };
+
+    FileSendWindowConfig config_;
+    uint32_t total_chunks_ = 0;
+    uint32_t next_chunk_ = 0;
+    uint32_t acknowledged_count_ = 0;
+    bool header_sent_ = false;
+    bool header_received_ = false;
+    bool failed_ = false;
+    uint32_t header_retransmissions_ = 0;
+    ProtocolClock::time_point header_sent_at_{};
+    std::chrono::milliseconds rto_{};
+    std::map<uint32_t, InFlightChunk> in_flight_;
+
+    void observe_rtt(std::chrono::steady_clock::duration sample) noexcept;
 };
 
 // Local paths are reduced to one basename. Received names must already be a
@@ -103,4 +177,9 @@ private:
 [[nodiscard]] std::optional<std::vector<uint8_t>> serialize_file_chunk(
     const FileTransferChunk& chunk);
 [[nodiscard]] std::optional<FileTransferChunk> deserialize_file_chunk(
+    std::span<const uint8_t> payload);
+
+[[nodiscard]] std::optional<std::vector<uint8_t>> serialize_file_ack(
+    const FileTransferAck& ack);
+[[nodiscard]] std::optional<FileTransferAck> deserialize_file_ack(
     std::span<const uint8_t> payload);

@@ -9,6 +9,15 @@
 static int tests = 0;
 static int passed = 0;
 
+class ManualClock final : public ProtocolClock {
+public:
+    [[nodiscard]] time_point now() const noexcept override { return now_; }
+    void advance(std::chrono::milliseconds duration) { now_ += duration; }
+
+private:
+    time_point now_{};
+};
+
 #define CHECK(cond) do { \
     tests++; \
     const bool ok = !!(cond); \
@@ -208,6 +217,92 @@ int main() {
     CHECK(transfers[alice_42].record(0) == FileChunkReceipt::Duplicate);
     CHECK(transfers[bob_42].received_count() == 0);
     CHECK(transfers[alice_43].received_count() == 0);
+
+    FileChunkTracker selective;
+    CHECK(selective.reset(5));
+    CHECK(selective.record(2) == FileChunkReceipt::Accepted);
+    auto ranges = selective.acknowledged_ranges(2);
+    CHECK(ranges.size() == 1 && ranges[0].first == 2 &&
+          ranges[0].count == 1);
+    CHECK(selective.record(0) == FileChunkReceipt::Accepted);
+    CHECK(selective.record(1) == FileChunkReceipt::Accepted);
+    ranges = selective.acknowledged_ranges(2);
+    CHECK(ranges.size() == 1 && ranges[0].first == 0 &&
+          ranges[0].count == 3);
+
+    const FileTransferAck wire_ack{
+        0x0102030405060708ULL, true, {{0, 3}, {5, 2}}};
+    const auto encoded_ack = serialize_file_ack(wire_ack);
+    CHECK(encoded_ack && encoded_ack->size() ==
+          FILE_ACK_FIXED_SIZE + 2 * FILE_ACK_RANGE_SIZE);
+    const auto decoded_ack = encoded_ack
+        ? deserialize_file_ack(*encoded_ack)
+        : std::nullopt;
+    CHECK(decoded_ack && decoded_ack->transfer_id == wire_ack.transfer_id);
+    CHECK(decoded_ack && decoded_ack->header_received);
+    CHECK(decoded_ack && decoded_ack->ranges.size() == 2 &&
+          decoded_ack->ranges[1].first == 5 &&
+          decoded_ack->ranges[1].count == 2);
+    FileTransferAck overlapping_ack{1, true, {{0, 3}, {2, 1}}};
+    CHECK(!serialize_file_ack(overlapping_ack).has_value());
+    if (encoded_ack) {
+        auto bad_flags = *encoded_ack;
+        bad_flags[8] = 0x80;
+        CHECK(!deserialize_file_ack(bad_flags).has_value());
+        auto truncated_ack = *encoded_ack;
+        truncated_ack.pop_back();
+        CHECK(!deserialize_file_ack(truncated_ack).has_value());
+    }
+
+    ManualClock send_clock;
+    FileSendWindowConfig send_config;
+    send_config.window_size = 3;
+    send_config.retry_limit = 2;
+    send_config.initial_rto = std::chrono::milliseconds(100);
+    send_config.minimum_rto = std::chrono::milliseconds(50);
+    send_config.maximum_rto = std::chrono::milliseconds(500);
+    FileSendWindow send_window(send_config);
+    CHECK(send_window.reset(5, send_clock.now()));
+    auto action = send_window.poll(send_clock.now());
+    CHECK(action.send_header && action.chunks.empty());
+    CHECK(!send_window.poll(send_clock.now()).send_header);
+    send_clock.advance(std::chrono::milliseconds(100));
+    CHECK(send_window.poll(send_clock.now()).send_header);
+    send_window.acknowledge(FileTransferAck{7, true, {}}, send_clock.now());
+    action = send_window.poll(send_clock.now());
+    CHECK(!action.send_header && action.chunks ==
+          std::vector<uint32_t>({0, 1, 2}));
+    send_window.acknowledge(
+        FileTransferAck{7, true, {{1, 1}}}, send_clock.now());
+    action = send_window.poll(send_clock.now());
+    CHECK(action.chunks == std::vector<uint32_t>({3}));
+    send_clock.advance(std::chrono::milliseconds(100));
+    action = send_window.poll(send_clock.now());
+    CHECK(action.chunks == std::vector<uint32_t>({0, 2, 3}));
+    send_window.acknowledge(
+        FileTransferAck{7, true, {{0, 3}}}, send_clock.now());
+    action = send_window.poll(send_clock.now());
+    CHECK(action.chunks == std::vector<uint32_t>({4}));
+    send_window.acknowledge(
+        FileTransferAck{7, true, {{3, 2}}}, send_clock.now());
+    CHECK(send_window.complete());
+    CHECK(send_window.acknowledged_count() == 5);
+
+    ManualClock loss_clock;
+    FileSendWindow loss_window(send_config);
+    CHECK(loss_window.reset(1, loss_clock.now()));
+    CHECK(loss_window.poll(loss_clock.now()).send_header);
+    loss_window.acknowledge(
+        FileTransferAck{9, true, {}}, loss_clock.now());
+    CHECK(loss_window.rto() == std::chrono::milliseconds(50));
+    CHECK(loss_window.poll(loss_clock.now()).chunks.size() == 1);
+    loss_clock.advance(std::chrono::milliseconds(100));
+    CHECK(loss_window.poll(loss_clock.now()).chunks.size() == 1);
+    loss_clock.advance(std::chrono::milliseconds(100));
+    CHECK(loss_window.poll(loss_clock.now()).chunks.size() == 1);
+    loss_clock.advance(std::chrono::milliseconds(100));
+    CHECK(loss_window.poll(loss_clock.now()).chunks.empty());
+    CHECK(loss_window.failed());
 
     if (encoded_chunk) {
         auto truncated = *encoded_chunk;
