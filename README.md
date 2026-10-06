@@ -178,7 +178,7 @@ A few design choices that shaped how Aegis works.
 | **Bounded Handshake Admission** | Per-IP/global INIT limits and rotating stateless retry cookies prove endpoint reachability before responder-side Noise DH or peer/session allocation. |
 | **Bounded Transport Queues** | Separate control/data item and byte caps bound outbound UDP memory. Handshakes and keep-alives use reserved control capacity and drain first; peers within each class drain round-robin. |
 | **Relay Forwarding Quotas** | Per-authenticated-sender and global packet/byte token buckets bound forwarded relay traffic. Idle quota state expires and total tracking is capped at 256 peers. |
-| **Reliable File Windows** | File headers and chunks use authenticated selective acknowledgements, a 32-chunk sliding window, RTT-derived retransmission deadlines, and bounded retry counts. |
+| **Reliable File Windows** | File headers and chunks use authenticated selective acknowledgements, a 32-chunk sliding window, RTT-derived retransmission deadlines, bounded retry counts, resume ranges, and explicit cancellation. Idle transfers expire after five minutes; per-peer and global transfer/disk reservations are capped. |
 | **Verified File Commit** | Receivers write to transfer-unique `.part` files, verify the authenticated whole-file SHA-256 digest and exact size, then atomically rename into place. |
 | **Multi-hop Onion Routing** | Each hop decrypts one layer and learns the next hop. Relays also receive the source NodeID, and unpadded packet size and timing remain visible. |
 | **Peer Table Gossip** | Full mesh convergence without a coordinator. Changes fan out as bounded, coalesced per-recipient deltas; 2.4–3.6 second jittered rounds and periodic full resynchronization propagate far-end peers and recover loss. |
@@ -620,7 +620,7 @@ Unit test coverage:
 |:------------|:---------------|
 | `test_packet` | IP parsing, exact decrypted-packet validation, encrypted frames, layer typing, and the full route-depth MTU budget matrix |
 | `test_wire` | Bounded network-byte-order readers/writers and atomic failure behavior |
-| `test_file_transfer` | Canonical file/ACK framing, MTU sizing, sender isolation, selective ACK/retransmission behavior, SHA-256 verification, atomic `.part` publication, and malformed-frame rejection |
+| `test_file_transfer` | Canonical file/ACK/cancel framing, MTU sizing, sender isolation, selective ACK/retransmission and resume behavior, timeout/quota boundaries, SHA-256 verification, atomic `.part` publication, and malformed-frame rejection |
 | `test_handshake_v2` | Canonical Noise IK INIT/RESP envelope framing and malformed-frame rejection |
 | `test_noise_dependency` | Pinned Noise-C suite availability and unsupported-algorithm confinement |
 | `test_noise_ik` | Noise vectors, transcript/split verification, malformed-message rejection, and failed-state destruction |

@@ -10,6 +10,7 @@
 #include <chrono>
 #include <algorithm>
 #include <fstream>
+#include <filesystem>
 
 Tunnel::Tunnel()
     : Tunnel(system_protocol_clock(), system_random_source()) {}
@@ -677,6 +678,9 @@ void Tunnel::maintenance_loop() {
 
         // 5) Rekey established sessions older than the interval.
         rekey_due();
+
+        // 6) Release abandoned partial files and tell the sender to stop.
+        expire_file_transfers();
     }
     aegis_log( "[tunnel] maintenance loop ended\n");
 }
@@ -732,6 +736,9 @@ void Tunnel::rx_callback(const uint8_t* data, size_t len, Endpoint sender) {
         break;
     case TYPE_FILE_ACK:
         handle_file_ack_frame(data, len, *header, sender);
+        break;
+    case TYPE_FILE_CANCEL:
+        handle_file_cancel_frame(data, len, *header, sender);
         break;
     case TYPE_NETWORK_TEARDOWN:
         handle_network_teardown_frame(data, len, *header);
@@ -846,8 +853,31 @@ void Tunnel::handle_file_header_frame(const uint8_t* data, size_t len,
                 existing->second.total_chunks != file_header->total_chunks ||
                 existing->second.content_hash != file_header->content_hash)
                 return;
+            existing->second.last_activity = clock_.now();
             ack.ranges = existing->second.chunks.acknowledged_ranges();
         } else {
+            size_t peer_count = 0;
+            size_t global_count = 0;
+            uint64_t peer_bytes = 0;
+            uint64_t global_bytes = 0;
+            for (const auto& [active_key, active] : incoming_transfers_) {
+                if (active.completion_reported)
+                    continue;
+                ++global_count;
+                global_bytes += active.file_size;
+                if (active_key.sender == sess->peer_id) {
+                    ++peer_count;
+                    peer_bytes += active.file_size;
+                }
+            }
+            if (!file_transfer_admission_allowed(
+                    peer_count, peer_bytes, global_count,
+                    global_bytes, file_header->file_size)) {
+                send_file_cancel(sess->peer_id, sender,
+                                 file_header->transfer_id,
+                                 FileCancelReason::Capacity);
+                return;
+            }
             std::ofstream ofs(out_path, std::ios::binary | std::ios::trunc);
             if (!ofs.is_open())
                 return;
@@ -859,6 +889,7 @@ void Tunnel::handle_file_header_frame(const uint8_t* data, size_t len,
             ft.content_hash = file_header->content_hash;
             ft.output_path = out_path;
             ft.final_path = final_path;
+            ft.last_activity = clock_.now();
             if (!ft.chunks.reset(file_header->total_chunks))
                 return;
             incoming_transfers_.emplace(key, std::move(ft));
@@ -911,6 +942,7 @@ void Tunnel::handle_file_chunk_frame(const uint8_t* data, size_t len,
         };
         if (!is_valid_file_chunk_for_header(expected_header, *file_chunk))
             return;
+        it->second.last_activity = clock_.now();
 
         if (!it->second.chunks.received(file_chunk->chunk_index)) {
             std::fstream fs(
@@ -987,6 +1019,91 @@ void Tunnel::handle_file_ack_frame(const uint8_t* data, size_t len,
         it->second.acknowledge(*ack, clock_.now());
     }
     outgoing_transfers_cv_.notify_all();
+}
+
+void Tunnel::send_file_cancel(const NodeId& peer_id, Endpoint endpoint,
+                              uint64_t transfer_id,
+                              FileCancelReason reason) {
+    const auto payload = serialize_file_cancel({transfer_id, reason});
+    if (!payload)
+        return;
+    const auto frame = session_manager_->encrypt_message(
+        peer_id, TYPE_FILE_CANCEL, payload->data(), payload->size());
+    if (frame)
+        transport_.send(frame->data(), frame->size(), endpoint,
+                        SendPriority::Control);
+}
+
+void Tunnel::handle_file_cancel_frame(const uint8_t* data, size_t len,
+                                      const PacketHeader& header,
+                                      Endpoint sender) {
+    if (!running_) return;
+    const auto msg = session_manager_->decrypt_message(data, len);
+    if (!msg) return;
+    const auto cancel = deserialize_file_cancel(msg->payload);
+    if (!cancel) return;
+    const auto sess = session_manager_->get_session_by_id(header.session_id);
+    if (!sess) return;
+    peers_.mark_seen(sess->peer_id, sender);
+
+    const FileTransferKey key{sess->peer_id, cancel->transfer_id};
+    std::string partial_path;
+    {
+        std::lock_guard<std::mutex> lock(incoming_transfers_mtx_);
+        const auto incoming = incoming_transfers_.find(key);
+        if (incoming != incoming_transfers_.end()) {
+            if (!incoming->second.completion_reported)
+                partial_path = incoming->second.output_path;
+            incoming_transfers_.erase(incoming);
+        }
+    }
+    if (!partial_path.empty()) {
+        std::error_code error;
+        std::filesystem::remove(partial_path, error);
+    }
+    {
+        std::lock_guard<std::mutex> lock(outgoing_transfers_mtx_);
+        const auto outgoing = outgoing_transfers_.find(key);
+        if (outgoing != outgoing_transfers_.end())
+            outgoing->second.cancel();
+    }
+    outgoing_transfers_cv_.notify_all();
+}
+
+void Tunnel::expire_file_transfers() {
+    struct ExpiredTransfer {
+        FileTransferKey key;
+        std::string partial_path;
+    };
+    std::vector<ExpiredTransfer> expired;
+    {
+        std::lock_guard<std::mutex> lock(incoming_transfers_mtx_);
+        const auto now = clock_.now();
+        for (auto it = incoming_transfers_.begin();
+             it != incoming_transfers_.end();) {
+            if (!file_transfer_idle_expired(it->second.last_activity, now)) {
+                ++it;
+                continue;
+            }
+            expired.push_back({it->first,
+                it->second.completion_reported
+                    ? std::string{} : it->second.output_path});
+            it = incoming_transfers_.erase(it);
+        }
+    }
+    for (const auto& transfer : expired) {
+        if (!transfer.partial_path.empty()) {
+            std::error_code error;
+            std::filesystem::remove(transfer.partial_path, error);
+        }
+        if (!transfer.partial_path.empty()) {
+            const auto peer = peers_.get_peer(transfer.key.sender);
+            if (peer && peer->endpoint)
+                send_file_cancel(transfer.key.sender, *peer->endpoint,
+                                 transfer.key.transfer_id,
+                                 FileCancelReason::TimedOut);
+        }
+    }
 }
 
 void Tunnel::handle_network_teardown_frame(const uint8_t* data, size_t len,
@@ -1556,6 +1673,20 @@ bool Tunnel::send_file(const std::string& filepath, const std::optional<NodeId>&
         }
     }
 
+    if (failed || !running_) {
+        for (const auto& key : transfer_keys) {
+            const auto peer = std::find_if(
+                established_peers.begin(), established_peers.end(),
+                [&](const Peer& candidate) {
+                    return candidate.node_id == key.sender;
+                });
+            if (peer != established_peers.end() && peer->endpoint)
+                send_file_cancel(
+                    key.sender, *peer->endpoint, transfer_id,
+                    failed ? FileCancelReason::RetryLimit
+                           : FileCancelReason::SenderCancelled);
+        }
+    }
     {
         std::lock_guard<std::mutex> lock(outgoing_transfers_mtx_);
         for (const auto& key : all_transfer_keys)

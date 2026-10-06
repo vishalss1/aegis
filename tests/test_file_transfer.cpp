@@ -238,6 +238,16 @@ int main() {
     ranges = selective.acknowledged_ranges(2);
     CHECK(ranges.size() == 1 && ranges[0].first == 0 &&
           ranges[0].count == 3);
+    CHECK(selective.reset(7));
+    CHECK(selective.record(0) == FileChunkReceipt::Accepted);
+    CHECK(selective.record(2) == FileChunkReceipt::Accepted);
+    CHECK(selective.record(3) == FileChunkReceipt::Accepted);
+    CHECK(selective.record(6) == FileChunkReceipt::Accepted);
+    ranges = selective.acknowledged_ranges();
+    CHECK(ranges.size() == 3 && ranges[0].first == 0 &&
+          ranges[0].count == 1 && ranges[1].first == 2 &&
+          ranges[1].count == 2 && ranges[2].first == 6 &&
+          ranges[2].count == 1);
 
     const FileTransferAck wire_ack{
         0x0102030405060708ULL, true, {{0, 3}, {5, 2}}};
@@ -262,6 +272,48 @@ int main() {
         truncated_ack.pop_back();
         CHECK(!deserialize_file_ack(truncated_ack).has_value());
     }
+
+    const FileTransferCancel wire_cancel{
+        0x1122334455667788ULL, FileCancelReason::TimedOut};
+    const auto encoded_cancel = serialize_file_cancel(wire_cancel);
+    CHECK(encoded_cancel && encoded_cancel->size() == FILE_CANCEL_SIZE);
+    const auto decoded_cancel = encoded_cancel
+        ? deserialize_file_cancel(*encoded_cancel) : std::nullopt;
+    CHECK(decoded_cancel &&
+          decoded_cancel->transfer_id == wire_cancel.transfer_id &&
+          decoded_cancel->reason == wire_cancel.reason);
+    if (encoded_cancel) {
+        auto invalid_reason = *encoded_cancel;
+        invalid_reason[8] = 5;
+        CHECK(!deserialize_file_cancel(invalid_reason).has_value());
+        auto nonzero_reserved = *encoded_cancel;
+        nonzero_reserved[9] = 1;
+        CHECK(!deserialize_file_cancel(nonzero_reserved).has_value());
+        auto truncated_cancel = *encoded_cancel;
+        truncated_cancel.pop_back();
+        CHECK(!deserialize_file_cancel(truncated_cancel).has_value());
+    }
+    CHECK(!serialize_file_cancel(
+        {0, FileCancelReason::SenderCancelled}).has_value());
+
+    CHECK(file_transfer_admission_allowed(0, 0, 0, 0, 0));
+    CHECK(file_transfer_admission_allowed(
+        FILE_TRANSFER_MAX_ACTIVE_PER_PEER - 1,
+        FILE_TRANSFER_MAX_RESERVED_PER_PEER - FILE_TRANSFER_MAX_FILE_SIZE,
+        FILE_TRANSFER_MAX_ACTIVE_GLOBAL - 1,
+        FILE_TRANSFER_MAX_RESERVED_GLOBAL - FILE_TRANSFER_MAX_FILE_SIZE,
+        FILE_TRANSFER_MAX_FILE_SIZE));
+    CHECK(!file_transfer_admission_allowed(
+        FILE_TRANSFER_MAX_ACTIVE_PER_PEER, 0, 0, 0, 1));
+    CHECK(!file_transfer_admission_allowed(
+        0, FILE_TRANSFER_MAX_RESERVED_PER_PEER, 0, 0, 1));
+    ManualClock expiry_clock;
+    const auto last_activity = expiry_clock.now();
+    expiry_clock.advance(std::chrono::duration_cast<std::chrono::milliseconds>(
+        FILE_TRANSFER_IDLE_TIMEOUT) - std::chrono::milliseconds(1));
+    CHECK(!file_transfer_idle_expired(last_activity, expiry_clock.now()));
+    expiry_clock.advance(std::chrono::milliseconds(1));
+    CHECK(file_transfer_idle_expired(last_activity, expiry_clock.now()));
 
     ManualClock send_clock;
     FileSendWindowConfig send_config;
@@ -296,6 +348,25 @@ int main() {
         FileTransferAck{7, true, {{3, 2}}}, send_clock.now());
     CHECK(send_window.complete());
     CHECK(send_window.acknowledged_count() == 5);
+
+    ManualClock resume_clock;
+    FileSendWindow resume_window(send_config);
+    CHECK(resume_window.reset(6, resume_clock.now()));
+    CHECK(resume_window.poll(resume_clock.now()).send_header);
+    resume_window.acknowledge(
+        FileTransferAck{11, true, {{0, 2}, {4, 1}}},
+        resume_clock.now());
+    action = resume_window.poll(resume_clock.now());
+    CHECK(action.chunks == std::vector<uint32_t>({2, 3, 5}));
+    resume_window.acknowledge(
+        FileTransferAck{11, true, {{2, 2}, {5, 1}}},
+        resume_clock.now());
+    CHECK(resume_window.complete());
+    FileSendWindow cancelled_window(send_config);
+    CHECK(cancelled_window.reset(1, resume_clock.now()));
+    cancelled_window.cancel();
+    CHECK(cancelled_window.failed());
+    CHECK(cancelled_window.poll(resume_clock.now()).chunks.empty());
 
     ManualClock loss_clock;
     FileSendWindow loss_window(send_config);

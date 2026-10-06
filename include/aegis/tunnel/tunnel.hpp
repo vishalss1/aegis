@@ -200,6 +200,7 @@ private:
         std::string final_path;
         FileChunkTracker chunks;
         bool completion_reported = false;
+        ProtocolClock::time_point last_activity{};
     };
     std::map<FileTransferKey, IncomingFileTransfer> incoming_transfers_;
     std::mutex incoming_transfers_mtx_;
@@ -246,8 +247,14 @@ private:
                                  const PacketHeader& header, Endpoint sender);
     void handle_file_ack_frame(const uint8_t* data, size_t len,
                                const PacketHeader& header, Endpoint sender);
+    void handle_file_cancel_frame(const uint8_t* data, size_t len,
+                                  const PacketHeader& header,
+                                  Endpoint sender);
     void send_file_ack(const NodeId& peer_id, Endpoint endpoint,
                        const FileTransferAck& ack);
+    void send_file_cancel(const NodeId& peer_id, Endpoint endpoint,
+                          uint64_t transfer_id, FileCancelReason reason);
+    void expire_file_transfers();
     void handle_network_teardown_frame(const uint8_t* data, size_t len,
                                        const PacketHeader& header);
     void handle_handshake_response_frame(const uint8_t* data, size_t len,

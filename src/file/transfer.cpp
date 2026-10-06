@@ -91,7 +91,21 @@ std::vector<FileAckRange> FileChunkTracker::acknowledged_ranges(
         return ranges;
     if (contiguous_received_ > 0)
         ranges.push_back({0, contiguous_received_});
-    if (!focus || *focus >= received_.size() || !received_[*focus] ||
+    if (!focus) {
+        uint32_t index = contiguous_received_;
+        while (index < received_.size() && ranges.size() < maximum) {
+            while (index < received_.size() && !received_[index])
+                ++index;
+            if (index == received_.size())
+                break;
+            const uint32_t first = index;
+            while (index < received_.size() && received_[index])
+                ++index;
+            ranges.push_back({first, index - first});
+        }
+        return ranges;
+    }
+    if (*focus >= received_.size() || !received_[*focus] ||
         *focus < contiguous_received_ || ranges.size() >= maximum)
         return ranges;
 
@@ -126,6 +140,7 @@ bool FileSendWindow::reset(
     header_sent_at_ = now;
     rto_ = config_.initial_rto;
     in_flight_.clear();
+    acknowledged_.assign(total_chunks, false);
     return true;
 }
 
@@ -164,6 +179,10 @@ FileSendAction FileSendWindow::poll(ProtocolClock::time_point now) {
     }
     while (in_flight_.size() < config_.window_size &&
            next_chunk_ < total_chunks_) {
+        if (acknowledged_[next_chunk_]) {
+            ++next_chunk_;
+            continue;
+        }
         in_flight_.emplace(next_chunk_, InFlightChunk{now, 0});
         action.chunks.push_back(next_chunk_);
         ++next_chunk_;
@@ -181,24 +200,22 @@ void FileSendWindow::acknowledge(
         header_received_ = true;
     }
 
-    for (auto it = in_flight_.begin(); it != in_flight_.end();) {
-        bool acknowledged = false;
-        for (const auto& range : ack.ranges) {
-            const uint64_t end =
-                static_cast<uint64_t>(range.first) + range.count;
-            if (it->first >= range.first && it->first < end) {
-                acknowledged = true;
-                break;
-            }
+    for (const auto& range : ack.ranges) {
+        const uint64_t raw_end =
+            static_cast<uint64_t>(range.first) + range.count;
+        const uint32_t end = static_cast<uint32_t>((std::min)(
+            raw_end, static_cast<uint64_t>(total_chunks_)));
+        for (uint32_t index = range.first; index < end; ++index) {
+            if (acknowledged_[index])
+                continue;
+            auto in_flight = in_flight_.find(index);
+            if (in_flight != in_flight_.end() &&
+                in_flight->second.retransmissions == 0)
+                observe_rtt(now - in_flight->second.sent_at);
+            acknowledged_[index] = true;
+            ++acknowledged_count_;
+            in_flight_.erase(index);
         }
-        if (!acknowledged) {
-            ++it;
-            continue;
-        }
-        if (it->second.retransmissions == 0)
-            observe_rtt(now - it->second.sent_at);
-        ++acknowledged_count_;
-        it = in_flight_.erase(it);
     }
 }
 
@@ -526,4 +543,52 @@ std::optional<FileTransferAck> deserialize_file_ack(
     if (!reader.finished())
         return std::nullopt;
     return ack;
+}
+
+std::optional<std::vector<uint8_t>> serialize_file_cancel(
+    const FileTransferCancel& cancel) {
+    const uint8_t reason = static_cast<uint8_t>(cancel.reason);
+    if (cancel.transfer_id == 0 || reason < 1 || reason > 4)
+        return std::nullopt;
+    std::vector<uint8_t> payload(FILE_CANCEL_SIZE);
+    WireWriter writer(payload);
+    if (!writer.write_u64(cancel.transfer_id) || !writer.write_u8(reason) ||
+        !writer.write_u8(0) || !writer.write_u16(0) || !writer.finished())
+        return std::nullopt;
+    return payload;
+}
+
+std::optional<FileTransferCancel> deserialize_file_cancel(
+    std::span<const uint8_t> payload) {
+    WireReader reader(payload);
+    const auto transfer_id = reader.read_u64();
+    const auto reason = reader.read_u8();
+    const auto reserved_byte = reader.read_u8();
+    const auto reserved_word = reader.read_u16();
+    if (!transfer_id || !reason || !reserved_byte || !reserved_word ||
+        !reader.finished() || *transfer_id == 0 || *reason < 1 ||
+        *reason > 4 || *reserved_byte != 0 || *reserved_word != 0)
+        return std::nullopt;
+    return FileTransferCancel{
+        *transfer_id, static_cast<FileCancelReason>(*reason)};
+}
+
+bool file_transfer_admission_allowed(
+    size_t peer_count, uint64_t peer_bytes, size_t global_count,
+    uint64_t global_bytes, uint64_t requested_bytes) noexcept {
+    if (requested_bytes > FILE_TRANSFER_MAX_FILE_SIZE ||
+        peer_count >= FILE_TRANSFER_MAX_ACTIVE_PER_PEER ||
+        global_count >= FILE_TRANSFER_MAX_ACTIVE_GLOBAL)
+        return false;
+    if (peer_bytes > FILE_TRANSFER_MAX_RESERVED_PER_PEER - requested_bytes ||
+        global_bytes > FILE_TRANSFER_MAX_RESERVED_GLOBAL - requested_bytes)
+        return false;
+    return true;
+}
+
+bool file_transfer_idle_expired(
+    ProtocolClock::time_point last_activity,
+    ProtocolClock::time_point now) noexcept {
+    return now >= last_activity &&
+        now - last_activity >= FILE_TRANSFER_IDLE_TIMEOUT;
 }

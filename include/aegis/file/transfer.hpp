@@ -18,6 +18,7 @@ inline constexpr size_t FILE_HEADER_FIXED_SIZE = 58;
 inline constexpr size_t FILE_CHUNK_FIXED_SIZE = 16;
 inline constexpr size_t FILE_ACK_FIXED_SIZE = 12;
 inline constexpr size_t FILE_ACK_RANGE_SIZE = 8;
+inline constexpr size_t FILE_CANCEL_SIZE = 12;
 inline constexpr size_t FILE_ACK_MAX_RANGES = 32;
 inline constexpr size_t FILE_TRANSFER_MAX_NAME_BYTES = 255;
 inline constexpr uint32_t FILE_TRANSFER_MIN_CHUNK_SIZE = 512;
@@ -29,6 +30,13 @@ inline constexpr uint32_t FILE_TRANSFER_MAX_CHUNKS =
     static_cast<uint32_t>(
         (FILE_TRANSFER_MAX_FILE_SIZE + FILE_TRANSFER_MIN_CHUNK_SIZE - 1) /
         FILE_TRANSFER_MIN_CHUNK_SIZE);
+inline constexpr size_t FILE_TRANSFER_MAX_ACTIVE_PER_PEER = 4;
+inline constexpr size_t FILE_TRANSFER_MAX_ACTIVE_GLOBAL = 32;
+inline constexpr uint64_t FILE_TRANSFER_MAX_RESERVED_PER_PEER =
+    2ULL * FILE_TRANSFER_MAX_FILE_SIZE;
+inline constexpr uint64_t FILE_TRANSFER_MAX_RESERVED_GLOBAL =
+    8ULL * FILE_TRANSFER_MAX_FILE_SIZE;
+inline constexpr auto FILE_TRANSFER_IDLE_TIMEOUT = std::chrono::minutes(5);
 
 struct FileTransferHeader {
     uint64_t transfer_id = 0;
@@ -54,6 +62,18 @@ struct FileTransferAck {
     uint64_t transfer_id = 0;
     bool header_received = false;
     std::vector<FileAckRange> ranges;
+};
+
+enum class FileCancelReason : uint8_t {
+    SenderCancelled = 1,
+    RetryLimit = 2,
+    TimedOut = 3,
+    Capacity = 4
+};
+
+struct FileTransferCancel {
+    uint64_t transfer_id = 0;
+    FileCancelReason reason = FileCancelReason::SenderCancelled;
 };
 
 struct FileTransferKey {
@@ -136,6 +156,7 @@ public:
     [[nodiscard]] FileSendAction poll(ProtocolClock::time_point now);
     void acknowledge(
         const FileTransferAck& ack, ProtocolClock::time_point now);
+    void cancel() noexcept { failed_ = true; }
 
     [[nodiscard]] bool complete() const noexcept;
     [[nodiscard]] bool failed() const noexcept { return failed_; }
@@ -163,6 +184,7 @@ private:
     ProtocolClock::time_point header_sent_at_{};
     std::chrono::milliseconds rto_{};
     std::map<uint32_t, InFlightChunk> in_flight_;
+    std::vector<bool> acknowledged_;
 
     void observe_rtt(std::chrono::steady_clock::duration sample) noexcept;
 };
@@ -202,3 +224,15 @@ private:
     const FileTransferAck& ack);
 [[nodiscard]] std::optional<FileTransferAck> deserialize_file_ack(
     std::span<const uint8_t> payload);
+
+[[nodiscard]] std::optional<std::vector<uint8_t>> serialize_file_cancel(
+    const FileTransferCancel& cancel);
+[[nodiscard]] std::optional<FileTransferCancel> deserialize_file_cancel(
+    std::span<const uint8_t> payload);
+
+[[nodiscard]] bool file_transfer_admission_allowed(
+    size_t peer_count, uint64_t peer_bytes, size_t global_count,
+    uint64_t global_bytes, uint64_t requested_bytes) noexcept;
+[[nodiscard]] bool file_transfer_idle_expired(
+    ProtocolClock::time_point last_activity,
+    ProtocolClock::time_point now) noexcept;

@@ -212,14 +212,15 @@ per-authenticated-sender and global packet/byte token buckets, with bounded
 peer state and idle expiry. There is no originating-traffic pacing or adaptive
 backpressure. UDP packet loss is not repaired for general tunnel traffic.
 
-### File transfer reliability and resource controls are incomplete
+### File transfer is bounded and integrity checked
 
-File transfer now acknowledges and retransmits MTU-sized chunks and verifies a
-whole-file digest before publication, but has no resume support. Completion
-requires every chunk index in the receipt bitmap. Transfer state is owned and
-synchronized per tunnel instance, and individual metadata is bounded and
-validated, but concurrent transfers and aggregate disk allocation are not yet
-capped per peer.
+File transfer acknowledges and retransmits MTU-sized chunks, restores received
+ranges when a header is retried, and verifies the exact size and whole-file
+digest before publication. Authenticated cancellation stops either direction;
+idle transfers expire after five minutes and incomplete `.part` files are
+removed. Concurrent transfers and declared disk reservations are capped per
+peer and globally. These controls provide bounded reliability, not congestion
+control or guaranteed delivery after retry exhaustion.
 
 ### Routing does not validate path liveness
 
@@ -251,14 +252,13 @@ untrusted candidates until an authenticated handshake validates them.
 
 ## Operational Guidance
 
-Given the remaining authorization, onion-nonce, reliability, and file-transfer
+Given the remaining authorization, onion-nonce, routing, and NAT-traversal
 limitations:
 
 - Do not use Aegis for sensitive or production traffic.
 - Do not expose its UDP listener directly to the public Internet.
 - Run only in an isolated test network with disposable identities and data.
 - Treat all peers that know the NetworkID as potentially malicious.
-- Do not rely on file transfer for data integrity or complete delivery.
 
 ## Reporting Security Issues
 
