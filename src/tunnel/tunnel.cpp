@@ -827,7 +827,9 @@ void Tunnel::handle_file_header_frame(const uint8_t* data, size_t len,
     peers_.mark_seen(sess->peer_id, sender);
 
     system("mkdir downloads 2>NUL");
-    std::string out_path = "./downloads/" + file_header->filename;
+    const std::string out_path = "./downloads/" +
+        file_transfer_part_name(sess->peer_id, file_header->transfer_id);
+    const std::string final_path = "./downloads/" + file_header->filename;
     FileTransferAck ack;
     ack.transfer_id = file_header->transfer_id;
     ack.header_received = true;
@@ -841,7 +843,8 @@ void Tunnel::handle_file_header_frame(const uint8_t* data, size_t len,
             if (existing->second.filename != file_header->filename ||
                 existing->second.file_size != file_header->file_size ||
                 existing->second.chunk_size != file_header->chunk_size ||
-                existing->second.total_chunks != file_header->total_chunks)
+                existing->second.total_chunks != file_header->total_chunks ||
+                existing->second.content_hash != file_header->content_hash)
                 return;
             ack.ranges = existing->second.chunks.acknowledged_ranges();
         } else {
@@ -853,7 +856,9 @@ void Tunnel::handle_file_header_frame(const uint8_t* data, size_t len,
             ft.file_size = file_header->file_size;
             ft.chunk_size = file_header->chunk_size;
             ft.total_chunks = file_header->total_chunks;
+            ft.content_hash = file_header->content_hash;
             ft.output_path = out_path;
+            ft.final_path = final_path;
             if (!ft.chunks.reset(file_header->total_chunks))
                 return;
             incoming_transfers_.emplace(key, std::move(ft));
@@ -901,6 +906,7 @@ void Tunnel::handle_file_chunk_frame(const uint8_t* data, size_t len,
             it->second.file_size,
             it->second.chunk_size,
             it->second.total_chunks,
+            it->second.content_hash,
             it->second.filename
         };
         if (!is_valid_file_chunk_for_header(expected_header, *file_chunk))
@@ -922,18 +928,28 @@ void Tunnel::handle_file_chunk_frame(const uint8_t* data, size_t len,
                 FileChunkReceipt::Accepted)
                 return;
         }
-        ack.ranges = it->second.chunks.acknowledged_ranges(
-            file_chunk->chunk_index);
-
         if (it->second.chunks.complete() &&
             !it->second.completion_reported) {
-            std::printf("\n[File Received]: '%s' (%.2f KB) saved to %s\n",
-                        it->second.filename.c_str(),
-                        static_cast<double>(it->second.file_size) / 1024.0,
-                        it->second.output_path.c_str());
-            std::fflush(stdout);
-            it->second.completion_reported = true;
+            const auto committed = verify_and_commit_file(
+                it->second.output_path, it->second.final_path,
+                it->second.file_size, it->second.content_hash);
+            if (committed == FileCommitResult::Committed) {
+                std::printf(
+                    "\n[File Received]: '%s' (%.2f KB) saved to %s\n",
+                    it->second.filename.c_str(),
+                    static_cast<double>(it->second.file_size) / 1024.0,
+                    it->second.final_path.c_str());
+                std::fflush(stdout);
+                it->second.completion_reported = true;
+            } else {
+                (void)it->second.chunks.remove(file_chunk->chunk_index);
+                aegis_log(
+                    "[tunnel] completed file failed verification/rename (%d)\n",
+                    static_cast<int>(committed));
+            }
         }
+        ack.ranges = it->second.chunks.acknowledged_ranges(
+            file_chunk->chunk_index);
     }
     send_file_ack(sess->peer_id, sender, ack);
 }
@@ -1388,6 +1404,11 @@ bool Tunnel::send_file(const std::string& filepath, const std::optional<NodeId>&
                         FILE_TRANSFER_MAX_FILE_SIZE));
         return false;
     }
+    const auto content_hash = hash_file_sha256(filepath, file_size);
+    if (!content_hash) {
+        std::printf("[Aegis] Error: Cannot hash file '%s'\n", filepath.c_str());
+        return false;
+    }
 
     uint64_t transfer_id = 0;
     for (int attempt = 0; attempt < 16 && transfer_id == 0; ++attempt) {
@@ -1419,7 +1440,8 @@ bool Tunnel::send_file(const std::string& filepath, const std::optional<NodeId>&
                 filename->c_str(), (double)file_size / 1024.0, total_chunks, established_peers.size());
 
     const FileTransferHeader outgoing_header{
-        transfer_id, file_size, *chunk_size, total_chunks, *filename};
+        transfer_id, file_size, *chunk_size, total_chunks,
+        *content_hash, *filename};
     const auto header_payload = serialize_file_header(outgoing_header);
     if (!header_payload) {
         aegis_log("[tunnel] unable to encode file header\n");

@@ -71,6 +71,10 @@ The implementation currently provides the following limited properties:
   at most 32 chunks in flight per recipient, derive retransmission deadlines
   from observed RTT, ignore ambiguous RTT samples after retransmission, and
   fail after five retries instead of retrying indefinitely.
+- The authenticated header commits to a whole-file SHA-256 digest. Receivers
+  write to a transfer-unique `.part` path, require the exact declared length
+  and digest, and atomically rename to the safe final name only after both
+  checks succeed. Verification or rename failure is not acknowledged complete.
 - STUN requests and responses use bounded codecs with exact declared lengths;
   the full padded attribute list is validated before accepting an address.
 - AEGIS1 invite payloads use bounded codecs, canonical base64url, exact name
@@ -210,11 +214,12 @@ backpressure. UDP packet loss is not repaired for general tunnel traffic.
 
 ### File transfer reliability and resource controls are incomplete
 
-File transfer now acknowledges and retransmits MTU-sized chunks, but has no
-completion digest or resume support. Completion requires every chunk index in
-the receipt bitmap. Transfer state is owned and synchronized per tunnel
-instance, and individual metadata is bounded and validated, but concurrent
-transfers and aggregate disk allocation are not yet capped per peer.
+File transfer now acknowledges and retransmits MTU-sized chunks and verifies a
+whole-file digest before publication, but has no resume support. Completion
+requires every chunk index in the receipt bitmap. Transfer state is owned and
+synchronized per tunnel instance, and individual metadata is bounded and
+validated, but concurrent transfers and aggregate disk allocation are not yet
+capped per peer.
 
 ### Routing does not validate path liveness
 

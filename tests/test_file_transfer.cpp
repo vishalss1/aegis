@@ -2,6 +2,8 @@
 #include "aegis/packet/mtu.hpp"
 #include <algorithm>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <map>
 #include <string>
 #include <vector>
@@ -29,11 +31,15 @@ int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     std::printf("--- file transfer framing tests ---\n");
 
+    CryptoHash header_hash{};
+    for (size_t i = 0; i < header_hash.size(); ++i)
+        header_hash[i] = static_cast<uint8_t>(i);
     const FileTransferHeader header{
         0x0102030405060708ULL,
         902,
         900,
         2,
+        header_hash,
         "report.bin"
     };
     const auto encoded_header = serialize_file_header(header);
@@ -45,7 +51,8 @@ int main() {
           (*encoded_header)[15] == 0x86 && (*encoded_header)[18] == 0x03 &&
           (*encoded_header)[19] == 0x84 && (*encoded_header)[22] == 0x00 &&
           (*encoded_header)[23] == 0x02 && (*encoded_header)[24] == 0x00 &&
-          (*encoded_header)[25] == header.filename.size());
+          (*encoded_header)[55] == 0x1f && (*encoded_header)[56] == 0x00 &&
+          (*encoded_header)[57] == header.filename.size());
 
     const auto decoded_header = encoded_header
         ? deserialize_file_header(*encoded_header)
@@ -55,6 +62,7 @@ int main() {
     CHECK(decoded_header && decoded_header->file_size == header.file_size);
     CHECK(decoded_header && decoded_header->chunk_size == header.chunk_size);
     CHECK(decoded_header && decoded_header->total_chunks == header.total_chunks);
+    CHECK(decoded_header && decoded_header->content_hash == header.content_hash);
     CHECK(decoded_header && decoded_header->filename == header.filename);
 
     if (encoded_header) {
@@ -67,8 +75,8 @@ int main() {
         CHECK(!deserialize_file_header(trailing).has_value());
 
         auto oversized_name = *encoded_header;
-        oversized_name[24] = 0x7f;
-        oversized_name[25] = 0xff;
+        oversized_name[56] = 0x7f;
+        oversized_name[57] = 0xff;
         CHECK(!deserialize_file_header(oversized_name).has_value());
 
         auto traversal_name = *encoded_header;
@@ -164,7 +172,8 @@ int main() {
     CHECK(decoded_chunk && decoded_chunk->chunk_index == chunk.chunk_index);
     CHECK(decoded_chunk && decoded_chunk->data == chunk.data);
 
-    FileTransferHeader two_chunk_header{99, 902, 900, 2, "data.bin"};
+    FileTransferHeader two_chunk_header{
+        99, 902, 900, 2, CryptoHash{}, "data.bin"};
     FileTransferChunk first_chunk{99, 0, {}};
     first_chunk.data.resize(two_chunk_header.chunk_size);
     FileTransferChunk final_chunk{99, 1, {0xaa, 0xbb}};
@@ -180,7 +189,7 @@ int main() {
     CHECK(!is_valid_file_chunk_for_header(two_chunk_header, final_chunk));
 
     const FileTransferHeader empty_header{
-        7, 0, FILE_TRANSFER_MIN_CHUNK_SIZE, 1, "empty.bin"};
+        7, 0, FILE_TRANSFER_MIN_CHUNK_SIZE, 1, CryptoHash{}, "empty.bin"};
     const FileTransferChunk empty_chunk{7, 0, {}};
     CHECK(is_valid_file_chunk_for_header(empty_header, empty_chunk));
 
@@ -303,6 +312,49 @@ int main() {
     loss_clock.advance(std::chrono::milliseconds(100));
     CHECK(loss_window.poll(loss_clock.now()).chunks.empty());
     CHECK(loss_window.failed());
+
+    const std::filesystem::path temp_dir =
+        std::filesystem::current_path() / "test_file_transfer_tmp";
+    std::error_code fs_error;
+    std::filesystem::remove_all(temp_dir, fs_error);
+    fs_error.clear();
+    CHECK(std::filesystem::create_directory(temp_dir, fs_error) && !fs_error);
+    const std::string contents = "verified file contents";
+    const auto write_test_file = [&](const std::filesystem::path& path) {
+        std::ofstream output(path, std::ios::binary | std::ios::trunc);
+        output.write(contents.data(),
+                     static_cast<std::streamsize>(contents.size()));
+        return static_cast<bool>(output);
+    };
+    const auto good_part = temp_dir / "good.part";
+    const auto good_final = temp_dir / "good.bin";
+    CHECK(write_test_file(good_part));
+    const auto digest = hash_file_sha256(
+        good_part.string(), static_cast<uint64_t>(contents.size()));
+    CHECK(digest.has_value());
+    CHECK(digest && verify_and_commit_file(
+          good_part.string(), good_final.string(),
+          static_cast<uint64_t>(contents.size()), *digest) ==
+          FileCommitResult::Committed);
+    CHECK(!std::filesystem::exists(good_part));
+    CHECK(std::filesystem::exists(good_final));
+
+    const auto bad_part = temp_dir / "bad.part";
+    const auto bad_final = temp_dir / "bad.bin";
+    CHECK(write_test_file(bad_part));
+    CryptoHash wrong_digest = digest.value_or(CryptoHash{});
+    wrong_digest[0] ^= 0xff;
+    CHECK(verify_and_commit_file(
+              bad_part.string(), bad_final.string(),
+              static_cast<uint64_t>(contents.size()), wrong_digest) ==
+          FileCommitResult::DigestMismatch);
+    CHECK(std::filesystem::exists(bad_part));
+    CHECK(!std::filesystem::exists(bad_final));
+    CHECK(file_transfer_part_name(alice, 42) !=
+          file_transfer_part_name(bob, 42));
+    CHECK(file_transfer_part_name(alice, 42).ends_with(".part"));
+    std::filesystem::remove_all(temp_dir, fs_error);
+    CHECK(!fs_error);
 
     if (encoded_chunk) {
         auto truncated = *encoded_chunk;

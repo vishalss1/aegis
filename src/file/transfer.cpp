@@ -1,6 +1,10 @@
 #include "aegis/file/transfer.hpp"
 #include "aegis/protocol/wire.hpp"
 #include <algorithm>
+#include <array>
+#include <filesystem>
+#include <fstream>
+#include <openssl/evp.h>
 
 namespace {
 
@@ -56,6 +60,20 @@ FileChunkReceipt FileChunkTracker::record(uint32_t chunk_index) noexcept {
            received_[contiguous_received_])
         ++contiguous_received_;
     return FileChunkReceipt::Accepted;
+}
+
+bool FileChunkTracker::remove(uint32_t chunk_index) noexcept {
+    if (chunk_index >= received_.size() || !received_[chunk_index])
+        return false;
+    received_[chunk_index] = false;
+    --received_count_;
+    if (chunk_index < contiguous_received_) {
+        contiguous_received_ = 0;
+        while (contiguous_received_ < received_.size() &&
+               received_[contiguous_received_])
+            ++contiguous_received_;
+    }
+    return true;
 }
 
 bool FileChunkTracker::received(uint32_t chunk_index) const noexcept {
@@ -199,6 +217,85 @@ void FileSendWindow::observe_rtt(
     rto_ = measured;
 }
 
+std::optional<CryptoHash> hash_file_sha256(
+    const std::string& path, uint64_t expected_size) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file.is_open())
+        return std::nullopt;
+    EVP_MD_CTX* context = EVP_MD_CTX_new();
+    if (!context)
+        return std::nullopt;
+
+    bool ok = EVP_DigestInit_ex(context, EVP_sha256(), nullptr) == 1;
+    uint64_t total = 0;
+    std::array<uint8_t, 64 * 1024> buffer{};
+    while (ok && file) {
+        file.read(reinterpret_cast<char*>(buffer.data()),
+                  static_cast<std::streamsize>(buffer.size()));
+        const std::streamsize count = file.gcount();
+        if (count < 0) {
+            ok = false;
+            break;
+        }
+        if (count > 0) {
+            const size_t size = static_cast<size_t>(count);
+            total += size;
+            ok = EVP_DigestUpdate(context, buffer.data(), size) == 1;
+        }
+    }
+    if (!file.eof())
+        ok = false;
+
+    CryptoHash digest{};
+    unsigned int digest_size = 0;
+    if (ok)
+        ok = total == expected_size &&
+             EVP_DigestFinal_ex(
+                 context, digest.data(), &digest_size) == 1 &&
+             digest_size == digest.size();
+    EVP_MD_CTX_free(context);
+    if (!ok)
+        return std::nullopt;
+    return digest;
+}
+
+std::string file_transfer_part_name(
+    const NodeId& sender, uint64_t transfer_id) {
+    constexpr char hex[] = "0123456789abcdef";
+    std::string name = ".aegis-";
+    name.reserve(7 + sender.size() * 2 + 1 + 16 + 5);
+    for (const uint8_t byte : sender) {
+        name.push_back(hex[byte >> 4]);
+        name.push_back(hex[byte & 0x0Fu]);
+    }
+    name.push_back('-');
+    for (int shift = 60; shift >= 0; shift -= 4) {
+        name.push_back(hex[(transfer_id >> shift) & 0x0Fu]);
+    }
+    name += ".part";
+    return name;
+}
+
+FileCommitResult verify_and_commit_file(
+    const std::string& part_path, const std::string& final_path,
+    uint64_t expected_size, const CryptoHash& expected_hash) {
+    std::error_code error;
+    const uint64_t actual_size = std::filesystem::file_size(part_path, error);
+    if (error)
+        return FileCommitResult::IoError;
+    if (actual_size != expected_size)
+        return FileCommitResult::SizeMismatch;
+    const auto actual_hash = hash_file_sha256(part_path, expected_size);
+    if (!actual_hash)
+        return FileCommitResult::IoError;
+    if (*actual_hash != expected_hash)
+        return FileCommitResult::DigestMismatch;
+    std::filesystem::rename(part_path, final_path, error);
+    if (error)
+        return FileCommitResult::RenameFailed;
+    return FileCommitResult::Committed;
+}
+
 bool is_safe_file_name(std::string_view filename) noexcept {
     if (filename.empty() || filename.size() > FILE_TRANSFER_MAX_NAME_BYTES ||
         filename == "." || filename == ".." || filename.back() == '.' ||
@@ -293,6 +390,7 @@ std::optional<std::vector<uint8_t>> serialize_file_header(
         !writer.write_u64(header.file_size) ||
         !writer.write_u32(header.chunk_size) ||
         !writer.write_u32(header.total_chunks) ||
+        !writer.write_bytes(header.content_hash) ||
         !writer.write_u16(static_cast<uint16_t>(header.filename.size())) ||
         !writer.write_bytes(filename) || !writer.finished())
         return std::nullopt;
@@ -306,9 +404,10 @@ std::optional<FileTransferHeader> deserialize_file_header(
     const auto file_size = reader.read_u64();
     const auto chunk_size = reader.read_u32();
     const auto total_chunks = reader.read_u32();
+    const auto content_hash = reader.read_bytes(CryptoHash{}.size());
     const auto filename_length = reader.read_u16();
     if (!transfer_id || !file_size || !chunk_size || !total_chunks ||
-        !filename_length)
+        !content_hash || !filename_length)
         return std::nullopt;
     const auto filename = reader.read_bytes(*filename_length);
     if (!filename || !reader.finished())
@@ -319,6 +418,8 @@ std::optional<FileTransferHeader> deserialize_file_header(
     header.file_size = *file_size;
     header.chunk_size = *chunk_size;
     header.total_chunks = *total_chunks;
+    std::copy(content_hash->begin(), content_hash->end(),
+              header.content_hash.begin());
     header.filename.assign(
         reinterpret_cast<const char*>(filename->data()), filename->size());
     if (!is_valid_file_header(header))

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "aegis/identity/identity.hpp"
+#include "aegis/crypto/primitives.hpp"
 #include "aegis/packet/header.hpp"
 #include "aegis/protocol/sources.hpp"
 #include <chrono>
@@ -13,7 +14,7 @@
 #include <string_view>
 #include <vector>
 
-inline constexpr size_t FILE_HEADER_FIXED_SIZE = 26;
+inline constexpr size_t FILE_HEADER_FIXED_SIZE = 58;
 inline constexpr size_t FILE_CHUNK_FIXED_SIZE = 16;
 inline constexpr size_t FILE_ACK_FIXED_SIZE = 12;
 inline constexpr size_t FILE_ACK_RANGE_SIZE = 8;
@@ -34,6 +35,7 @@ struct FileTransferHeader {
     uint64_t file_size = 0;
     uint32_t chunk_size = 0;
     uint32_t total_chunks = 0;
+    CryptoHash content_hash{};
     std::string filename;
 };
 
@@ -77,6 +79,7 @@ class FileChunkTracker {
 public:
     [[nodiscard]] bool reset(uint32_t total_chunks);
     [[nodiscard]] FileChunkReceipt record(uint32_t chunk_index) noexcept;
+    [[nodiscard]] bool remove(uint32_t chunk_index) noexcept;
     [[nodiscard]] bool received(uint32_t chunk_index) const noexcept;
     [[nodiscard]] bool complete() const noexcept;
     [[nodiscard]] uint32_t received_count() const noexcept {
@@ -94,6 +97,22 @@ private:
     uint32_t received_count_ = 0;
     uint32_t contiguous_received_ = 0;
 };
+
+enum class FileCommitResult {
+    Committed,
+    IoError,
+    SizeMismatch,
+    DigestMismatch,
+    RenameFailed
+};
+
+[[nodiscard]] std::optional<CryptoHash> hash_file_sha256(
+    const std::string& path, uint64_t expected_size);
+[[nodiscard]] std::string file_transfer_part_name(
+    const NodeId& sender, uint64_t transfer_id);
+[[nodiscard]] FileCommitResult verify_and_commit_file(
+    const std::string& part_path, const std::string& final_path,
+    uint64_t expected_size, const CryptoHash& expected_hash);
 
 struct FileSendAction {
     bool send_header = false;

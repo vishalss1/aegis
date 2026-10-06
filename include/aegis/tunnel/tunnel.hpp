@@ -195,7 +195,9 @@ private:
         uint64_t file_size = 0;
         uint32_t chunk_size = 0;
         uint32_t total_chunks = 0;
+        CryptoHash content_hash{};
         std::string output_path;
+        std::string final_path;
         FileChunkTracker chunks;
         bool completion_reported = false;
     };
