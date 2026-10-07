@@ -1,6 +1,7 @@
 #include "aegis/routing/routing.hpp"
 #include <algorithm>
 #include <cstdio>
+#include <limits>
 
 RoutingEngine::RoutingEngine(size_t max_routes) : max_routes_(max_routes) {}
 
@@ -63,6 +64,11 @@ bool RoutingEngine::add_route(const Route& route) {
             candidate.last_probe_validated_at =
                 existing->last_probe_validated_at;
             candidate.last_probe_rtt = existing->last_probe_rtt;
+            candidate.probe_failed = existing->probe_failed;
+            candidate.consecutive_probe_failures =
+                existing->consecutive_probe_failures;
+            candidate.probe_hold_down_until =
+                existing->probe_hold_down_until;
         }
         *existing = std::move(candidate);
         return true;
@@ -162,6 +168,40 @@ bool RoutingEngine::record_probe_success(
     route->last_probe_validated_at = now;
     route->last_probe_rtt =
         std::chrono::duration_cast<std::chrono::milliseconds>(rtt);
+    if (!route->probe_failed ||
+        (route->probe_hold_down_until &&
+         now >= *route->probe_hold_down_until)) {
+        route->probe_failed = false;
+        route->consecutive_probe_failures = 0;
+        route->probe_hold_down_until.reset();
+    }
+    return true;
+}
+
+bool RoutingEngine::record_probe_failure(
+    const NodeId& destination, const NodeId& next_hop,
+    uint32_t prefix, uint32_t prefix_length, uint64_t sequence,
+    ProtocolClock::time_point now) {
+    if (prefix_length > 32)
+        return false;
+    const uint32_t canonical = prefix & prefix_mask(prefix_length);
+    std::lock_guard<std::mutex> lock(mtx_);
+    const auto route = std::find_if(routes_.begin(), routes_.end(),
+        [&](const Route& candidate) {
+            return candidate.type == NextHopType::Relay &&
+                candidate.destination == destination &&
+                candidate.next_hop == next_hop &&
+                candidate.prefix == canonical &&
+                candidate.prefix_length == prefix_length &&
+                candidate.sequence_number == sequence;
+        });
+    if (route == routes_.end())
+        return false;
+    route->probe_failed = true;
+    if (route->consecutive_probe_failures <
+        std::numeric_limits<uint32_t>::max())
+        ++route->consecutive_probe_failures;
+    route->probe_hold_down_until = now + ROUTE_PROBE_HOLD_DOWN;
     return true;
 }
 
@@ -175,6 +215,8 @@ std::optional<Route> RoutingEngine::find_route(uint32_t dest_ip) const {
     const Route* best = nullptr;
 
     for (const auto& route : routes_) {
+        if (route.type == NextHopType::Relay && route.probe_failed)
+            continue;
         uint32_t mask = prefix_mask(route.prefix_length);
         if ((dest_ip & mask) != (route.prefix & mask)) continue;
 

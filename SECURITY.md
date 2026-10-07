@@ -226,7 +226,7 @@ removed. Concurrent transfers and declared disk reservations are capped per
 peer and globally. These controls provide bounded reliability, not congestion
 control or guaranteed delivery after retry exhaustion.
 
-### Routing does not yet fail over on path health
+### Routing path health has bounded failover but limited diagnosis
 
 Learned routes retain bounded alternatives, carry sequence, lease, metric,
 origin, advertiser, and local validation-time metadata, and are removed when
@@ -234,10 +234,17 @@ their monotonic lease expires. Configured direct routes are not lease-expired.
 Relay candidates receive onion-carried challenges every 30 seconds. Responses
 are accepted only for a bounded outstanding random token, matching destination
 and route sequence, within five seconds; successful RTT and validation time are
-recorded on the exact candidate. A failed probe does not yet alter route
-selection, and there is no authenticated withdrawal. A failed middle hop can
-therefore remain selected until its lease expires. Selection is primarily
-based on prefix and hop count; metric and probe RTT are not yet scored.
+recorded on the exact candidate. A timeout suppresses that exact candidate and
+selection immediately falls through to another viable route. Probing resumes
+after a 30-second hold-down, and only a later successful response restores
+eligibility; same-sequence gossip refreshes preserve the failed state. This
+prevents a dead preferred path from remaining selected and limits rapid
+failover oscillation.
+
+There is still no authenticated withdrawal or unreachable error. End-to-end
+timeout cannot identify the failing middle hop, so other candidates containing
+that hop remain eligible. Selection is primarily based on prefix and hop
+count; metric, probe RTT, observed loss, and relay load are not yet scored.
 
 ### NAT traversal is incomplete
 

@@ -37,6 +37,12 @@ struct Route {
     std::optional<ProtocolClock::time_point> last_probe_sent_at;
     std::optional<ProtocolClock::time_point> last_probe_validated_at;
     std::optional<std::chrono::milliseconds> last_probe_rtt;
+    // A timed-out end-to-end probe suppresses only this exact candidate.
+    // Probing resumes after the hold-down, and only a later success restores
+    // the candidate.
+    bool probe_failed = false;
+    uint32_t consecutive_probe_failures = 0;
+    std::optional<ProtocolClock::time_point> probe_hold_down_until;
 };
 
 inline constexpr size_t ROUTING_MAX_ROUTES = 2048;
@@ -44,6 +50,7 @@ inline constexpr size_t ROUTING_MAX_CANDIDATES_PER_PREFIX = 8;
 inline constexpr std::chrono::seconds ROUTE_DEFAULT_LEASE{90};
 inline constexpr std::chrono::seconds ROUTE_MAX_LEASE{600};
 inline constexpr uint32_t ROUTE_MAX_METRIC = 1'000'000;
+inline constexpr std::chrono::seconds ROUTE_PROBE_HOLD_DOWN{30};
 
 [[nodiscard]] bool learned_route_lease_expired(
     const Route& route, ProtocolClock::time_point now) noexcept;
@@ -67,6 +74,10 @@ public:
         uint32_t prefix, uint32_t prefix_length, uint64_t sequence,
         ProtocolClock::time_point now,
         std::chrono::steady_clock::duration rtt);
+    bool record_probe_failure(
+        const NodeId& destination, const NodeId& next_hop,
+        uint32_t prefix, uint32_t prefix_length, uint64_t sequence,
+        ProtocolClock::time_point now);
     void clear();
 
     std::optional<Route> find_route(uint32_t dest_ip) const;

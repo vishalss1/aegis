@@ -325,6 +325,69 @@ int main() {
                   validated + std::chrono::hours(1)) == 0);
     }
 
+    // ---- 11. Probe failure suppresses one candidate with recovery hold-down -
+    {
+        RoutingEngine re;
+        const auto start = ProtocolClock::time_point{} +
+            std::chrono::seconds(100);
+        const uint32_t prefix = make_ip(10,120,0,0);
+        NodeId A = make_id(70);
+        NodeId B = make_id(71);
+        NodeId C = make_id(72);
+        NodeId X = make_id(73);
+
+        Route primary = make_relay(prefix, 24, A, X, {A, X});
+        primary.validated_at = start;
+        Route backup = make_relay(prefix, 24, B, X, {B, C, X});
+        backup.validated_at = start;
+        CHECK(re.add_route(primary));
+        CHECK(re.add_route(backup));
+        auto selected = re.find_route(make_ip(10,120,0,8));
+        CHECK(selected && selected->next_hop == A);
+
+        CHECK(re.mark_probe_sent(X, A, prefix, 24, 1, start));
+        CHECK(!re.record_probe_failure(X, A, prefix, 24, 2, start));
+        CHECK(re.record_probe_failure(
+            X, A, prefix, 24, 1, start + std::chrono::seconds(5)));
+        selected = re.find_route(make_ip(10,120,0,8));
+        CHECK(selected && selected->next_hop == B);
+
+        auto candidates = re.routes_to(X);
+        auto failed = std::find_if(
+            candidates.begin(), candidates.end(),
+            [&](const Route& route) { return route.next_hop == A; });
+        CHECK(failed != candidates.end() && failed->probe_failed);
+        CHECK(failed != candidates.end() &&
+              failed->consecutive_probe_failures == 1);
+
+        // A same-sequence gossip refresh cannot make a failed path eligible.
+        CHECK(re.add_route(primary));
+        selected = re.find_route(make_ip(10,120,0,8));
+        CHECK(selected && selected->next_hop == B);
+
+        // Even an authenticated response must respect the anti-flap hold-down.
+        CHECK(re.record_probe_success(
+            X, A, prefix, 24, 1, start + std::chrono::seconds(20),
+            std::chrono::milliseconds(20)));
+        selected = re.find_route(make_ip(10,120,0,8));
+        CHECK(selected && selected->next_hop == B);
+        CHECK(re.record_probe_success(
+            X, A, prefix, 24, 1, start + std::chrono::seconds(35),
+            std::chrono::milliseconds(18)));
+        selected = re.find_route(make_ip(10,120,0,8));
+        CHECK(selected && selected->next_hop == A);
+
+        candidates = re.routes_to(X);
+        failed = std::find_if(
+            candidates.begin(), candidates.end(),
+            [&](const Route& route) { return route.next_hop == A; });
+        CHECK(failed != candidates.end() && !failed->probe_failed);
+        CHECK(failed != candidates.end() &&
+              failed->consecutive_probe_failures == 0);
+        CHECK(failed != candidates.end() &&
+              !failed->probe_hold_down_until.has_value());
+    }
+
     printf("\n%d / %d passed\n", passed, tests);
     return (passed == tests) ? 0 : 1;
 }
