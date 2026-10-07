@@ -42,6 +42,9 @@ inline constexpr std::chrono::seconds ROUTE_DEFAULT_LEASE{90};
 inline constexpr std::chrono::seconds ROUTE_MAX_LEASE{600};
 inline constexpr uint32_t ROUTE_MAX_METRIC = 1'000'000;
 
+[[nodiscard]] bool learned_route_lease_expired(
+    const Route& route, ProtocolClock::time_point now) noexcept;
+
 class RoutingEngine {
 public:
     explicit RoutingEngine(size_t max_routes = ROUTING_MAX_ROUTES);
@@ -51,6 +54,7 @@ public:
     size_t remove_older_learned_routes(
         const NodeId& origin, uint32_t prefix, uint32_t prefix_length,
         uint64_t minimum_sequence);
+    size_t expire_learned_routes(ProtocolClock::time_point now);
     void clear();
 
     std::optional<Route> find_route(uint32_t dest_ip) const;

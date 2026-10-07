@@ -8,6 +8,13 @@ static uint32_t prefix_mask(uint32_t prefix_length) {
     return prefix_length ? (0xFFFFFFFFu << (32 - prefix_length)) : 0;
 }
 
+bool learned_route_lease_expired(
+    const Route& route, ProtocolClock::time_point now) noexcept {
+    return route.type == NextHopType::Relay &&
+        now >= route.validated_at &&
+        now - route.validated_at >= route.lease;
+}
+
 bool RoutingEngine::add_route(const Route& route) {
     std::lock_guard<std::mutex> lock(mtx_);
     if (route.prefix_length > 32 || route.type == NextHopType::Unknown)
@@ -89,6 +96,16 @@ size_t RoutingEngine::remove_older_learned_routes(
             route.origin == origin && route.prefix == canonical &&
             route.prefix_length == prefix_length &&
             route.sequence_number < minimum_sequence;
+    });
+    return before - routes_.size();
+}
+
+size_t RoutingEngine::expire_learned_routes(
+    ProtocolClock::time_point now) {
+    std::lock_guard<std::mutex> lock(mtx_);
+    const size_t before = routes_.size();
+    std::erase_if(routes_, [&](const Route& route) {
+        return learned_route_lease_expired(route, now);
     });
     return before - routes_.size();
 }

@@ -228,12 +228,13 @@ control or guaranteed delivery after retry exhaustion.
 
 ### Routing does not validate path liveness
 
-Learned routes retain bounded alternatives and carry sequence, lease, metric,
-origin, advertiser, and local validation-time metadata. Lease expiry is not yet
-enforced, and there is no path probe or authenticated withdrawal. A failed
-middle hop can leave the selected route blackholed because candidate health
-does not yet trigger failover. Route selection is primarily based on prefix
-and hop count; the carried metric is not yet part of selection.
+Learned routes retain bounded alternatives, carry sequence, lease, metric,
+origin, advertiser, and local validation-time metadata, and are removed when
+their monotonic lease expires. Configured direct routes are not lease-expired.
+There is still no path probe or authenticated withdrawal. A failed middle hop
+can leave the selected route blackholed until its lease expires because
+candidate health does not yet trigger failover. Route selection is primarily
+based on prefix and hop count; the carried metric is not yet part of selection.
 
 ### NAT traversal is incomplete
 

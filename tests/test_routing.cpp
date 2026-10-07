@@ -258,6 +258,48 @@ int main() {
             CHECK(candidate.prefix == make_ip(10,100,0,0));
     }
 
+    // ---- 10. Learned leases expire exactly; direct routes survive -----------
+    {
+        RoutingEngine re;
+        const auto validated = ProtocolClock::time_point{} +
+            std::chrono::seconds(20);
+        const uint32_t prefix = make_ip(10,110,0,0);
+        NodeId A = make_id(60);
+        NodeId B = make_id(61);
+        NodeId D = make_id(62);
+        NodeId X = make_id(63);
+
+        Route direct = make_direct(prefix, 24, D);
+        direct.lease = std::chrono::seconds(1);
+        direct.validated_at = validated;
+        CHECK(re.add_route(direct));
+
+        Route short_lease = make_relay(prefix, 24, A, X);
+        short_lease.lease = std::chrono::seconds(5);
+        short_lease.validated_at = validated;
+        CHECK(re.add_route(short_lease));
+        Route long_lease = make_relay(prefix, 24, B, X);
+        long_lease.lease = std::chrono::seconds(10);
+        long_lease.validated_at = validated;
+        CHECK(re.add_route(long_lease));
+        CHECK(re.size() == 3);
+
+        CHECK(re.expire_learned_routes(
+                  validated - std::chrono::seconds(1)) == 0);
+        CHECK(re.expire_learned_routes(
+                  validated + std::chrono::seconds(4)) == 0);
+        CHECK(re.expire_learned_routes(
+                  validated + std::chrono::seconds(5)) == 1);
+        CHECK(re.size() == 2);
+        CHECK(re.expire_learned_routes(
+                  validated + std::chrono::seconds(10)) == 1);
+        CHECK(re.size() == 1);
+        const auto remaining = re.find_route(make_ip(10,110,0,8));
+        CHECK(remaining && remaining->type == NextHopType::Direct);
+        CHECK(re.expire_learned_routes(
+                  validated + std::chrono::hours(1)) == 0);
+    }
+
     printf("\n%d / %d passed\n", passed, tests);
     return (passed == tests) ? 0 : 1;
 }

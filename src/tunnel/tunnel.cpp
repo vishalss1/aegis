@@ -668,20 +668,28 @@ void Tunnel::maintenance_loop() {
                     peer.node_id[0], peer.node_id[1]);
         }
 
-        // 3) Garbage-collect sessions retired by a rekey.
+        // 3) Expire learned route candidates whose advertised lease elapsed.
+        //    Configured direct routes are never lease-removed.
+        const size_t expired_routes =
+            routing_.expire_learned_routes(clock_.now());
+        if (expired_routes > 0)
+            aegis_log("[tunnel] expired %zu learned route candidate(s)\n",
+                      expired_routes);
+
+        // 4) Garbage-collect sessions retired by a rekey.
         session_manager_->purge_retired();
         session_manager_->purge_incomplete_handshakes();
         session_manager_->purge_handshake_replays();
 
-        // 4) Fold same-network presence broadcasts into known peers' endpoints.
+        // 5) Fold same-network presence broadcasts into known peers' endpoints.
         //    Runs after keep-alives so a peer that just moved IPs has its new
         //    endpoint ready for the next connect/rekey attempt.
         refresh_endpoints_from_discovery();
 
-        // 5) Rekey established sessions older than the interval.
+        // 6) Rekey established sessions older than the interval.
         rekey_due();
 
-        // 6) Release abandoned partial files and tell the sender to stop.
+        // 7) Release abandoned partial files and tell the sender to stop.
         expire_file_transfers();
     }
     aegis_log( "[tunnel] maintenance loop ended\n");
@@ -1359,6 +1367,7 @@ std::vector<AdvertisedPeer> Tunnel::build_advertised_peers() const {
         static_cast<uint32_t>(ROUTE_DEFAULT_LEASE.count()), 0);
     out.push_back(std::move(self));
 
+    const auto now = clock_.now();
     auto routes = routing_.routes();
     for (const auto& peer : peers_.all_peers()) {
         if (peer.node_id == identity_.node_id)
@@ -1369,14 +1378,14 @@ std::vector<AdvertisedPeer> Tunnel::build_advertised_peers() const {
         for (const auto& r : routes) {
             if (r.destination != peer.node_id)
                 continue;
+            if (learned_route_lease_expired(r, now))
+                continue;
             auto remaining = r.lease;
             if (r.type == NextHopType::Relay &&
                 r.validated_at != ProtocolClock::time_point{}) {
                 const auto elapsed = std::chrono::duration_cast<
-                    std::chrono::seconds>(clock_.now() - r.validated_at);
-                if (elapsed >= remaining)
-                    remaining = std::chrono::seconds(1);
-                else if (elapsed.count() > 0)
+                    std::chrono::seconds>(now - r.validated_at);
+                if (elapsed.count() > 0)
                     remaining -= elapsed;
             }
             ap.prefixes.emplace_back(

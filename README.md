@@ -181,7 +181,7 @@ A few design choices that shaped how Aegis works.
 | **Reliable File Windows** | File headers and chunks use authenticated selective acknowledgements, a 32-chunk sliding window, RTT-derived retransmission deadlines, bounded retry counts, resume ranges, and explicit cancellation. Idle transfers expire after five minutes; per-peer and global transfer/disk reservations are capped. |
 | **Verified File Commit** | Receivers write to transfer-unique `.part` files, verify the authenticated whole-file SHA-256 digest and exact size, then atomically rename into place. |
 | **Multi-hop Onion Routing** | Each hop decrypts one layer and learns the next hop. Relays also receive the source NodeID, and unpadded packet size and timing remain visible. |
-| **Bounded Route Candidates** | Each prefix retains up to eight distinct destination/next-hop candidates instead of overwriting alternatives. Selection remains longest-prefix, then direct, then shortest relay path; health-based failover is not yet implemented. |
+| **Bounded Route Candidates** | Each prefix retains up to eight distinct destination/next-hop candidates instead of overwriting alternatives. Learned candidates expire on their monotonic 1–600 second leases while configured direct routes persist. Selection remains longest-prefix, then direct, then shortest relay path; health-based failover is not yet implemented. |
 | **Peer Table Gossip** | Full mesh convergence without a coordinator. Version-3 prefix records carry origin sequence, bounded lease, and metric metadata; receivers bind the advertiser to the authenticated adjacent sender and reject older learned sequences. Changes fan out as bounded, coalesced per-recipient deltas with periodic full resynchronization. |
 | **Identity-Hiding Gossip** | Peer tables carry NodeID + public key + IP prefix routes. Physical endpoints are never transmitted in gossip — non-adjacent nodes cannot learn each other's real IP. |
 | **NetworkID Mesh Segmentation** | NetworkID mismatches are rejected before session creation. This separates accidental cross-mesh traffic but is not static peer authentication. |
@@ -635,7 +635,7 @@ Unit test coverage:
 | `test_tunnel` | Nonce counter arithmetic, wire format round-trip, AEAD integration |
 | `test_session` | Authenticated Noise IK integration, concurrent lifecycle/snapshot safety, bounded session state, pending-state expiry, INIT replay caching, simultaneous-init convergence, transport replay windows, and rekey grace |
 | `test_peer` | Multi-peer table — concurrent lifecycle/snapshot safety, states, endpoints, session lookup, health tracking |
-| `test_routing` | Prefix → next-hop → peer resolution, retained and bounded candidates, canonical prefixes, route refresh, loop rejection, and tie-breaking |
+| `test_routing` | Prefix → next-hop → peer resolution, retained and bounded candidates, exact learned-lease expiry, direct-route preservation, canonical prefixes, route refresh, loop rejection, and tie-breaking |
 | `test_peer_table` | TYPE_PEER_TABLE v3 encoding/merge, sequence/lease/metric validation, stale-sequence rejection, alternate-advertiser retention, IP-stripping, bounded delta batching, and jitter scheduling |
 | `test_relay` | `build_onion` / `peel_onion` — layer construction, per-hop decryption, wire-budget agreement, and deterministic relay quota enforcement |
 | `test_discovery` | LAN presence broadcast format, NetworkID extraction, endpoint parsing |
