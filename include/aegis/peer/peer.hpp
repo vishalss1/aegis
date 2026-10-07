@@ -3,6 +3,7 @@
 #include "aegis/identity/identity.hpp"
 #include "aegis/transport/transport.hpp"
 #include "aegis/protocol/sources.hpp"
+#include "aegis/protocol/endpoint_candidate.hpp"
 #include "aegis/session/session.hpp"
 #include <chrono>
 #include <cstddef>
@@ -34,6 +35,9 @@ struct Peer {
     NodeId node_id{};
     Key public_key{};
     std::optional<Endpoint> endpoint;   // nullopt for relay-only / not-yet-known peers
+    // Authenticated but not yet path-validated alternatives. Candidate
+    // exchange never promotes one into `endpoint`.
+    std::vector<EndpointCandidate> endpoint_candidates;
     PeerState state = PeerState::Unknown;
     std::chrono::steady_clock::time_point created_at{};
     std::chrono::steady_clock::time_point last_seen{};
@@ -76,6 +80,9 @@ public:
     void mark_connecting(const NodeId& node_id);
     void mark_dead(const NodeId& node_id);
     void update_endpoint(const NodeId& node_id, const Endpoint& endpoint);
+    bool set_endpoint_candidates(
+        const NodeId& node_id,
+        const std::vector<EndpointCandidate>& candidates);
 
     std::optional<SessionSnapshot> get_session(const NodeId& node_id) const;
 

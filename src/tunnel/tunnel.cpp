@@ -12,6 +12,36 @@
 #include <fstream>
 #include <filesystem>
 
+namespace {
+
+void merge_endpoint_candidate(
+    std::vector<EndpointCandidate>& candidates,
+    const EndpointCandidate& candidate) {
+    const auto existing = std::find_if(
+        candidates.begin(), candidates.end(), [&](const auto& current) {
+            return current.endpoint == candidate.endpoint;
+        });
+    if (existing != candidates.end()) {
+        *existing = candidate;
+    } else if (candidates.size() < ENDPOINT_CANDIDATE_MAX_COUNT) {
+        candidates.push_back(candidate);
+    } else {
+        const auto lowest = std::min_element(
+            candidates.begin(), candidates.end(),
+            [](const auto& left, const auto& right) {
+                return left.priority < right.priority;
+            });
+        *lowest = candidate;
+    }
+    std::stable_sort(
+        candidates.begin(), candidates.end(), [](const auto& left,
+                                                  const auto& right) {
+            return left.priority > right.priority;
+        });
+}
+
+}  // namespace
+
 Tunnel::Tunnel()
     : Tunnel(system_protocol_clock(), system_random_source()) {}
 
@@ -42,6 +72,10 @@ bool Tunnel::start(const TunnelConfig& config, const std::string& adapter_name) 
     relay_forward_limiter_.reset();
     gossip_delta_tracker_.reset();
     gossip_round_ = 0;
+    {
+        std::lock_guard<std::mutex> lock(endpoint_candidates_mtx_);
+        local_endpoint_candidates_.clear();
+    }
 
     const size_t datagram_budget =
         config.underlay_mtu - OUTER_IPV4_UDP_OVERHEAD;
@@ -128,6 +162,18 @@ bool Tunnel::start(const TunnelConfig& config, const std::string& adapter_name) 
                     (ip_h >> 8) & 0xFF, ip_h & 0xFF, port_h);
         } else {
             aegis_log( "[tunnel] STUN discovery failed for %s\n", server.c_str());
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(endpoint_candidates_mtx_);
+        local_endpoint_candidates_ =
+            gather_host_candidates(config_.listen_port);
+        if (stun_public_endpoint_) {
+            merge_endpoint_candidate(
+                local_endpoint_candidates_,
+                {EndpointCandidateType::ServerReflexive,
+                 *stun_public_endpoint_, 200});
         }
     }
 
@@ -218,6 +264,11 @@ TunnelDropStats Tunnel::drop_stats() const {
     stats.relay_global_drops = relay.global_drops;
     stats.relay_capacity_drops = relay.capacity_drops;
     return stats;
+}
+
+std::vector<EndpointCandidate> Tunnel::local_endpoint_candidates() const {
+    std::lock_guard<std::mutex> lock(endpoint_candidates_mtx_);
+    return local_endpoint_candidates_;
 }
 
 bool Tunnel::packet_fits_route(size_t packet_size, size_t route_depth) {
@@ -421,7 +472,9 @@ bool Tunnel::handshake_peer(const TunnelPeer& peer, bool force) {
                     peer.node_id[0], peer.node_id[1]);
             return false;
         }
-        peers_.mark_seen(peer.node_id);
+        lock.unlock();
+        peers_.mark_seen(peer.node_id, peer.endpoint);
+        announce_endpoint_candidates(peer.node_id, peer.endpoint);
         return true;
     }
 
@@ -437,7 +490,9 @@ bool Tunnel::handshake_peer(const TunnelPeer& peer, bool force) {
     // never wait on a stale flag — re-check the session right away. A session
     // is the only reliable proof the handshake completed.
     if (session_established(peer.node_id)) {
-        peers_.mark_seen(peer.node_id);
+        lock.unlock();
+        peers_.mark_seen(peer.node_id, peer.endpoint);
+        announce_endpoint_candidates(peer.node_id, peer.endpoint);
         return true;
     }
     if (!hs_cv_.wait_for(lock, std::chrono::seconds(10),
@@ -445,14 +500,18 @@ bool Tunnel::handshake_peer(const TunnelPeer& peer, bool force) {
                      pending_handshakes_[peer.node_id].done; })) {
         if (!running_) return false;
         if (session_established(peer.node_id)) {
-            peers_.mark_seen(peer.node_id);
+            lock.unlock();
+            peers_.mark_seen(peer.node_id, peer.endpoint);
+            announce_endpoint_candidates(peer.node_id, peer.endpoint);
             return true;
         }
         aegis_log( "[tunnel] handshake timed out for peer %02x%02x...\n",
                 peer.node_id[0], peer.node_id[1]);
         return false;
     }
-    peers_.mark_seen(peer.node_id);
+    lock.unlock();
+    peers_.mark_seen(peer.node_id, peer.endpoint);
+    announce_endpoint_candidates(peer.node_id, peer.endpoint);
     return true;
 }
 
@@ -757,6 +816,9 @@ void Tunnel::rx_callback(const uint8_t* data, size_t len, Endpoint sender) {
     case TYPE_PATH_PROBE:
         handle_path_probe_frame(data, len, *header, sender);
         break;
+    case TYPE_ENDPOINT_CANDIDATES:
+        handle_endpoint_candidates_frame(data, len, *header, sender);
+        break;
     case TYPE_NETWORK_TEARDOWN:
         handle_network_teardown_frame(data, len, *header);
         break;
@@ -813,6 +875,47 @@ void Tunnel::handle_peer_table_frame(const uint8_t* data, size_t len,
     if (!sess) return;
     peers_.mark_seen(sess->peer_id, sender);
     handle_peer_table(sess->peer_id, msg->payload.data(), msg->payload.size());
+}
+
+void Tunnel::handle_endpoint_candidates_frame(
+    const uint8_t* data, size_t len, const PacketHeader& header,
+    Endpoint sender) {
+    if (!running_)
+        return;
+    const auto msg = session_manager_->decrypt_message(data, len);
+    if (!msg || msg->packet_type != TYPE_ENDPOINT_CANDIDATES)
+        return;
+    const auto session =
+        session_manager_->get_session_by_id(header.session_id);
+    const auto update = deserialize_endpoint_candidates(msg->payload);
+    if (!session || !update)
+        return;
+    peers_.mark_seen(session->peer_id, sender);
+
+    if (update->subject == session->peer_id) {
+        auto candidates = update->candidates;
+        merge_endpoint_candidate(
+            candidates,
+            {EndpointCandidateType::PeerObserved, sender, 400});
+        (void)peers_.set_endpoint_candidates(
+            session->peer_id, candidates);
+        return;
+    }
+    if (update->subject != identity_.node_id)
+        return;
+    if (std::any_of(
+            update->candidates.begin(), update->candidates.end(),
+            [](const EndpointCandidate& candidate) {
+                return candidate.type != EndpointCandidateType::PeerObserved;
+            }))
+        return;
+    for (const auto& candidate : update->candidates)
+        record_local_endpoint_candidate(candidate);
+    const auto local = local_endpoint_candidates();
+    if (!local.empty()) {
+        send_endpoint_candidate_update(
+            session->peer_id, {identity_.node_id, local});
+    }
 }
 
 void Tunnel::handle_chat_frame(const uint8_t* data, size_t len,
@@ -1263,6 +1366,9 @@ void Tunnel::handle_handshake_init_frame(const uint8_t* data, size_t len,
         return;
     }
 
+    peers_.mark_seen(response->peer_id, sender);
+    announce_endpoint_candidates(response->peer_id, sender);
+
     // Mark done only after the response is accepted by the destination FIFO.
     // Later frames for this endpoint cannot overtake it, so the responder does
     // not enqueue data before the initiator's handshake response.
@@ -1522,6 +1628,45 @@ void Tunnel::handle_relay(const uint8_t* data, size_t len, uint32_t session_id) 
     }
     if (!transport_.send(frame->data(), frame->size(), *nh->endpoint))
         aegis_log( "[tunnel] relay forward send failed, dropping\n");
+}
+
+void Tunnel::record_local_endpoint_candidate(
+    const EndpointCandidate& candidate) {
+    if (!valid_endpoint_candidate(candidate))
+        return;
+    std::lock_guard<std::mutex> lock(endpoint_candidates_mtx_);
+    merge_endpoint_candidate(local_endpoint_candidates_, candidate);
+}
+
+void Tunnel::announce_endpoint_candidates(
+    const NodeId& peer_id, Endpoint observed_peer) {
+    const auto local = local_endpoint_candidates();
+    if (!local.empty())
+        send_endpoint_candidate_update(
+            peer_id, {identity_.node_id, local});
+    const EndpointCandidate observed{
+        EndpointCandidateType::PeerObserved, observed_peer, 400};
+    if (valid_endpoint_candidate(observed))
+        send_endpoint_candidate_update(peer_id, {peer_id, {observed}});
+}
+
+void Tunnel::send_endpoint_candidate_update(
+    const NodeId& peer_id,
+    const EndpointCandidateMessage& update) {
+    const auto peer = peers_.get_peer(peer_id);
+    if (!peer || !peer->endpoint || !session_established(peer_id))
+        return;
+    const auto payload = serialize_endpoint_candidates(update);
+    if (!payload)
+        return;
+    const auto frame = session_manager_->encrypt_message(
+        peer_id, TYPE_ENDPOINT_CANDIDATES,
+        payload->data(), payload->size());
+    if (frame) {
+        (void)transport_.send(
+            frame->data(), frame->size(), *peer->endpoint,
+            SendPriority::Control);
+    }
 }
 
 std::vector<AdvertisedPeer> Tunnel::build_advertised_peers() const {

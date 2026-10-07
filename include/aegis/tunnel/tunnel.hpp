@@ -13,6 +13,7 @@
 #include "aegis/discovery/discovery.hpp"
 #include "aegis/crypto/random.hpp"
 #include "aegis/protocol/sources.hpp"
+#include "aegis/protocol/endpoint_candidate.hpp"
 #include "aegis/packet/mtu.hpp"
 #include "aegis/packet/relay_limiter.hpp"
 #include "aegis/file/transfer.hpp"
@@ -106,6 +107,7 @@ public:
     // peer, so tests can prove a rekey replaced the keys.
     SessionManager* session_manager() const { return session_manager_.get(); }
     std::optional<Endpoint> stun_public_endpoint() const { return stun_public_endpoint_; }
+    std::vector<EndpointCandidate> local_endpoint_candidates() const;
 
     // Step 14: presences seen via LAN-wide discovery. Deliberately
     // network-agnostic — every node on the LAN is visible regardless of
@@ -155,6 +157,8 @@ private:
     RoutingEngine routing_;
     GossipDeltaTracker gossip_delta_tracker_;
     PathProbeTracker path_probe_tracker_;
+    std::vector<EndpointCandidate> local_endpoint_candidates_;
+    mutable std::mutex endpoint_candidates_mtx_;
 
 
     std::thread tx_thread_;
@@ -241,6 +245,9 @@ private:
                                 const PacketHeader& header, Endpoint sender);
     void handle_peer_table_frame(const uint8_t* data, size_t len,
                                  const PacketHeader& header, Endpoint sender);
+    void handle_endpoint_candidates_frame(
+        const uint8_t* data, size_t len, const PacketHeader& header,
+        Endpoint sender);
     void handle_chat_frame(const uint8_t* data, size_t len,
                            const PacketHeader& header, Endpoint sender);
     void handle_file_header_frame(const uint8_t* data, size_t len,
@@ -285,4 +292,10 @@ private:
     void announce_peer_table(const std::optional<NodeId>& exclude,
                              bool force_full = false);
     void handle_peer_table(const NodeId& sender, const uint8_t* data, size_t len);
+    void announce_endpoint_candidates(
+        const NodeId& peer_id, Endpoint observed_peer);
+    void send_endpoint_candidate_update(
+        const NodeId& peer_id,
+        const EndpointCandidateMessage& update);
+    void record_local_endpoint_candidate(const EndpointCandidate& candidate);
 };

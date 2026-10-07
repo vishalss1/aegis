@@ -77,6 +77,9 @@ The implementation currently provides the following limited properties:
   checks succeed. Verification or rename failure is not acknowledged complete.
 - STUN requests and responses use bounded codecs with exact declared lengths;
   the full padded attribute list is validated before accepting an address.
+- Endpoint candidate lists are session-encrypted, capped at eight entries,
+  reject duplicate or non-unicast IPv4 endpoints, and are scoped to the
+  authenticated sender or a peer-observed report about the receiver.
 - AEGIS1 invite payloads use bounded codecs, canonical base64url, exact name
   lengths, exact frame consumption, and valid IPv4 prefix lengths.
 - Session data has a 2,048-packet replay window.
@@ -251,9 +254,13 @@ count; metric, probe RTT, observed loss, and relay load are not yet scored.
 STUN discovery runs through the already-bound mesh transport socket, so the
 reported server-reflexive mapping belongs to the port used for peer traffic.
 The synchronous startup exchange accepts a response only from the resolved
-server endpoint with the outstanding random transaction ID. The mapping is not
-yet exchanged through an authenticated candidate protocol, and there is no
-coordinated hole punching or relay-of-last-resort circuit for symmetric NAT.
+server endpoint with the outstanding random transaction ID. Established peers
+exchange bounded host, server-reflexive, and peer-observed candidates inside
+authenticated session frames. A legitimate member can still lie about a
+candidate, so exchanged addresses are retained as unvalidated alternatives
+and never replace the active endpoint. There is not yet coordinated hole
+punching, candidate nomination, authenticated endpoint promotion, or a
+relay-of-last-resort circuit for symmetric NAT.
 
 ### Credential lifecycle is incomplete
 

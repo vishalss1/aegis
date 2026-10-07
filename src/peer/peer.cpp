@@ -2,6 +2,7 @@
 #include "aegis/session/session.hpp"
 #include <algorithm>
 #include <cstdio>
+#include <set>
 
 PeerManager::PeerManager(size_t max_peers, ProtocolClock& clock)
     : max_peers_(max_peers), clock_(clock) {}
@@ -138,6 +139,27 @@ void PeerManager::update_endpoint(const NodeId& node_id, const Endpoint& endpoin
     if (it == peers_.end()) return;
     it->second.endpoint = endpoint;
     it->second.last_seen = clock_.now();
+}
+
+bool PeerManager::set_endpoint_candidates(
+    const NodeId& node_id,
+    const std::vector<EndpointCandidate>& candidates) {
+    if (candidates.empty() ||
+        candidates.size() > ENDPOINT_CANDIDATE_MAX_COUNT)
+        return false;
+    std::set<std::pair<uint32_t, uint16_t>> endpoints;
+    for (const auto& candidate : candidates) {
+        if (!valid_endpoint_candidate(candidate) ||
+            !endpoints.emplace(
+                candidate.endpoint.ip, candidate.endpoint.port).second)
+            return false;
+    }
+    std::lock_guard<std::mutex> lock(mtx_);
+    const auto it = peers_.find(node_id);
+    if (it == peers_.end())
+        return false;
+    it->second.endpoint_candidates = candidates;
+    return true;
 }
 
 std::optional<SessionSnapshot> PeerManager::get_session(

@@ -74,6 +74,7 @@ set(AEGIS_SOURCES
     src/transport/handshake_cookie.cpp
     src/transport/handshake_rate_limiter.cpp
     src/transport/transport.cpp
+    src/protocol/endpoint_candidate.cpp
     src/routing/routing.cpp
     src/routing/path_probe.cpp
     src/peer/peer.cpp

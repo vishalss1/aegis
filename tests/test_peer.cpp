@@ -139,7 +139,25 @@ int main() {
         CHECK(b->state == PeerState::Dead);
     }
 
-    // ---- 2b. Static identity keys are immutable after binding ---------------
+    // ---- 2b. Authenticated candidates remain unvalidated alternatives -------
+    {
+        PeerManager pm;
+        CHECK(pm.upsert(bob.node_id, bob.keypair.public_key, ep_bob) ==
+              PeerUpsertResult::Inserted);
+        const std::vector<EndpointCandidate> candidates{
+            {EndpointCandidateType::Host,
+             Endpoint::from_parts(10, 0, 0, 2, 51821), 300},
+            {EndpointCandidateType::ServerReflexive,
+             Endpoint::from_parts(198, 51, 100, 2, 62000), 200}
+        };
+        CHECK(pm.set_endpoint_candidates(bob.node_id, candidates));
+        const auto peer = pm.get_peer(bob.node_id);
+        CHECK(peer && peer->endpoint_candidates == candidates);
+        CHECK(peer && peer->endpoint && *peer->endpoint == ep_bob);
+        CHECK(!pm.set_endpoint_candidates(charlie.node_id, candidates));
+    }
+
+    // ---- 2c. Static identity keys are immutable after binding ---------------
     {
         PeerManager pm;
         CHECK(pm.upsert(bob.node_id, bob.keypair.public_key, ep_bob) ==
