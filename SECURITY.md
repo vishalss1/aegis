@@ -125,7 +125,7 @@ the gossip trust boundary, the following rules apply in order:
 5. Gossip cannot demote a locally trusted peer or supply a physical endpoint.
 6. Routes are considered only after the identity update succeeds. Invalid or
    looping paths install no routes, direct routes are not downgraded, and the
-   routing table is capped at 2,048 entries.
+   routing table is capped at 2,048 entries and eight candidates per prefix.
 
 Peer-table frames are limited to 60 KiB, 128 advertised peers, eight path hops
 per peer, and 16 prefixes per peer. The decoder requires complete frame
@@ -224,10 +224,10 @@ control or guaranteed delivery after retry exhaustion.
 
 ### Routing does not validate path liveness
 
-Learned routes have no lease, expiry, path probe, link metric, or authenticated
-withdrawal. A failed middle hop can leave a route blackholed until later gossip
-happens to replace it. Route selection is primarily based on prefix and hop
-count.
+Learned routes retain bounded alternatives but have no lease, expiry, path
+probe, link metric, or authenticated withdrawal. A failed middle hop can leave
+the selected route blackholed because candidate health does not yet trigger
+failover. Route selection is primarily based on prefix and hop count.
 
 ### NAT traversal is incomplete
 

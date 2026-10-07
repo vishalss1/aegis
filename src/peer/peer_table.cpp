@@ -172,15 +172,14 @@ PeerTableMergeStats merge_peer_table(
             }
             bool skip = false;
             for (const auto& r : re.routes()) {
-                if (r.prefix == prefix && r.prefix_length == prefix_length) {
-                    if (r.type == NextHopType::Direct) {
-                        skip = true;  // Direct route always wins
-                        break;
-                    }
-                    if (r.type == NextHopType::Relay && r.path.size() <= path.size()) {
-                        skip = true;  // Existing relay route is equal or shorter
-                        break;
-                    }
+                if (r.prefix == (prefix & (prefix_length
+                        ? (0xFFFFFFFFu << (32 - prefix_length)) : 0)) &&
+                    r.prefix_length == prefix_length &&
+                    r.type == NextHopType::Relay &&
+                    r.next_hop == sender && r.destination == p.node_id &&
+                    r.path == path) {
+                    skip = true;  // An identical candidate is already retained.
+                    break;
                 }
             }
             if (skip)

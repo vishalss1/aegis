@@ -4,8 +4,14 @@
 
 RoutingEngine::RoutingEngine(size_t max_routes) : max_routes_(max_routes) {}
 
+static uint32_t prefix_mask(uint32_t prefix_length) {
+    return prefix_length ? (0xFFFFFFFFu << (32 - prefix_length)) : 0;
+}
+
 bool RoutingEngine::add_route(const Route& route) {
     std::lock_guard<std::mutex> lock(mtx_);
+    if (route.prefix_length > 32 || route.type == NextHopType::Unknown)
+        return false;
     if (route.type == NextHopType::Relay) {
         // A relay must not forward to itself; that route could never be resolved.
         if (route.next_hop == route.destination)
@@ -19,22 +25,39 @@ bool RoutingEngine::add_route(const Route& route) {
         for (const auto& hop : route.path)
             if (!seen.insert(hop).second)
                 return false;  // repeated hop => the path would loop forever
-    } else if (route.path.empty()) {
-        return false;  // Direct routes must at least name their destination
+    } else if (route.next_hop != route.destination || route.path.size() != 1 ||
+               route.path.front() != route.destination) {
+        return false;  // Direct routes are exactly one destination hop.
     }
-    // One route per prefix. Replacements remain possible at capacity because
-    // they do not increase persistent state.
+
+    Route candidate = route;
+    candidate.prefix &= prefix_mask(candidate.prefix_length);
+
+    // A candidate is the path learned from one next hop toward one
+    // destination. Refreshing that candidate may replace its path without
+    // consuming capacity; alternatives for the same prefix remain available.
     auto existing = std::find_if(routes_.begin(), routes_.end(), [&](const Route& r) {
-        return r.prefix == route.prefix && r.prefix_length == route.prefix_length;
+        return r.prefix == candidate.prefix &&
+            r.prefix_length == candidate.prefix_length &&
+            r.type == candidate.type && r.next_hop == candidate.next_hop &&
+            r.destination == candidate.destination;
     });
     if (existing != routes_.end()) {
-        *existing = route;
+        *existing = std::move(candidate);
         return true;
     }
     if (routes_.size() >= max_routes_)
         return false;
 
-    routes_.push_back(route);
+    const size_t prefix_candidates = static_cast<size_t>(std::count_if(
+        routes_.begin(), routes_.end(), [&](const Route& r) {
+            return r.prefix == candidate.prefix &&
+                r.prefix_length == candidate.prefix_length;
+        }));
+    if (prefix_candidates >= ROUTING_MAX_CANDIDATES_PER_PREFIX)
+        return false;
+
+    routes_.push_back(std::move(candidate));
     return true;
 }
 
@@ -48,10 +71,6 @@ void RoutingEngine::remove_route(const NodeId& peer_id) {
 void RoutingEngine::clear() {
     std::lock_guard<std::mutex> lock(mtx_);
     routes_.clear();
-}
-
-static uint32_t prefix_mask(uint32_t prefix_length) {
-    return prefix_length ? (0xFFFFFFFFu << (32 - prefix_length)) : 0;
 }
 
 std::optional<Route> RoutingEngine::find_route(uint32_t dest_ip) const {

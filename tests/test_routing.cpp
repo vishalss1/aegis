@@ -105,18 +105,20 @@ int main() {
         CHECK(*nh == p1);
     }
 
-    // ---- 3. Upsert: same prefix replaces the old entry ----------------------
+    // ---- 3. Same-prefix alternatives are retained ---------------------------
     {
         RoutingEngine re;
         re.add_route(make_direct(make_ip(10,10,0,1), 32, p1));
         CHECK(re.add_route(make_direct(make_ip(10,10,0,1), 32, p2)));
-        CHECK(re.size() == 1);
+        CHECK(re.size() == 2);
+        const auto candidates = re.routes();
+        CHECK(candidates.size() == 2);
         auto f = re.find_peer(make_ip(10,10,0,1));
         CHECK(f.has_value());
-        CHECK(*f == p2);
+        CHECK(*f == p1);  // equal candidates retain stable insertion order
     }
 
-    // ---- 4. New routes are rejected at capacity; replacements still work ----
+    // ---- 4. New candidates are rejected at capacity; refreshes still work ---
     {
         RoutingEngine re(/*max_routes=*/2);
         CHECK(re.add_route(make_direct(make_ip(10,10,0,1), 32, p1)));
@@ -125,11 +127,11 @@ int main() {
         CHECK(re.size() == 2);
         CHECK(!re.find_route(make_ip(10,10,0,3)).has_value());
 
-        CHECK(re.add_route(make_direct(make_ip(10,10,0,1), 32, d)));
+        CHECK(re.add_route(make_direct(make_ip(10,10,0,1), 32, p1)));
         CHECK(re.size() == 2);
         auto replaced = re.find_peer(make_ip(10,10,0,1));
         CHECK(replaced.has_value());
-        CHECK(replaced && *replaced == d);
+        CHECK(replaced && *replaced == p1);
     }
 
     // ---- 5. Loop avoidance is enforced on the hop path ----------------------
@@ -236,8 +238,24 @@ int main() {
 
         // routes_to check
         auto r_to_D = re.routes_to(D);
-        CHECK(r_to_D.size() == 1);
+        CHECK(r_to_D.size() == 2);
         CHECK(r_to_D[0].destination == D);
+    }
+
+    // ---- 9. Per-prefix candidate state is bounded ---------------------------
+    {
+        RoutingEngine re;
+        const uint32_t prefix = make_ip(10,100,0,99); // canonicalized to /24
+        for (size_t i = 0; i < ROUTING_MAX_CANDIDATES_PER_PREFIX; ++i) {
+            const NodeId peer = make_id(static_cast<uint8_t>(40 + i));
+            CHECK(re.add_route(make_direct(prefix, 24, peer)));
+        }
+        CHECK(re.size() == ROUTING_MAX_CANDIDATES_PER_PREFIX);
+        CHECK(!re.add_route(make_direct(prefix, 24, make_id(99))));
+        CHECK(re.add_route(make_direct(prefix, 24, make_id(40))));
+        CHECK(re.size() == ROUTING_MAX_CANDIDATES_PER_PREFIX);
+        for (const auto& candidate : re.routes())
+            CHECK(candidate.prefix == make_ip(10,100,0,0));
     }
 
     printf("\n%d / %d passed\n", passed, tests);

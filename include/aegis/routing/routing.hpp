@@ -27,6 +27,7 @@ struct Route {
 };
 
 inline constexpr size_t ROUTING_MAX_ROUTES = 2048;
+inline constexpr size_t ROUTING_MAX_CANDIDATES_PER_PREFIX = 8;
 
 class RoutingEngine {
 public:

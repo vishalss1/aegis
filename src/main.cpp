@@ -749,6 +749,7 @@ static Route rt_direct(uint32_t prefix, uint8_t plen, const NodeId& peer) {
     r.type = NextHopType::Direct;
     r.next_hop = peer;
     r.destination = peer;
+    r.path = {peer};
     return r;
 }
 
@@ -760,6 +761,7 @@ static Route rt_relay(uint32_t prefix, uint8_t plen,
     r.type = NextHopType::Relay;
     r.next_hop = next_hop;
     r.destination = destination;
+    r.path = {next_hop, destination};
     return r;
 }
 
@@ -811,8 +813,9 @@ static int run_routing_test() {
 
     // ---- loop avoidance ----------------------------------------------------
     RoutingEngine loops;
-    loops.add_route(rt_relay(rt_ip(10, 50, 0, 1), 32, A, d));
-    loops.add_route(rt_relay(rt_ip(10, 50, 0, 2), 32, d, A));
+    Route looping = rt_relay(rt_ip(10, 50, 0, 1), 32, A, d);
+    looping.path = {A, d, A};
+    loops.add_route(looping);
     if (loops.find_peer(rt_ip(10, 50, 0, 1)).has_value()) {
         fprintf(stderr, "[routing-test] FAIL: relay loop not rejected\n");
         return 1;
@@ -828,13 +831,13 @@ static int run_routing_test() {
     }
     printf("[routing-test] self-relay rejected at insert: OK\n");
 
-    // ---- upsert + withdraw -------------------------------------------------
+    // ---- candidate refresh + withdraw -------------------------------------
     re.add_route(rt_direct(rt_ip(10, 10, 0, 2), 32, p2));
     if (re.size() != 2) {
-        fprintf(stderr, "[routing-test] FAIL: upsert must replace same prefix\n");
+        fprintf(stderr, "[routing-test] FAIL: candidate refresh duplicated route\n");
         return 1;
     }
-    printf("[routing-test] upsert replaces same prefix: OK\n");
+    printf("[routing-test] candidate refresh is idempotent: OK\n");
 
     RoutingEngine w;
     w.add_route(rt_direct(rt_ip(10, 20, 0, 1), 32, p2));

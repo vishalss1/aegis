@@ -263,6 +263,30 @@ int main() {
         CHECK(re.size() == 1);  // route refreshed, not duplicated
     }
 
+    // ---- 4b. Alternate advertisers retain distinct candidates ---------------
+    {
+        PeerManager pm;
+        RoutingEngine re;
+        AdvertisedPeer c;
+        c.node_id = charlie.node_id;
+        c.public_key = charlie.keypair.public_key;
+        c.prefixes.emplace_back(pt_ip(10, 31, 0, 0), 24);
+
+        const auto via_bob = merge_peer_table(
+            pm, re, {c}, bob.node_id, alice.node_id);
+        const auto via_dave = merge_peer_table(
+            pm, re, {c}, dave.node_id, alice.node_id);
+        CHECK(via_bob.routes_installed == 1);
+        CHECK(via_dave.routes_installed == 1);
+        CHECK(re.size() == 2);
+        const auto candidates = re.routes_to(charlie.node_id);
+        CHECK(candidates.size() == 2);
+        CHECK((candidates[0].next_hop == bob.node_id &&
+               candidates[1].next_hop == dave.node_id) ||
+              (candidates[0].next_hop == dave.node_id &&
+               candidates[1].next_hop == bob.node_id));
+    }
+
     // ---- 5. Self and sender entries are ignored ------------------------------
     {
         PeerManager pm;
