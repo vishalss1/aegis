@@ -248,9 +248,12 @@ count; metric, probe RTT, observed loss, and relay load are not yet scored.
 
 ### NAT traversal is incomplete
 
-STUN discovers a mapping using a separate socket, the mapping is not exchanged
-through an authenticated candidate protocol, and there is no coordinated hole
-punching or relay-of-last-resort circuit for symmetric NAT.
+STUN discovery runs through the already-bound mesh transport socket, so the
+reported server-reflexive mapping belongs to the port used for peer traffic.
+The synchronous startup exchange accepts a response only from the resolved
+server endpoint with the outstanding random transaction ID. The mapping is not
+yet exchanged through an authenticated candidate protocol, and there is no
+coordinated hole punching or relay-of-last-resort circuit for symmetric NAT.
 
 ### Credential lifecycle is incomplete
 

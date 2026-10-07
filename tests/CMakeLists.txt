@@ -147,7 +147,7 @@ target_include_directories(test_invite PRIVATE ../include)
 target_link_libraries(test_invite OpenSSL::Crypto ws2_32)
 add_test(NAME test_invite COMMAND test_invite)
 
-add_executable(test_stun test_stun.cpp ../src/stun/stun.cpp ../src/crypto/random.cpp ../src/platform/platform.cpp)
+add_executable(test_stun test_stun.cpp ../src/stun/stun.cpp ../src/transport/transport.cpp ../src/crypto/random.cpp ../src/platform/platform.cpp)
 target_include_directories(test_stun PRIVATE ../include)
 target_link_libraries(test_stun OpenSSL::Crypto ws2_32)
 add_test(NAME test_stun COMMAND test_stun)

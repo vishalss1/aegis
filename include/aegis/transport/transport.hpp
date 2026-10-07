@@ -8,6 +8,8 @@
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
+#include <optional>
+#include <vector>
 #include <winsock2.h>
 
 inline constexpr size_t IPV4_UDP_MAX_DATAGRAM_SIZE = 65507;
@@ -79,6 +81,11 @@ struct SocketOptions {
     bool reuseaddr = false;
 };
 
+struct ReceivedDatagram {
+    std::vector<uint8_t> bytes;
+    Endpoint sender{};
+};
+
 class Transport {
 public:
     Transport();
@@ -96,6 +103,13 @@ public:
     // drains first; peers within each class drain round-robin.
     bool send(const uint8_t* data, size_t len, const Endpoint& dest,
               SendPriority priority = SendPriority::Data);
+
+    // Sends immediately through this transport's bound socket and waits for a
+    // datagram from the same endpoint. This startup-only exchange is rejected
+    // while the asynchronous receive loop owns the socket.
+    [[nodiscard]] std::optional<ReceivedDatagram> exchange(
+        const uint8_t* data, size_t len, const Endpoint& dest,
+        int timeout_ms);
 
     // Maximum UDP payload permitted by the configured physical IPv4 MTU.
     // The default is the protocol maximum so non-tunnel users remain usable;
@@ -135,6 +149,7 @@ private:
     std::atomic<uint64_t> oversize_receive_drops_{0};
     TransportQueueMetrics queue_metrics_;
     std::mutex send_mutex_;
+    std::mutex socket_send_mutex_;
     std::condition_variable send_cv_;
     BoundedSendQueue send_queue_;
 

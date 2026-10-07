@@ -14,8 +14,9 @@ std::vector<uint8_t> create_stun_binding_request(const uint8_t transaction_id[12
 std::optional<Endpoint> parse_stun_binding_response(
     const uint8_t* data, size_t len, const uint8_t expected_tx_id[12]);
 
-// Connects to a STUN server via UDP, sends a Binding Request, and returns the public Endpoint.
+// Sends a Binding Request through an already-bound transport socket and
+// returns the public endpoint observed for that same socket.
 std::optional<Endpoint> stun_discover(
-    const std::string& stun_host, uint16_t stun_port,
-    uint16_t local_port = 0, int timeout_ms = 2000,
+    Transport& transport, const std::string& stun_host, uint16_t stun_port,
+    int timeout_ms = 2000,
     RandomSource& random = system_random_source());

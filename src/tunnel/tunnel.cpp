@@ -118,7 +118,7 @@ bool Tunnel::start(const TunnelConfig& config, const std::string& adapter_name) 
         uint16_t port = (colon != std::string::npos) ? (uint16_t)std::atoi(server.c_str() + colon + 1) : 3478;
 
         auto st_ep = stun_discover(
-            host, port, config.listen_port, 2000, random_);
+            transport_, host, port, 2000, random_);
         if (st_ep) {
             stun_public_endpoint_ = st_ep;
             uint32_t ip_h = ntohl(st_ep->ip);

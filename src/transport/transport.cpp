@@ -1,6 +1,8 @@
 #include "aegis/transport/transport.hpp"
 #include "aegis/platform/platform.hpp"
 #include <winsock2.h>
+#include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 
@@ -98,6 +100,72 @@ bool Transport::send(const uint8_t* data, size_t len, const Endpoint& dest,
     return true;
 }
 
+std::optional<ReceivedDatagram> Transport::exchange(
+    const uint8_t* data, size_t len, const Endpoint& dest,
+    int timeout_ms) {
+    const size_t maximum = max_datagram_size_.load(std::memory_order_relaxed);
+    if (sock_ == INVALID_SOCKET || running_.load(std::memory_order_relaxed) ||
+        !data || len == 0 || timeout_ms <= 0)
+        return std::nullopt;
+    if (len > maximum) {
+        oversize_send_drops_.fetch_add(1, std::memory_order_relaxed);
+        return std::nullopt;
+    }
+
+    sockaddr_in destination{};
+    destination.sin_family = AF_INET;
+    destination.sin_addr.s_addr = dest.ip;
+    destination.sin_port = dest.port;
+    {
+        std::lock_guard<std::mutex> lock(socket_send_mutex_);
+        const int sent = sendto(
+            sock_, reinterpret_cast<const char*>(data),
+            static_cast<int>(len), 0,
+            reinterpret_cast<const sockaddr*>(&destination),
+            sizeof(destination));
+        if (sent != static_cast<int>(len))
+            return std::nullopt;
+    }
+
+    const auto deadline = std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(timeout_ms);
+    std::vector<uint8_t> buffer(maximum);
+    while (std::chrono::steady_clock::now() < deadline) {
+        const auto remaining = std::chrono::duration_cast<
+            std::chrono::milliseconds>(
+                deadline - std::chrono::steady_clock::now());
+        const DWORD receive_timeout = static_cast<DWORD>((std::max)(
+            int64_t{1}, static_cast<int64_t>(remaining.count())));
+        if (setsockopt(sock_, SOL_SOCKET, SO_RCVTIMEO,
+                       reinterpret_cast<const char*>(&receive_timeout),
+                       sizeof(receive_timeout)) == SOCKET_ERROR)
+            return std::nullopt;
+
+        sockaddr_in sender{};
+        int sender_length = sizeof(sender);
+        const int received = recvfrom(
+            sock_, reinterpret_cast<char*>(buffer.data()),
+            static_cast<int>(buffer.size()), 0,
+            reinterpret_cast<sockaddr*>(&sender), &sender_length);
+        if (received == SOCKET_ERROR) {
+            const int error = WSAGetLastError();
+            if (error == WSAETIMEDOUT)
+                return std::nullopt;
+            if (error == WSAECONNRESET || error == WSAENETRESET ||
+                error == WSAEMSGSIZE)
+                continue;
+            return std::nullopt;
+        }
+
+        const Endpoint source{sender.sin_addr.s_addr, sender.sin_port};
+        if (!(source == dest))
+            continue;
+        buffer.resize(static_cast<size_t>(received));
+        return ReceivedDatagram{std::move(buffer), source};
+    }
+    return std::nullopt;
+}
+
 void Transport::send_loop() {
     while (true) {
         std::optional<QueuedDatagram> datagram;
@@ -121,9 +189,14 @@ void Transport::send_loop() {
         addr.sin_addr.s_addr = dest.ip;
         addr.sin_port = dest.port;
         const int length = static_cast<int>(datagram->bytes.size());
-        const int ret = sendto(
-            sock_, reinterpret_cast<const char*>(datagram->bytes.data()),
-            length, 0, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr));
+        int ret = SOCKET_ERROR;
+        {
+            std::lock_guard<std::mutex> lock(socket_send_mutex_);
+            ret = sendto(
+                sock_, reinterpret_cast<const char*>(datagram->bytes.data()),
+                length, 0, reinterpret_cast<const sockaddr*>(&addr),
+                sizeof(addr));
+        }
         if (ret == SOCKET_ERROR)
             fprintf(stderr, "[transport] sendto %08x:%04x failed: %d\n",
                     ntohl(dest.ip), ntohs(dest.port), platform_last_error());

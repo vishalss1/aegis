@@ -1,6 +1,16 @@
 #include "aegis/stun/stun.hpp"
 #include "aegis/platform/platform.hpp"
 #include <cstdio>
+#include <mutex>
+
+class FixedRandom final : public RandomSource {
+public:
+    [[nodiscard]] bool fill(std::span<uint8_t> output) override {
+        for (size_t i = 0; i < output.size(); ++i)
+            output[i] = static_cast<uint8_t>(i + 1);
+        return true;
+    }
+};
 
 static int tests  = 0;
 static int passed = 0;
@@ -85,6 +95,68 @@ int main() {
         uint8_t wrong_tx_id[12] = {};
         CHECK(!parse_stun_binding_response(
             resp.data(), resp.size(), wrong_tx_id).has_value());
+    }
+
+    // Discovery must use the already-bound mesh socket so the mapped port is
+    // meaningful for subsequent peer traffic.
+    {
+        constexpr uint16_t client_port = 7110;
+        constexpr uint16_t server_port = 7111;
+        constexpr uint16_t mapped_port = 62000;
+        constexpr uint32_t mapped_ip = 0xCB00714Du; // 203.0.113.77
+        Transport client;
+        Transport server;
+        CHECK(client.bind(client_port));
+        CHECK(server.bind(server_port));
+
+        bool request_valid = false;
+        Endpoint observed_source{};
+        std::mutex observation_mutex;
+        CHECK(server.start_receive(
+            [&](const uint8_t* data, size_t len, Endpoint sender) {
+                if (len != 20 || data[0] != 0 || data[1] != 1)
+                    return;
+                std::vector<uint8_t> response = {
+                    0x01, 0x01, 0x00, 0x0C,
+                    0x21, 0x12, 0xA4, 0x42
+                };
+                response.insert(response.end(), data + 8, data + 20);
+                response.insert(response.end(), {
+                    0x00, 0x20, 0x00, 0x08, 0x00, 0x01
+                });
+                const uint16_t encoded_port = static_cast<uint16_t>(
+                    mapped_port ^ 0x2112u);
+                const uint32_t encoded_ip = mapped_ip ^ 0x2112A442u;
+                response.push_back(static_cast<uint8_t>(encoded_port >> 8));
+                response.push_back(static_cast<uint8_t>(encoded_port));
+                response.push_back(static_cast<uint8_t>(encoded_ip >> 24));
+                response.push_back(static_cast<uint8_t>(encoded_ip >> 16));
+                response.push_back(static_cast<uint8_t>(encoded_ip >> 8));
+                response.push_back(static_cast<uint8_t>(encoded_ip));
+                {
+                    std::lock_guard<std::mutex> lock(observation_mutex);
+                    request_valid = true;
+                    observed_source = sender;
+                }
+                (void)server.send(
+                    response.data(), response.size(), sender,
+                    SendPriority::Control);
+            }));
+
+        FixedRandom random;
+        const auto discovered = stun_discover(
+            client, "127.0.0.1", server_port, 2000, random);
+        CHECK(discovered.has_value());
+        CHECK(discovered && ntohl(discovered->ip) == mapped_ip);
+        CHECK(discovered && ntohs(discovered->port) == mapped_port);
+        {
+            std::lock_guard<std::mutex> lock(observation_mutex);
+            CHECK(request_valid);
+            CHECK(ntohs(observed_source.port) == client_port);
+        }
+        server.stop_receive();
+        client.close();
+        server.close();
     }
 
     platform_cleanup_winsock();

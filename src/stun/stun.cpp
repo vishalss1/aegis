@@ -84,22 +84,11 @@ std::optional<Endpoint> parse_stun_binding_response(
 }
 
 std::optional<Endpoint> stun_discover(
-    const std::string& stun_host, uint16_t stun_port,
-    uint16_t local_port, int timeout_ms, RandomSource& random) {
-
-    SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (sock == INVALID_SOCKET) return std::nullopt;
-
-    if (local_port > 0) {
-        struct sockaddr_in local_addr = {};
-        local_addr.sin_family = AF_INET;
-        local_addr.sin_addr.s_addr = INADDR_ANY;
-        local_addr.sin_port = htons(local_port);
-        bind(sock, (struct sockaddr*)&local_addr, sizeof(local_addr));
-    }
-
-    DWORD tv = timeout_ms;
-    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv));
+    Transport& transport, const std::string& stun_host, uint16_t stun_port,
+    int timeout_ms, RandomSource& random) {
+    if (!transport.is_open() || stun_host.empty() || stun_port == 0 ||
+        timeout_ms <= 0)
+        return std::nullopt;
 
     struct addrinfo hints = {}, *res = nullptr;
     hints.ai_family = AF_INET;
@@ -108,31 +97,23 @@ std::optional<Endpoint> stun_discover(
     snprintf(port_str, sizeof(port_str), "%u", stun_port);
 
     if (getaddrinfo(stun_host.c_str(), port_str, &hints, &res) != 0 || !res) {
-        closesocket(sock);
         return std::nullopt;
     }
 
     std::array<uint8_t, 12> tx_id{};
     if (!random.fill(tx_id)) {
         freeaddrinfo(res);
-        closesocket(sock);
         return std::nullopt;
     }
 
     auto req = create_stun_binding_request(tx_id.data());
-    if (sendto(sock, (const char*)req.data(), (int)req.size(), 0,
-               res->ai_addr, (int)res->ai_addrlen) <= 0) {
-        freeaddrinfo(res);
-        closesocket(sock);
-        return std::nullopt;
-    }
+    const auto* address = reinterpret_cast<const sockaddr_in*>(res->ai_addr);
+    const Endpoint server{address->sin_addr.s_addr, address->sin_port};
     freeaddrinfo(res);
-
-    uint8_t buf[512];
-    int r = recv(sock, (char*)buf, sizeof(buf), 0);
-    closesocket(sock);
-
-    if (r < 20) return std::nullopt;
-
-    return parse_stun_binding_response(buf, r, tx_id.data());
+    const auto response = transport.exchange(
+        req.data(), req.size(), server, timeout_ms);
+    if (!response)
+        return std::nullopt;
+    return parse_stun_binding_response(
+        response->bytes.data(), response->bytes.size(), tx_id.data());
 }

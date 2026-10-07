@@ -453,7 +453,7 @@ interface:
   underlay_mtu: 1500
   # Maximum Route::path peer count (1 = direct only, 8 = protocol maximum)
   max_relay_depth: 8
-  # Optional STUN server for WAN public IP:port discovery (RFC 5389)
+  # Optional STUN server; discovery uses the bound mesh UDP socket (RFC 5389)
   stun_server: stun.l.google.com:19302
 
 identity:
@@ -643,7 +643,7 @@ Unit test coverage:
 | `test_discovery` | LAN presence broadcast format, NetworkID extraction, endpoint parsing |
 | `test_config` | YAML parsing, strict validation, unknown-key rejection, malformed value errors |
 | `test_invite` | AEGIS1 invite code encoding, decoding, validation, round-trip |
-| `test_stun` | RFC 5389 STUN Binding Request formatting, XOR-MAPPED-ADDRESS parsing |
+| `test_stun` | RFC 5389 request/response validation, XOR-MAPPED-ADDRESS parsing, and loopback proof that discovery uses the bound mesh UDP port |
 | `test_cli` | CLI parsing, command dispatch, and integrated command behavior |
 
 ---
