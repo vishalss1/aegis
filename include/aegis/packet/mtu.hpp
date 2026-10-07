@@ -21,7 +21,8 @@ inline constexpr size_t OUTER_IPV4_UDP_OVERHEAD =
 inline constexpr size_t SESSION_FRAME_OVERHEAD =
     PACKET_HEADER_SIZE + CHACHA20_POLY1305_NONCE_SIZE +
     CHACHA20_POLY1305_TAG_SIZE;
-inline constexpr size_t RELAY_SOURCE_OVERHEAD = NODE_ID_SIZE;
+inline constexpr size_t RELAY_SOURCE_OVERHEAD =
+    NODE_ID_SIZE + RELAY_CONTENT_TYPE_SIZE;
 
 static_assert(ONION_OVERHEAD == 60,
               "The MTU contract assumes 60-byte onion layers");

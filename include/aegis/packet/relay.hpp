@@ -23,8 +23,9 @@
 //     [var] AEAD(layer_key, nonce, next_hop(32) || inner)
 // where next_hop is the next hop's NodeID, or all-zero for the final
 // destination (whose `inner` is the original IP packet). The source NodeID is
-// prepended outside the onion (in the TYPE_RELAY frame payload) so every relay
-// knows which public key to peel with.
+// prepended outside the onion (in the TYPE_RELAY frame payload), followed by a
+// one-byte content class, so every relay knows which public key to peel with
+// while the destination can distinguish IP packets from path probes.
 
 static constexpr size_t ONION_NEXT_HOP_SIZE = NODE_ID_SIZE;
 static constexpr size_t ONION_NONCE_SIZE    = CHACHA20_POLY1305_NONCE_SIZE;
@@ -32,6 +33,9 @@ static constexpr size_t ONION_TAG_SIZE      = CHACHA20_POLY1305_TAG_SIZE;
 static constexpr size_t ONION_OVERHEAD =
     ONION_NONCE_SIZE + ONION_TAG_SIZE + ONION_NEXT_HOP_SIZE;
 static constexpr size_t ONION_MAX_HOPS = 8;
+static constexpr uint8_t RELAY_CONTENT_IP_PACKET = 1;
+static constexpr uint8_t RELAY_CONTENT_PATH_PROBE = 2;
+static constexpr size_t RELAY_CONTENT_TYPE_SIZE = 1;
 
 // Wrap `packet` in one layer per hop of `path`. `path_pubkeys` must hold the
 // public key of every hop, in the same order as `path`. Returns the outermost

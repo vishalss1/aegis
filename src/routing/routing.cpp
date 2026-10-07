@@ -58,6 +58,12 @@ bool RoutingEngine::add_route(const Route& route) {
             r.destination == candidate.destination;
     });
     if (existing != routes_.end()) {
+        if (candidate.sequence_number == existing->sequence_number) {
+            candidate.last_probe_sent_at = existing->last_probe_sent_at;
+            candidate.last_probe_validated_at =
+                existing->last_probe_validated_at;
+            candidate.last_probe_rtt = existing->last_probe_rtt;
+        }
         *existing = std::move(candidate);
         return true;
     }
@@ -108,6 +114,55 @@ size_t RoutingEngine::expire_learned_routes(
         return learned_route_lease_expired(route, now);
     });
     return before - routes_.size();
+}
+
+bool RoutingEngine::mark_probe_sent(
+    const NodeId& destination, const NodeId& next_hop,
+    uint32_t prefix, uint32_t prefix_length, uint64_t sequence,
+    ProtocolClock::time_point now) {
+    if (prefix_length > 32)
+        return false;
+    const uint32_t canonical = prefix & prefix_mask(prefix_length);
+    std::lock_guard<std::mutex> lock(mtx_);
+    const auto route = std::find_if(routes_.begin(), routes_.end(),
+        [&](const Route& candidate) {
+            return candidate.type == NextHopType::Relay &&
+                candidate.destination == destination &&
+                candidate.next_hop == next_hop &&
+                candidate.prefix == canonical &&
+                candidate.prefix_length == prefix_length &&
+                candidate.sequence_number == sequence;
+        });
+    if (route == routes_.end())
+        return false;
+    route->last_probe_sent_at = now;
+    return true;
+}
+
+bool RoutingEngine::record_probe_success(
+    const NodeId& destination, const NodeId& next_hop,
+    uint32_t prefix, uint32_t prefix_length, uint64_t sequence,
+    ProtocolClock::time_point now,
+    std::chrono::steady_clock::duration rtt) {
+    if (prefix_length > 32 || rtt < std::chrono::steady_clock::duration::zero())
+        return false;
+    const uint32_t canonical = prefix & prefix_mask(prefix_length);
+    std::lock_guard<std::mutex> lock(mtx_);
+    const auto route = std::find_if(routes_.begin(), routes_.end(),
+        [&](const Route& candidate) {
+            return candidate.type == NextHopType::Relay &&
+                candidate.destination == destination &&
+                candidate.next_hop == next_hop &&
+                candidate.prefix == canonical &&
+                candidate.prefix_length == prefix_length &&
+                candidate.sequence_number == sequence;
+        });
+    if (route == routes_.end())
+        return false;
+    route->last_probe_validated_at = now;
+    route->last_probe_rtt =
+        std::chrono::duration_cast<std::chrono::milliseconds>(rtt);
+    return true;
 }
 
 void RoutingEngine::clear() {

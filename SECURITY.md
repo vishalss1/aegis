@@ -226,15 +226,18 @@ removed. Concurrent transfers and declared disk reservations are capped per
 peer and globally. These controls provide bounded reliability, not congestion
 control or guaranteed delivery after retry exhaustion.
 
-### Routing does not validate path liveness
+### Routing does not yet fail over on path health
 
 Learned routes retain bounded alternatives, carry sequence, lease, metric,
 origin, advertiser, and local validation-time metadata, and are removed when
 their monotonic lease expires. Configured direct routes are not lease-expired.
-There is still no path probe or authenticated withdrawal. A failed middle hop
-can leave the selected route blackholed until its lease expires because
-candidate health does not yet trigger failover. Route selection is primarily
-based on prefix and hop count; the carried metric is not yet part of selection.
+Relay candidates receive onion-carried challenges every 30 seconds. Responses
+are accepted only for a bounded outstanding random token, matching destination
+and route sequence, within five seconds; successful RTT and validation time are
+recorded on the exact candidate. A failed probe does not yet alter route
+selection, and there is no authenticated withdrawal. A failed middle hop can
+therefore remain selected until its lease expires. Selection is primarily
+based on prefix and hop count; metric and probe RTT are not yet scored.
 
 ### NAT traversal is incomplete
 

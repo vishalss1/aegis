@@ -75,6 +75,7 @@ set(AEGIS_SOURCES
     src/transport/handshake_rate_limiter.cpp
     src/transport/transport.cpp
     src/routing/routing.cpp
+    src/routing/path_probe.cpp
     src/peer/peer.cpp
     src/peer/gossip.cpp
     src/peer/peer_table.cpp

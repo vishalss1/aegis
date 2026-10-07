@@ -283,6 +283,31 @@ int main() {
         long_lease.validated_at = validated;
         CHECK(re.add_route(long_lease));
         CHECK(re.size() == 3);
+        CHECK(re.mark_probe_sent(
+            X, A, prefix, 24, 1,
+            validated + std::chrono::seconds(1)));
+        CHECK(re.record_probe_success(
+            X, A, prefix, 24, 1,
+            validated + std::chrono::seconds(1) +
+                std::chrono::milliseconds(25),
+            std::chrono::milliseconds(25)));
+        const auto probed = re.routes_to(X);
+        const auto probed_candidate = std::find_if(
+            probed.begin(), probed.end(), [&](const Route& route) {
+                return route.next_hop == A;
+            });
+        CHECK(probed_candidate != probed.end());
+        CHECK(probed_candidate != probed.end() &&
+              probed_candidate->last_probe_rtt ==
+                  std::chrono::milliseconds(25));
+        CHECK(re.add_route(short_lease));
+        const auto refreshed_probe = re.routes_to(X);
+        const auto refreshed_candidate = std::find_if(
+            refreshed_probe.begin(), refreshed_probe.end(),
+            [&](const Route& route) { return route.next_hop == A; });
+        CHECK(refreshed_candidate != refreshed_probe.end() &&
+              refreshed_candidate->last_probe_rtt ==
+                  std::chrono::milliseconds(25));
 
         CHECK(re.expire_learned_routes(
                   validated - std::chrono::seconds(1)) == 0);

@@ -51,7 +51,7 @@ int main() {
         CHECK(app.iface.max_relay_depth == 8);
         const auto overlay_mtu = safe_overlay_mtu(
             app.iface.underlay_mtu, app.iface.max_relay_depth);
-        CHECK(overlay_mtu && *overlay_mtu == 916);
+    CHECK(overlay_mtu && *overlay_mtu == 915);
         CHECK(app.network_id.has_value());
         CHECK(app.network_id->size() == 32);
         CHECK((*app.network_id)[0] == 0x00 && (*app.network_id)[1] == 0x01);

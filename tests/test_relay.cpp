@@ -1,6 +1,7 @@
 #include "aegis/packet/relay.hpp"
 #include "aegis/packet/relay_limiter.hpp"
 #include "aegis/packet/mtu.hpp"
+#include "aegis/routing/path_probe.hpp"
 #include "aegis/identity/identity.hpp"
 #include <chrono>
 #include <cstdio>
@@ -203,7 +204,8 @@ int main() {
             CHECK(onion.has_value());
             CHECK(overhead.has_value());
             if (onion && overhead) {
-                const size_t relay_payload_size = NODE_ID_SIZE + onion->size();
+                const size_t relay_payload_size =
+                    RELAY_SOURCE_OVERHEAD + onion->size();
                 const size_t encrypted_datagram_size =
                     SESSION_FRAME_OVERHEAD + relay_payload_size;
                 const size_t physical_wire_size =
@@ -213,7 +215,59 @@ int main() {
         }
     }
 
-    // ---- 9. Relay forwarding uses per-peer and global token buckets --------
+    // ---- 9. Authenticated path-probe framing and pending state --------------
+    {
+        const PathProbeMessage challenge{
+            PathProbeKind::Challenge, 0x0102030405060708ULL, 42};
+        const auto encoded = serialize_path_probe(challenge);
+        CHECK(encoded && encoded->size() == PATH_PROBE_WIRE_SIZE);
+        const auto decoded = encoded
+            ? deserialize_path_probe(*encoded) : std::nullopt;
+        CHECK(decoded && decoded->kind == challenge.kind);
+        CHECK(decoded && decoded->probe_id == challenge.probe_id);
+        CHECK(decoded && decoded->route_sequence == challenge.route_sequence);
+        if (encoded) {
+            auto bad_reserved = *encoded;
+            bad_reserved[2] = 1;
+            CHECK(!deserialize_path_probe(bad_reserved).has_value());
+            auto bad_kind = *encoded;
+            bad_kind[1] = 3;
+            CHECK(!deserialize_path_probe(bad_kind).has_value());
+            auto truncated = *encoded;
+            truncated.pop_back();
+            CHECK(!deserialize_path_probe(truncated).has_value());
+        }
+        CHECK(!serialize_path_probe(
+            {PathProbeKind::Challenge, 0, 1}).has_value());
+
+        ManualClock probe_clock;
+        PathProbeTracker tracker(2, std::chrono::milliseconds(500));
+        const PathProbeTarget target{
+            d.node_id, b.node_id, 0x0a280000, 24, 42};
+        CHECK(tracker.begin(7, target, probe_clock.now()));
+        CHECK(!tracker.begin(8, target, probe_clock.now()));
+        CHECK(tracker.contains_target(target));
+        CHECK(!tracker.acknowledge(
+            7, c.node_id, 42, probe_clock.now()).has_value());
+        probe_clock.advance(std::chrono::milliseconds(125));
+        const auto observation = tracker.acknowledge(
+            7, d.node_id, 42, probe_clock.now());
+        CHECK(observation.has_value());
+        CHECK(observation && observation->target == target);
+        CHECK(observation && observation->rtt ==
+              std::chrono::milliseconds(125));
+        CHECK(tracker.size() == 0);
+
+        CHECK(tracker.begin(9, target, probe_clock.now()));
+        probe_clock.advance(std::chrono::milliseconds(500));
+        CHECK(!tracker.acknowledge(
+            9, d.node_id, 42, probe_clock.now()).has_value());
+        const auto expired = tracker.expire(probe_clock.now());
+        CHECK(expired.size() == 1 && expired[0] == target);
+        CHECK(tracker.size() == 0);
+    }
+
+    // ---- 10. Relay forwarding uses per-peer and global token buckets -------
     {
         ManualClock clock;
         RelayQuotaConfig config;
@@ -266,7 +320,7 @@ int main() {
         CHECK(limiter.allow(b.node_id, 100) == RelayQuotaResult::Allowed);
     }
 
-    // ---- 10. Invalid relay quota configurations fail closed ----------------
+    // ---- 11. Invalid relay quota configurations fail closed ----------------
     {
         ManualClock clock;
         RelayQuotaConfig invalid;

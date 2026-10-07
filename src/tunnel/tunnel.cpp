@@ -191,6 +191,7 @@ void Tunnel::stop() {
         outgoing_transfers_.clear();
     }
     outgoing_transfers_cv_.notify_all();
+    path_probe_tracker_.reset();
 }
 
 bool Tunnel::session_established(const NodeId& node_id) const {
@@ -540,9 +541,11 @@ void Tunnel::tx_loop() {
         }
 
         std::vector<uint8_t> payload;
-        payload.reserve(NODE_ID_SIZE + onion->size());
+        payload.reserve(
+            NODE_ID_SIZE + RELAY_CONTENT_TYPE_SIZE + onion->size());
         payload.insert(payload.end(), identity_.node_id.begin(),
                        identity_.node_id.end());
+        payload.push_back(RELAY_CONTENT_IP_PACKET);
         payload.insert(payload.end(), onion->begin(), onion->end());
 
         auto frame = session_manager_->encrypt_message(
@@ -675,6 +678,7 @@ void Tunnel::maintenance_loop() {
         if (expired_routes > 0)
             aegis_log("[tunnel] expired %zu learned route candidate(s)\n",
                       expired_routes);
+        probe_due_routes();
 
         // 4) Garbage-collect sessions retired by a rekey.
         session_manager_->purge_retired();
@@ -749,6 +753,9 @@ void Tunnel::rx_callback(const uint8_t* data, size_t len, Endpoint sender) {
         break;
     case TYPE_FILE_CANCEL:
         handle_file_cancel_frame(data, len, *header, sender);
+        break;
+    case TYPE_PATH_PROBE:
+        handle_path_probe_frame(data, len, *header, sender);
         break;
     case TYPE_NETWORK_TEARDOWN:
         handle_network_teardown_frame(data, len, *header);
@@ -1265,6 +1272,145 @@ void Tunnel::handle_handshake_init_frame(const uint8_t* data, size_t len,
     hs_cv_.notify_all();
 }
 
+bool Tunnel::send_path_probe(
+    const Route& route, const PathProbeMessage& probe) {
+    const auto encoded = serialize_path_probe(probe);
+    if (!encoded)
+        return false;
+    if (route.type == NextHopType::Direct) {
+        const auto peer = peers_.get_peer(route.destination);
+        if (!peer || !peer->endpoint)
+            return false;
+        const auto frame = session_manager_->encrypt_message(
+            route.destination, TYPE_PATH_PROBE,
+            encoded->data(), encoded->size());
+        return frame && transport_.send(
+            frame->data(), frame->size(), *peer->endpoint,
+            SendPriority::Control);
+    }
+
+    if (route.type != NextHopType::Relay || route.path.empty() ||
+        route.path.size() > config_.max_relay_depth)
+        return false;
+    std::vector<Key> path_keys;
+    path_keys.reserve(route.path.size());
+    for (const auto& hop : route.path) {
+        const auto peer = peers_.get_peer(hop);
+        if (!peer)
+            return false;
+        path_keys.push_back(peer->public_key);
+    }
+    const auto onion = build_onion(
+        identity_.keypair, route.path, path_keys,
+        encoded->data(), encoded->size());
+    if (!onion)
+        return false;
+    std::vector<uint8_t> payload;
+    payload.reserve(
+        NODE_ID_SIZE + RELAY_CONTENT_TYPE_SIZE + onion->size());
+    payload.insert(payload.end(), identity_.node_id.begin(),
+                   identity_.node_id.end());
+    payload.push_back(RELAY_CONTENT_PATH_PROBE);
+    payload.insert(payload.end(), onion->begin(), onion->end());
+    const auto first = peers_.get_peer(route.next_hop);
+    if (!first || !first->endpoint)
+        return false;
+    const auto frame = session_manager_->encrypt_message(
+        route.next_hop, TYPE_RELAY, payload.data(), payload.size(),
+        FLAG_RELAY);
+    return frame && transport_.send(
+        frame->data(), frame->size(), *first->endpoint,
+        SendPriority::Control);
+}
+
+void Tunnel::handle_path_probe(
+    const NodeId& source, const PathProbeMessage& probe) {
+    if (probe.kind == PathProbeKind::Response) {
+        const auto observation = path_probe_tracker_.acknowledge(
+            probe.probe_id, source, probe.route_sequence, clock_.now());
+        if (!observation)
+            return;
+        const auto& target = observation->target;
+        (void)routing_.record_probe_success(
+            target.destination, target.next_hop, target.prefix,
+            target.prefix_length, target.route_sequence, clock_.now(),
+            observation->rtt);
+        return;
+    }
+
+    auto candidates = routing_.routes_to(source);
+    const auto now = clock_.now();
+    candidates.erase(std::remove_if(
+        candidates.begin(), candidates.end(), [&](const Route& route) {
+            return learned_route_lease_expired(route, now);
+        }), candidates.end());
+    if (candidates.empty())
+        return;
+    const auto best = std::min_element(
+        candidates.begin(), candidates.end(),
+        [](const Route& left, const Route& right) {
+            if (left.type != right.type)
+                return left.type == NextHopType::Direct;
+            return left.path.size() < right.path.size();
+        });
+    (void)send_path_probe(*best, PathProbeMessage{
+        PathProbeKind::Response, probe.probe_id, probe.route_sequence});
+}
+
+void Tunnel::handle_path_probe_frame(
+    const uint8_t* data, size_t len, const PacketHeader& header,
+    Endpoint sender) {
+    const auto msg = session_manager_->decrypt_message(data, len);
+    if (!msg || msg->packet_type != TYPE_PATH_PROBE)
+        return;
+    const auto session = session_manager_->get_session_by_id(header.session_id);
+    const auto probe = deserialize_path_probe(msg->payload);
+    if (!session || !probe)
+        return;
+    peers_.mark_seen(session->peer_id, sender);
+    handle_path_probe(session->peer_id, *probe);
+}
+
+void Tunnel::probe_due_routes() {
+    const auto now = clock_.now();
+    const auto expired = path_probe_tracker_.expire(now);
+    if (!expired.empty())
+        aegis_log("[tunnel] %zu path probe(s) timed out\n", expired.size());
+
+    for (const auto& route : routing_.routes()) {
+        if (route.type != NextHopType::Relay ||
+            learned_route_lease_expired(route, now))
+            continue;
+        if (route.last_probe_sent_at &&
+            now >= *route.last_probe_sent_at &&
+            now - *route.last_probe_sent_at < PATH_PROBE_INTERVAL)
+            continue;
+        const PathProbeTarget target{
+            route.destination, route.next_hop, route.prefix,
+            route.prefix_length, route.sequence_number};
+        if (path_probe_tracker_.contains_target(target))
+            continue;
+
+        uint64_t probe_id = 0;
+        for (int attempt = 0; attempt < 8 && probe_id == 0; ++attempt) {
+            const auto candidate = random_.u64();
+            if (candidate && *candidate != 0 &&
+                path_probe_tracker_.begin(*candidate, target, now))
+                probe_id = *candidate;
+        }
+        if (probe_id == 0)
+            continue;
+        if (!send_path_probe(route, PathProbeMessage{
+                PathProbeKind::Challenge, probe_id,
+                route.sequence_number}) ||
+            !routing_.mark_probe_sent(
+                route.destination, route.next_hop, route.prefix,
+                route.prefix_length, route.sequence_number, now)) {
+            path_probe_tracker_.cancel(probe_id);
+        }
+    }
+}
+
 void Tunnel::handle_relay(const uint8_t* data, size_t len, uint32_t session_id) {
     auto msg = session_manager_->decrypt_message(data, len);
     if (!msg || msg->packet_type != TYPE_RELAY) return;
@@ -1273,17 +1419,25 @@ void Tunnel::handle_relay(const uint8_t* data, size_t len, uint32_t session_id) 
     const NodeId authenticated_sender = sess->peer_id;
     peers_.mark_seen(authenticated_sender);
 
-    // Payload = [32] source NodeID || onion blob. The source is who we peel
+    // Payload = [32] source NodeID || [1] content class || onion blob. The
+    // source is who we peel
     // with — every layer was keyed to the source's static key, and a relay is
     // only ever a hop between the source and the destination.
-    if (msg->payload.size() < NODE_ID_SIZE + ONION_OVERHEAD) {
+    if (msg->payload.size() <
+        NODE_ID_SIZE + RELAY_CONTENT_TYPE_SIZE + ONION_OVERHEAD) {
         aegis_log( "[tunnel] relay frame too small, dropping\n");
         return;
     }
     NodeId source{};
     std::memcpy(source.data(), msg->payload.data(), NODE_ID_SIZE);
-    const uint8_t* blob = msg->payload.data() + NODE_ID_SIZE;
-    size_t blob_len = msg->payload.size() - NODE_ID_SIZE;
+    const uint8_t content_type = msg->payload[NODE_ID_SIZE];
+    if (content_type != RELAY_CONTENT_IP_PACKET &&
+        content_type != RELAY_CONTENT_PATH_PROBE)
+        return;
+    const uint8_t* blob = msg->payload.data() + NODE_ID_SIZE +
+        RELAY_CONTENT_TYPE_SIZE;
+    size_t blob_len = msg->payload.size() - NODE_ID_SIZE -
+        RELAY_CONTENT_TYPE_SIZE;
 
     const auto sp = peers_.get_peer(source);
     if (!sp) {
@@ -1304,7 +1458,13 @@ void Tunnel::handle_relay(const uint8_t* data, size_t len, uint32_t session_id) 
     for (auto b : peeled->next_hop)
         if (b != 0) { final = false; break; }
     if (final) {
-        inject_inner_packet(peeled->inner);
+        if (content_type == RELAY_CONTENT_IP_PACKET) {
+            inject_inner_packet(peeled->inner);
+        } else {
+            const auto probe = deserialize_path_probe(peeled->inner);
+            if (probe)
+                handle_path_probe(source, *probe);
+        }
         return;
     }
 
@@ -1341,8 +1501,9 @@ void Tunnel::handle_relay(const uint8_t* data, size_t len, uint32_t session_id) 
     // Forward the inner layer to the next hop, still addressed from the
     // original source so each hop keeps peeling with the source's key.
     std::vector<uint8_t> fwd;
-    fwd.reserve(NODE_ID_SIZE + peeled->inner.size());
+    fwd.reserve(NODE_ID_SIZE + RELAY_CONTENT_TYPE_SIZE + peeled->inner.size());
     fwd.insert(fwd.end(), source.begin(), source.end());
+    fwd.push_back(content_type);
     fwd.insert(fwd.end(), peeled->inner.begin(), peeled->inner.end());
     auto frame = session_manager_->encrypt_message(
         peeled->next_hop, TYPE_RELAY, fwd.data(), fwd.size(), FLAG_RELAY);

@@ -34,6 +34,9 @@ struct Route {
     std::chrono::seconds lease{90};
     uint32_t metric = 0;
     ProtocolClock::time_point validated_at{};
+    std::optional<ProtocolClock::time_point> last_probe_sent_at;
+    std::optional<ProtocolClock::time_point> last_probe_validated_at;
+    std::optional<std::chrono::milliseconds> last_probe_rtt;
 };
 
 inline constexpr size_t ROUTING_MAX_ROUTES = 2048;
@@ -55,6 +58,15 @@ public:
         const NodeId& origin, uint32_t prefix, uint32_t prefix_length,
         uint64_t minimum_sequence);
     size_t expire_learned_routes(ProtocolClock::time_point now);
+    bool mark_probe_sent(
+        const NodeId& destination, const NodeId& next_hop,
+        uint32_t prefix, uint32_t prefix_length, uint64_t sequence,
+        ProtocolClock::time_point now);
+    bool record_probe_success(
+        const NodeId& destination, const NodeId& next_hop,
+        uint32_t prefix, uint32_t prefix_length, uint64_t sequence,
+        ProtocolClock::time_point now,
+        std::chrono::steady_clock::duration rtt);
     void clear();
 
     std::optional<Route> find_route(uint32_t dest_ip) const;

@@ -5,6 +5,7 @@
 #include "aegis/peer/peer_table.hpp"
 #include "aegis/peer/gossip.hpp"
 #include "aegis/routing/routing.hpp"
+#include "aegis/routing/path_probe.hpp"
 #include "aegis/transport/transport.hpp"
 #include "aegis/transport/handshake_rate_limiter.hpp"
 #include "aegis/transport/handshake_cookie.hpp"
@@ -153,6 +154,7 @@ private:
     PeerManager peers_;
     RoutingEngine routing_;
     GossipDeltaTracker gossip_delta_tracker_;
+    PathProbeTracker path_probe_tracker_;
 
 
     std::thread tx_thread_;
@@ -255,6 +257,12 @@ private:
     void send_file_cancel(const NodeId& peer_id, Endpoint endpoint,
                           uint64_t transfer_id, FileCancelReason reason);
     void expire_file_transfers();
+    void probe_due_routes();
+    bool send_path_probe(const Route& route, const PathProbeMessage& probe);
+    void handle_path_probe(const NodeId& source, const PathProbeMessage& probe);
+    void handle_path_probe_frame(const uint8_t* data, size_t len,
+                                 const PacketHeader& header,
+                                 Endpoint sender);
     void handle_network_teardown_frame(const uint8_t* data, size_t len,
                                        const PacketHeader& header);
     void handle_handshake_response_frame(const uint8_t* data, size_t len,

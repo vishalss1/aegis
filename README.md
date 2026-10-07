@@ -165,6 +165,7 @@ A few design choices that shaped how Aegis works.
 | UDP (TYPE_HANDSHAKE_INIT/COOKIE/RESP) | Peer ↔ Peer | Stateless endpoint retry, then X25519 key agreement |
 | UDP (TYPE_KEEPALIVE) | Peer ↔ Peer | Empty encrypted frame — liveness + NAT keepalive |
 | UDP (TYPE_PEER_TABLE) | Peer ↔ Peer | Gossip — NodeID + pubkey + prefix sequence/lease/metric records (no endpoints) |
+| UDP (TYPE_PATH_PROBE / TYPE_RELAY) | End ↔ End | Authenticated route challenge/response, direct or onion-relayed |
 | UDP (TYPE_DISCOVERY) | LAN broadcast | Presence — NodeID + NetworkID + endpoint (pre-session) |
 
 ---
@@ -181,7 +182,7 @@ A few design choices that shaped how Aegis works.
 | **Reliable File Windows** | File headers and chunks use authenticated selective acknowledgements, a 32-chunk sliding window, RTT-derived retransmission deadlines, bounded retry counts, resume ranges, and explicit cancellation. Idle transfers expire after five minutes; per-peer and global transfer/disk reservations are capped. |
 | **Verified File Commit** | Receivers write to transfer-unique `.part` files, verify the authenticated whole-file SHA-256 digest and exact size, then atomically rename into place. |
 | **Multi-hop Onion Routing** | Each hop decrypts one layer and learns the next hop. Relays also receive the source NodeID, and unpadded packet size and timing remain visible. |
-| **Bounded Route Candidates** | Each prefix retains up to eight distinct destination/next-hop candidates instead of overwriting alternatives. Learned candidates expire on their monotonic 1–600 second leases while configured direct routes persist. Selection remains longest-prefix, then direct, then shortest relay path; health-based failover is not yet implemented. |
+| **Bounded Route Candidates** | Each prefix retains up to eight distinct destination/next-hop candidates instead of overwriting alternatives. Learned candidates expire on monotonic leases and receive bounded 30-second onion path probes with authenticated responses and RTT observations. Selection remains longest-prefix, then direct, then shortest relay path; probe-driven failover is not yet implemented. |
 | **Peer Table Gossip** | Full mesh convergence without a coordinator. Version-3 prefix records carry origin sequence, bounded lease, and metric metadata; receivers bind the advertiser to the authenticated adjacent sender and reject older learned sequences. Changes fan out as bounded, coalesced per-recipient deltas with periodic full resynchronization. |
 | **Identity-Hiding Gossip** | Peer tables carry NodeID + public key + IP prefix routes. Physical endpoints are never transmitted in gossip — non-adjacent nodes cannot learn each other's real IP. |
 | **NetworkID Mesh Segmentation** | NetworkID mismatches are rejected before session creation. This separates accidental cross-mesh traffic but is not static peer authentication. |
@@ -516,13 +517,14 @@ MTU of at least 1,160 bytes.
 | Outer UDP header | 8 | Every packet |
 | Encrypted session frame | 44 | Every packet: 16-byte header, 12-byte nonce, 16-byte tag |
 | Relay source NodeID | 32 | Relayed packets only |
+| Relay content class | 1 | Relayed packets only: IP packet or path probe |
 | Onion layer | 60 per hop | Relayed packets only: 32-byte next hop, 12-byte nonce, 16-byte tag |
 
 For route depth `d`:
 
 ```text
 direct (d = 1):   wire overhead = 28 + 44 = 72
-relayed (d >= 2): wire overhead = 28 + 44 + 32 + (60 * d)
+relayed (d >= 2): wire overhead = 28 + 44 + 33 + (60 * d)
 ```
 
 With the default 1,500-byte underlay MTU, the complete budget is:
@@ -530,13 +532,13 @@ With the default 1,500-byte underlay MTU, the complete budget is:
 | Route depth | Route type | Wire overhead | Safe overlay MTU |
 |--:|:--|--:|--:|
 | 1 | Direct | 72 | 1,428 |
-| 2 | Relayed | 224 | 1,276 |
-| 3 | Relayed | 284 | 1,216 |
-| 4 | Relayed | 344 | 1,156 |
-| 5 | Relayed | 404 | 1,096 |
-| 6 | Relayed | 464 | 1,036 |
-| 7 | Relayed | 524 | 976 |
-| 8 | Relayed | 584 | 916 |
+| 2 | Relayed | 225 | 1,275 |
+| 3 | Relayed | 285 | 1,215 |
+| 4 | Relayed | 345 | 1,155 |
+| 5 | Relayed | 405 | 1,095 |
+| 6 | Relayed | 465 | 1,035 |
+| 7 | Relayed | 525 | 975 |
+| 8 | Relayed | 585 | 915 |
 
 The configured Wintun MTU uses the row for `max_relay_depth`. Outbound
 processing also checks the resolved route's actual depth before encryption.
@@ -637,7 +639,7 @@ Unit test coverage:
 | `test_peer` | Multi-peer table — concurrent lifecycle/snapshot safety, states, endpoints, session lookup, health tracking |
 | `test_routing` | Prefix → next-hop → peer resolution, retained and bounded candidates, exact learned-lease expiry, direct-route preservation, canonical prefixes, route refresh, loop rejection, and tie-breaking |
 | `test_peer_table` | TYPE_PEER_TABLE v3 encoding/merge, sequence/lease/metric validation, stale-sequence rejection, alternate-advertiser retention, IP-stripping, bounded delta batching, and jitter scheduling |
-| `test_relay` | `build_onion` / `peel_onion` — layer construction, per-hop decryption, wire-budget agreement, and deterministic relay quota enforcement |
+| `test_relay` | `build_onion` / `peel_onion`, path-probe codec and bounded challenge tracking, per-hop decryption, wire-budget agreement, and deterministic relay quota enforcement |
 | `test_discovery` | LAN presence broadcast format, NetworkID extraction, endpoint parsing |
 | `test_config` | YAML parsing, strict validation, unknown-key rejection, malformed value errors |
 | `test_invite` | AEGIS1 invite code encoding, decoding, validation, round-trip |
