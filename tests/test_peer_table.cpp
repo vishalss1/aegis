@@ -40,7 +40,7 @@ int main() {
         AdvertisedPeer a;
         a.node_id = charlie.node_id;
         a.public_key = charlie.keypair.public_key;
-        a.prefixes.emplace_back(pt_ip(10, 30, 0, 0), 24);
+        a.prefixes.emplace_back(pt_ip(10, 30, 0, 0), 24, 42, 75, 3);
         a.prefixes.emplace_back(pt_ip(10, 30, 0, 2), 32);
         in.push_back(a);
 
@@ -54,7 +54,7 @@ int main() {
         CHECK(wire.has_value());
         CHECK(wire && wire->size() >= 3);
         if (wire) {
-            CHECK((*wire)[0] == 0x02);
+            CHECK((*wire)[0] == 0x03);
             CHECK((*wire)[1] == 0x00 && (*wire)[2] == 0x02);
             CHECK((*wire)[67] == 0x00);  // first peer has no path hops
             CHECK((*wire)[68] == 0x00);  // reserved flags are canonical zero
@@ -62,6 +62,18 @@ int main() {
             CHECK((*wire)[70] == 10 && (*wire)[71] == 30 &&
                   (*wire)[72] == 0 && (*wire)[73] == 0);
             CHECK((*wire)[74] == 24);
+
+            auto zero_sequence = *wire;
+            std::fill(zero_sequence.begin() + 75,
+                      zero_sequence.begin() + 83, 0);
+            CHECK(!deserialize_peer_table(
+                zero_sequence.data(), zero_sequence.size()).has_value());
+
+            auto zero_lease = *wire;
+            std::fill(zero_lease.begin() + 83,
+                      zero_lease.begin() + 87, 0);
+            CHECK(!deserialize_peer_table(
+                zero_lease.data(), zero_lease.size()).has_value());
         }
         auto out = wire
             ? deserialize_peer_table(wire->data(), wire->size())
@@ -72,8 +84,13 @@ int main() {
             CHECK((*out)[0].node_id == charlie.node_id);
             CHECK((*out)[0].public_key == charlie.keypair.public_key);
             CHECK((*out)[0].prefixes.size() == 2);
-            CHECK((*out)[0].prefixes[0] == std::make_pair(pt_ip(10, 30, 0, 0), (uint8_t)24));
-            CHECK((*out)[0].prefixes[1] == std::make_pair(pt_ip(10, 30, 0, 2), (uint8_t)32));
+            CHECK((*out)[0].prefixes[0].prefix == pt_ip(10, 30, 0, 0));
+            CHECK((*out)[0].prefixes[0].prefix_length == 24);
+            CHECK((*out)[0].prefixes[0].sequence_number == 42);
+            CHECK((*out)[0].prefixes[0].lease_seconds == 75);
+            CHECK((*out)[0].prefixes[0].metric == 3);
+            CHECK((*out)[0].prefixes[1].prefix == pt_ip(10, 30, 0, 2));
+            CHECK((*out)[0].prefixes[1].prefix_length == 32);
             CHECK((*out)[1].prefixes.empty());
             CHECK((*out)[1].path.size() == 3);
             CHECK((*out)[1].path[0] == bob.node_id);
@@ -96,7 +113,7 @@ int main() {
             trailing.data(), trailing.size()).has_value());
 
         std::vector<uint8_t> nonzero_reserved(70, 0);
-        nonzero_reserved[0] = 0x02;
+        nonzero_reserved[0] = 0x03;
         nonzero_reserved[2] = 0x01;
         nonzero_reserved[68] = 0x01;
         CHECK(!deserialize_peer_table(
@@ -116,21 +133,21 @@ int main() {
             excessive_peers.data(), excessive_peers.size()).has_value());
 
         std::vector<uint8_t> excessive_path(68, 0);
-        excessive_path[0] = 0x02;
+        excessive_path[0] = 0x03;
         excessive_path[2] = 0x01;
         excessive_path[67] = PEER_TABLE_MAX_PATH_HOPS + 1;
         CHECK(!deserialize_peer_table(
             excessive_path.data(), excessive_path.size()).has_value());
 
         std::vector<uint8_t> excessive_prefixes(70, 0);
-        excessive_prefixes[0] = 0x02;
+        excessive_prefixes[0] = 0x03;
         excessive_prefixes[2] = 0x01;
         excessive_prefixes[69] = PEER_TABLE_MAX_PREFIXES + 1;
         CHECK(!deserialize_peer_table(
             excessive_prefixes.data(), excessive_prefixes.size()).has_value());
 
         std::vector<uint8_t> oversized(PEER_TABLE_MAX_WIRE_BYTES + 1, 0);
-        oversized[0] = 0x02;
+        oversized[0] = 0x03;
         CHECK(!deserialize_peer_table(
             oversized.data(), oversized.size()).has_value());
 
@@ -285,6 +302,72 @@ int main() {
                candidates[1].next_hop == dave.node_id) ||
               (candidates[0].next_hop == dave.node_id &&
                candidates[1].next_hop == bob.node_id));
+    }
+
+    // ---- 4c. Route freshness metadata is bound to authenticated gossip -------
+    {
+        PeerManager pm;
+        RoutingEngine re;
+        AdvertisedPeer c;
+        c.node_id = charlie.node_id;
+        c.public_key = charlie.keypair.public_key;
+        c.prefixes.emplace_back(pt_ip(10, 33, 0, 0), 24, 7, 45, 2);
+        const auto validation = ProtocolClock::time_point{} +
+            std::chrono::seconds(10);
+
+        const auto installed = merge_peer_table(
+            pm, re, {c}, bob.node_id, alice.node_id, validation);
+        CHECK(installed.routes_installed == 1);
+        auto candidate = re.find_route(pt_ip(10, 33, 0, 8));
+        CHECK(candidate && candidate->origin == charlie.node_id);
+        CHECK(candidate && candidate->advertiser == bob.node_id);
+        CHECK(candidate && candidate->sequence_number == 7);
+        CHECK(candidate && candidate->lease == std::chrono::seconds(45));
+        CHECK(candidate && candidate->metric == 3);
+        CHECK(candidate && candidate->validated_at == validation);
+
+        const auto alternate = merge_peer_table(
+            pm, re, {c}, dave.node_id, alice.node_id, validation);
+        CHECK(alternate.routes_installed == 1);
+        CHECK(re.routes_to(charlie.node_id).size() == 2);
+
+        c.prefixes[0].sequence_number = 6;
+        const auto stale = merge_peer_table(
+            pm, re, {c}, bob.node_id, alice.node_id,
+            validation + std::chrono::seconds(5));
+        CHECK(stale.stale_rejected == 1);
+        candidate = re.find_route(pt_ip(10, 33, 0, 8));
+        CHECK(candidate && candidate->sequence_number == 7);
+        CHECK(candidate && candidate->validated_at == validation);
+
+        c.prefixes[0].sequence_number = 7;
+        c.prefixes[0].lease_seconds = 40;
+        const auto refreshed = merge_peer_table(
+            pm, re, {c}, bob.node_id, alice.node_id,
+            validation + std::chrono::seconds(5));
+        CHECK(refreshed.routes_installed == 0);
+        candidate = re.find_route(pt_ip(10, 33, 0, 8));
+        CHECK(candidate && candidate->lease == std::chrono::seconds(40));
+        CHECK(candidate && candidate->validated_at ==
+              validation + std::chrono::seconds(5));
+
+        c.prefixes[0].sequence_number = 8;
+        c.prefixes[0].metric = 3;
+        const auto newer = merge_peer_table(
+            pm, re, {c}, bob.node_id, alice.node_id,
+            validation + std::chrono::seconds(6));
+        CHECK(newer.routes_installed == 1);
+        candidate = re.find_route(pt_ip(10, 33, 0, 8));
+        CHECK(candidate && candidate->sequence_number == 8);
+        CHECK(candidate && candidate->metric == 4);
+        CHECK(re.routes_to(charlie.node_id).size() == 1);
+
+        c.prefixes[0].sequence_number = 7;
+        const auto stale_alternate = merge_peer_table(
+            pm, re, {c}, dave.node_id, alice.node_id,
+            validation + std::chrono::seconds(7));
+        CHECK(stale_alternate.stale_rejected == 1);
+        CHECK(re.routes_to(charlie.node_id).size() == 1);
     }
 
     // ---- 5. Self and sender entries are ignored ------------------------------

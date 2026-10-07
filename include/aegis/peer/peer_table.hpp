@@ -14,6 +14,36 @@ inline constexpr uint16_t PEER_TABLE_MAX_PEERS = 128;
 inline constexpr uint8_t PEER_TABLE_MAX_PATH_HOPS = 8;
 inline constexpr uint8_t PEER_TABLE_MAX_PREFIXES = 16;
 
+struct AdvertisedPrefix {
+    uint32_t prefix = 0;
+    uint8_t prefix_length = 0;
+    uint64_t sequence_number = 1;
+    uint32_t lease_seconds =
+        static_cast<uint32_t>(ROUTE_DEFAULT_LEASE.count());
+    uint32_t metric = 0;
+
+    AdvertisedPrefix() = default;
+    AdvertisedPrefix(uint32_t network, uint8_t length,
+                     uint64_t sequence = 1,
+                     uint32_t lease = static_cast<uint32_t>(
+                         ROUTE_DEFAULT_LEASE.count()),
+                     uint32_t route_metric = 0)
+        : prefix(network), prefix_length(length), sequence_number(sequence),
+          lease_seconds(lease), metric(route_metric) {}
+
+    [[nodiscard]] bool operator==(const AdvertisedPrefix&) const = default;
+    [[nodiscard]] bool operator<(const AdvertisedPrefix& other) const noexcept {
+        if (prefix != other.prefix) return prefix < other.prefix;
+        if (prefix_length != other.prefix_length)
+            return prefix_length < other.prefix_length;
+        if (sequence_number != other.sequence_number)
+            return sequence_number < other.sequence_number;
+        if (lease_seconds != other.lease_seconds)
+            return lease_seconds < other.lease_seconds;
+        return metric < other.metric;
+    }
+};
+
 // Peer table gossip message (TYPE_PEER_TABLE). Peers are advertised by NodeID
 // + public key + allowed prefixes — NEVER by endpoint. The receiving node must
 // route to an advertised peer through the sender (relay), which is exactly the
@@ -26,13 +56,13 @@ struct AdvertisedPeer {
     // reconstructs its own path as [sender] + path and rejects any path that
     // would loop back through it. Real endpoints are never advertised.
     std::vector<NodeId> path;
-    // (prefix, prefix_length) pairs in the same representation as
-    // IPPacket::dest_ip / AllowedIP.prefix (big-endian value).
-    std::vector<std::pair<uint32_t, uint8_t>> prefixes;
+    // Prefix records use the same network representation as
+    // IPPacket::dest_ip / AllowedIP.prefix and carry origin freshness data.
+    std::vector<AdvertisedPrefix> prefixes;
 };
 
 // Wire format:
-//   [0]      version (2)
+//   [0]      version (3)
 //   [1..2]   uint16 peer_count (big-endian)
 //   per peer:
 //     [32]  NodeID
@@ -41,7 +71,8 @@ struct AdvertisedPeer {
 //     per path hop: [32] NodeID
 //     [1]   flags (reserved)
 //     [1]   prefix_count
-//     per prefix: [4] prefix (big-endian value) + [1] prefix_length
+//     per prefix: [4] prefix + [1] prefix_length + [8] origin sequence
+//                 + [4] lease seconds + [4] metric (all big-endian)
 // Serialization fails rather than truncating counts that do not fit the
 // bounded wire format.
 std::optional<std::vector<uint8_t>> serialize_peer_table(
@@ -59,6 +90,7 @@ struct PeerTableMergeStats {
     size_t peers_changed = 0;
     size_t routes_installed = 0;
     size_t malformed = 0;
+    size_t stale_rejected = 0;
     size_t conflicting = 0;
     size_t capacity_rejected = 0;
 
@@ -78,4 +110,5 @@ struct PeerTableMergeStats {
 PeerTableMergeStats merge_peer_table(
     PeerManager& pm, RoutingEngine& re,
     const std::vector<AdvertisedPeer>& advertised,
-    const NodeId& sender, const NodeId& self);
+    const NodeId& sender, const NodeId& self,
+    ProtocolClock::time_point validated_at = system_protocol_clock().now());

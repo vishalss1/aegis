@@ -32,6 +32,14 @@ bool RoutingEngine::add_route(const Route& route) {
 
     Route candidate = route;
     candidate.prefix &= prefix_mask(candidate.prefix_length);
+    if (candidate.origin == NodeId{})
+        candidate.origin = candidate.destination;
+    if (candidate.advertiser == NodeId{})
+        candidate.advertiser = candidate.next_hop;
+    if (candidate.sequence_number == 0 || candidate.lease.count() <= 0 ||
+        candidate.lease > ROUTE_MAX_LEASE ||
+        candidate.metric > ROUTE_MAX_METRIC)
+        return false;
 
     // A candidate is the path learned from one next hop toward one
     // destination. Refreshing that candidate may replace its path without
@@ -66,6 +74,23 @@ void RoutingEngine::remove_route(const NodeId& peer_id) {
     std::erase_if(routes_, [&](const Route& r) {
         return r.destination == peer_id || r.next_hop == peer_id;
     });
+}
+
+size_t RoutingEngine::remove_older_learned_routes(
+    const NodeId& origin, uint32_t prefix, uint32_t prefix_length,
+    uint64_t minimum_sequence) {
+    if (prefix_length > 32)
+        return 0;
+    const uint32_t canonical = prefix & prefix_mask(prefix_length);
+    std::lock_guard<std::mutex> lock(mtx_);
+    const size_t before = routes_.size();
+    std::erase_if(routes_, [&](const Route& route) {
+        return route.type == NextHopType::Relay &&
+            route.origin == origin && route.prefix == canonical &&
+            route.prefix_length == prefix_length &&
+            route.sequence_number < minimum_sequence;
+    });
+    return before - routes_.size();
 }
 
 void RoutingEngine::clear() {

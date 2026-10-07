@@ -3,7 +3,8 @@
 #include <algorithm>
 #include <set>
 
-static constexpr uint8_t PEER_TABLE_VERSION = 2;
+static constexpr uint8_t PEER_TABLE_VERSION = 3;
+static constexpr size_t PEER_TABLE_PREFIX_BYTES = 4 + 1 + 8 + 4 + 4;
 
 std::optional<std::vector<uint8_t>> serialize_peer_table(
     const std::vector<AdvertisedPeer>& peers) {
@@ -18,7 +19,7 @@ std::optional<std::vector<uint8_t>> serialize_peer_table(
 
         constexpr size_t fixed_peer_bytes = 32 + 32 + 1 + 1 + 1;
         const size_t peer_bytes = fixed_peer_bytes + p.path.size() * 32 +
-                                  p.prefixes.size() * 5;
+                                  p.prefixes.size() * PEER_TABLE_PREFIX_BYTES;
         if (peer_bytes > PEER_TABLE_MAX_WIRE_BYTES - encoded_size)
             return std::nullopt;
         encoded_size += peer_bytes;
@@ -42,9 +43,17 @@ std::optional<std::vector<uint8_t>> serialize_peer_table(
         if (!writer.write_u8(0) ||  // flags (reserved)
             !writer.write_u8(static_cast<uint8_t>(p.prefixes.size())))
             return std::nullopt;
-        for (const auto& [prefix, prefix_length] : p.prefixes) {
-            if (!writer.write_u32(prefix) ||
-                !writer.write_u8(prefix_length))
+        for (const auto& advertised : p.prefixes) {
+            if (advertised.prefix_length > 32 ||
+                advertised.sequence_number == 0 ||
+                advertised.lease_seconds == 0 ||
+                advertised.lease_seconds > ROUTE_MAX_LEASE.count() ||
+                advertised.metric > ROUTE_MAX_METRIC ||
+                !writer.write_u32(advertised.prefix) ||
+                !writer.write_u8(advertised.prefix_length) ||
+                !writer.write_u64(advertised.sequence_number) ||
+                !writer.write_u32(advertised.lease_seconds) ||
+                !writer.write_u32(advertised.metric))
                 return std::nullopt;
         }
     }
@@ -96,9 +105,18 @@ std::optional<std::vector<AdvertisedPeer>> deserialize_peer_table(
         for (uint8_t j = 0; j < *prefix_count; ++j) {
             const auto prefix = reader.read_u32();
             const auto prefix_length = reader.read_u8();
-            if (!prefix || !prefix_length || *prefix_length > 32)
+            const auto sequence_number = reader.read_u64();
+            const auto lease_seconds = reader.read_u32();
+            const auto metric = reader.read_u32();
+            if (!prefix || !prefix_length || !sequence_number ||
+                !lease_seconds || !metric || *prefix_length > 32 ||
+                *sequence_number == 0 || *lease_seconds == 0 ||
+                *lease_seconds > ROUTE_MAX_LEASE.count() ||
+                *metric > ROUTE_MAX_METRIC)
                 return std::nullopt;
-            p.prefixes.emplace_back(*prefix, *prefix_length);
+            p.prefixes.emplace_back(
+                *prefix, *prefix_length, *sequence_number,
+                *lease_seconds, *metric);
         }
         out.push_back(std::move(p));
     }
@@ -110,7 +128,8 @@ std::optional<std::vector<AdvertisedPeer>> deserialize_peer_table(
 PeerTableMergeStats merge_peer_table(
     PeerManager& pm, RoutingEngine& re,
     const std::vector<AdvertisedPeer>& advertised,
-    const NodeId& sender, const NodeId& self) {
+    const NodeId& sender, const NodeId& self,
+    ProtocolClock::time_point validated_at) {
     PeerTableMergeStats stats;
     for (const auto& p : advertised) {
         if (p.node_id == self || p.node_id == sender)
@@ -165,25 +184,17 @@ PeerTableMergeStats merge_peer_table(
         }
         bool malformed_routing = !path_ok;
 
-        for (const auto& [prefix, prefix_length] : p.prefixes) {
-            if (prefix_length > 32) {
+        for (const auto& advertised_prefix : p.prefixes) {
+            const uint32_t prefix = advertised_prefix.prefix;
+            const uint8_t prefix_length = advertised_prefix.prefix_length;
+            if (prefix_length > 32 ||
+                advertised_prefix.sequence_number == 0 ||
+                advertised_prefix.lease_seconds == 0 ||
+                advertised_prefix.lease_seconds > ROUTE_MAX_LEASE.count() ||
+                advertised_prefix.metric >= ROUTE_MAX_METRIC) {
                 malformed_routing = true;
                 continue;
             }
-            bool skip = false;
-            for (const auto& r : re.routes()) {
-                if (r.prefix == (prefix & (prefix_length
-                        ? (0xFFFFFFFFu << (32 - prefix_length)) : 0)) &&
-                    r.prefix_length == prefix_length &&
-                    r.type == NextHopType::Relay &&
-                    r.next_hop == sender && r.destination == p.node_id &&
-                    r.path == path) {
-                    skip = true;  // An identical candidate is already retained.
-                    break;
-                }
-            }
-            if (skip)
-                continue;
             if (!path_ok)
                 continue;  // a looping path can never be used, do not install
 
@@ -194,6 +205,54 @@ PeerTableMergeStats merge_peer_table(
             route.next_hop = sender;
             route.destination = p.node_id;
             route.path = path;
+            route.origin = p.node_id;
+            route.advertiser = sender;
+            route.sequence_number = advertised_prefix.sequence_number;
+            route.lease = std::chrono::seconds(
+                advertised_prefix.lease_seconds);
+            route.metric = advertised_prefix.metric + 1;
+            route.validated_at = validated_at;
+
+            const uint32_t mask = prefix_length
+                ? (0xFFFFFFFFu << (32 - prefix_length)) : 0;
+            const auto routes = re.routes();
+            uint64_t highest_sequence = 0;
+            for (const auto& candidate : routes) {
+                if (candidate.type == NextHopType::Relay &&
+                    candidate.prefix == (prefix & mask) &&
+                    candidate.prefix_length == prefix_length &&
+                    candidate.origin == p.node_id)
+                    highest_sequence = (std::max)(
+                        highest_sequence, candidate.sequence_number);
+            }
+            if (route.sequence_number < highest_sequence) {
+                ++stats.stale_rejected;
+                continue;
+            }
+            const auto existing = std::find_if(
+                routes.begin(), routes.end(), [&](const Route& candidate) {
+                    return candidate.prefix == (prefix & mask) &&
+                        candidate.prefix_length == prefix_length &&
+                        candidate.type == NextHopType::Relay &&
+                        candidate.next_hop == sender &&
+                        candidate.destination == p.node_id;
+                });
+            if (existing != routes.end()) {
+                if (route.sequence_number == existing->sequence_number &&
+                    (route.path != existing->path ||
+                     route.metric != existing->metric)) {
+                    malformed_routing = true;
+                    continue;
+                }
+                if (route.sequence_number == existing->sequence_number) {
+                    (void)re.add_route(route);  // refresh lease validation only
+                    continue;
+                }
+            }
+            if (route.sequence_number > highest_sequence)
+                (void)re.remove_older_learned_routes(
+                    route.origin, route.prefix, route.prefix_length,
+                    route.sequence_number);
             if (re.add_route(route))
                 ++stats.routes_installed;
             else

@@ -131,8 +131,12 @@ Peer-table frames are limited to 60 KiB, 128 advertised peers, eight path hops
 per peer, and 16 prefixes per peer. The decoder requires complete frame
 consumption, canonical network-byte-order integers, and zero-valued reserved
 flags. Merge results separately report accepted identities, changed peer
-bindings, installed routes, malformed data, identity conflicts, and capacity
-rejection.
+bindings, installed routes, malformed data, stale sequences, identity
+conflicts, and capacity rejection. Version-3 prefix records include a nonzero
+origin sequence, a 1–600 second lease, and a bounded metric. The origin is
+bound to the advertised NodeID, the advertiser to the authenticated adjacent
+sender, and validation time to the receiver's monotonic clock. These fields
+remain hop-authenticated rather than origin-signed.
 
 These checks bind a public key to its self-certifying NodeID. Noise IK also
 proves control of that key for an adjacent session. Neither mechanism
@@ -224,10 +228,12 @@ control or guaranteed delivery after retry exhaustion.
 
 ### Routing does not validate path liveness
 
-Learned routes retain bounded alternatives but have no lease, expiry, path
-probe, link metric, or authenticated withdrawal. A failed middle hop can leave
-the selected route blackholed because candidate health does not yet trigger
-failover. Route selection is primarily based on prefix and hop count.
+Learned routes retain bounded alternatives and carry sequence, lease, metric,
+origin, advertiser, and local validation-time metadata. Lease expiry is not yet
+enforced, and there is no path probe or authenticated withdrawal. A failed
+middle hop can leave the selected route blackholed because candidate health
+does not yet trigger failover. Route selection is primarily based on prefix
+and hop count; the carried metric is not yet part of selection.
 
 ### NAT traversal is incomplete
 

@@ -1,6 +1,8 @@
 #pragma once
 
 #include "aegis/identity/identity.hpp"
+#include "aegis/protocol/sources.hpp"
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
@@ -24,10 +26,21 @@ struct Route {
     // to build the onion: one AEAD layer per hop, innermost = destination.
     // Direct routes carry { destination }.
     std::vector<NodeId> path;
+    // Freshness metadata. `origin` owns the advertised prefix; `advertiser`
+    // is the authenticated adjacent peer from which this candidate arrived.
+    NodeId origin{};
+    NodeId advertiser{};
+    uint64_t sequence_number = 1;
+    std::chrono::seconds lease{90};
+    uint32_t metric = 0;
+    ProtocolClock::time_point validated_at{};
 };
 
 inline constexpr size_t ROUTING_MAX_ROUTES = 2048;
 inline constexpr size_t ROUTING_MAX_CANDIDATES_PER_PREFIX = 8;
+inline constexpr std::chrono::seconds ROUTE_DEFAULT_LEASE{90};
+inline constexpr std::chrono::seconds ROUTE_MAX_LEASE{600};
+inline constexpr uint32_t ROUTE_MAX_METRIC = 1'000'000;
 
 class RoutingEngine {
 public:
@@ -35,6 +48,9 @@ public:
 
     bool add_route(const Route& route);
     void remove_route(const NodeId& peer_id);
+    size_t remove_older_learned_routes(
+        const NodeId& origin, uint32_t prefix, uint32_t prefix_length,
+        uint64_t minimum_sequence);
     void clear();
 
     std::optional<Route> find_route(uint32_t dest_ip) const;

@@ -316,6 +316,8 @@ void Tunnel::install_configured_routes(const TunnelPeer& peer) {
         r.next_hop = peer.node_id;
         r.destination = peer.node_id;
         r.path = {peer.node_id};
+        r.metric = 1;
+        r.validated_at = clock_.now();
         if (!routing_.add_route(r))
             aegis_log( "[tunnel] warning: route %08x/%u rejected\n",
                     aip.prefix, aip.prefix_length);
@@ -1352,7 +1354,9 @@ std::vector<AdvertisedPeer> Tunnel::build_advertised_peers() const {
     AdvertisedPeer self;
     self.node_id = identity_.node_id;
     self.public_key = identity_.keypair.public_key;
-    self.prefixes.emplace_back(config_.local_ip, config_.local_prefix);
+    self.prefixes.emplace_back(
+        config_.local_ip, config_.local_prefix, 1,
+        static_cast<uint32_t>(ROUTE_DEFAULT_LEASE.count()), 0);
     out.push_back(std::move(self));
 
     auto routes = routing_.routes();
@@ -1365,7 +1369,20 @@ std::vector<AdvertisedPeer> Tunnel::build_advertised_peers() const {
         for (const auto& r : routes) {
             if (r.destination != peer.node_id)
                 continue;
-            ap.prefixes.emplace_back(r.prefix, r.prefix_length);
+            auto remaining = r.lease;
+            if (r.type == NextHopType::Relay &&
+                r.validated_at != ProtocolClock::time_point{}) {
+                const auto elapsed = std::chrono::duration_cast<
+                    std::chrono::seconds>(clock_.now() - r.validated_at);
+                if (elapsed >= remaining)
+                    remaining = std::chrono::seconds(1);
+                else if (elapsed.count() > 0)
+                    remaining -= elapsed;
+            }
+            ap.prefixes.emplace_back(
+                r.prefix, static_cast<uint8_t>(r.prefix_length),
+                r.sequence_number,
+                static_cast<uint32_t>(remaining.count()), r.metric);
             // Advertise our FULL hop list to this peer (first hop through the
             // destination; {peer} for direct routes). The receiver prepends
             // itself and gets a complete path without knowing anything beyond
@@ -1445,14 +1462,15 @@ void Tunnel::handle_peer_table(const NodeId& sender, const uint8_t* data, size_t
         return;
     }
     const auto stats = merge_peer_table(
-        peers_, routing_, *advertised, sender, identity_.node_id);
+        peers_, routing_, *advertised, sender, identity_.node_id,
+        clock_.now());
     aegis_log(
         "[tunnel] peer table from %02x%02x...: %zu advertised, %zu accepted, "
-        "%zu changed, %zu route(s), %zu malformed, %zu conflict(s), "
+        "%zu changed, %zu route(s), %zu malformed, %zu stale, %zu conflict(s), "
         "%zu capacity drop(s)\n",
         sender[0], sender[1], advertised->size(), stats.accepted,
         stats.peers_changed, stats.routes_installed, stats.malformed,
-        stats.conflicting, stats.capacity_rejected);
+        stats.stale_rejected, stats.conflicting, stats.capacity_rejected);
     // Fan out any new knowledge (peers or routes) so the mesh converges without
     // waiting for the next periodic gossip cycle.
     if (stats.changed())

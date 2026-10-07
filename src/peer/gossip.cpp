@@ -143,9 +143,9 @@ std::vector<GossipBatch> make_gossip_batches(
             if (begin < end) {
                 chunk.prefixes.assign(
                     update.peer.prefixes.begin() +
-                        static_cast<std::vector<std::pair<uint32_t, uint8_t>>::difference_type>(begin),
+                        static_cast<std::vector<AdvertisedPrefix>::difference_type>(begin),
                     update.peer.prefixes.begin() +
-                        static_cast<std::vector<std::pair<uint32_t, uint8_t>>::difference_type>(end));
+                        static_cast<std::vector<AdvertisedPrefix>::difference_type>(end));
             } else {
                 chunk.prefixes.clear();
             }
