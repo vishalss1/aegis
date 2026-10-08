@@ -80,6 +80,9 @@ The implementation currently provides the following limited properties:
 - Endpoint candidate lists are session-encrypted, capped at eight entries,
   reject duplicate or non-unicast IPv4 endpoints, and are scoped to the
   authenticated sender or a peer-observed report about the receiver.
+- UDP punch challenges and responses are session-encrypted. A response can
+  nominate an endpoint only when its random transaction, authenticated peer,
+  source address, and five-second deadline match bounded pending state.
 - AEGIS1 invite payloads use bounded codecs, canonical base64url, exact name
   lengths, exact frame consumption, and valid IPv4 prefix lengths.
 - Session data has a 2,048-packet replay window.
@@ -258,9 +261,13 @@ server endpoint with the outstanding random transaction ID. Established peers
 exchange bounded host, server-reflexive, and peer-observed candidates inside
 authenticated session frames. A legitimate member can still lie about a
 candidate, so exchanged addresses are retained as unvalidated alternatives
-and never replace the active endpoint. There is not yet coordinated hole
-punching, candidate nomination, authenticated endpoint promotion, or a
-relay-of-last-resort circuit for symmetric NAT.
+until coordinated authenticated UDP punching succeeds. Punch responses are
+bound to a random transaction, the expected peer and candidate source, and a
+five-second deadline; concurrent attempts are capped and each peer's round is
+throttled to 30 seconds. This supports endpoint-independent and some
+address-dependent mappings, but symmetric NAT and restrictive firewalls still
+need relay fallback. Candidate exchange and punching do not authenticate
+ownership of an address against a malicious authorized peer.
 
 ### Credential lifecycle is incomplete
 

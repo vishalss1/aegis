@@ -36,6 +36,7 @@ static constexpr uint8_t TYPE_HANDSHAKE_COOKIE = 0x0C;
 static constexpr uint8_t TYPE_FILE_CANCEL = 0x0D;
 static constexpr uint8_t TYPE_PATH_PROBE = 0x0E;
 static constexpr uint8_t TYPE_ENDPOINT_CANDIDATES = 0x0F;
+static constexpr uint8_t TYPE_ENDPOINT_PUNCH = 0x10;
 
 static constexpr uint8_t FLAG_RELAY = 0x01;
 static constexpr uint8_t FLAG_FRAGMENTED = 0x02;

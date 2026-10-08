@@ -238,6 +238,11 @@ void Tunnel::stop() {
     }
     outgoing_transfers_cv_.notify_all();
     path_probe_tracker_.reset();
+    endpoint_punch_tracker_.reset();
+    {
+        std::lock_guard<std::mutex> lock(endpoint_punch_attempts_mtx_);
+        endpoint_punch_attempts_.clear();
+    }
 }
 
 bool Tunnel::session_established(const NodeId& node_id) const {
@@ -730,6 +735,12 @@ void Tunnel::maintenance_loop() {
                     peer.node_id[0], peer.node_id[1]);
         }
 
+        const auto expired_punches =
+            endpoint_punch_tracker_.expire(clock_.now());
+        if (!expired_punches.empty())
+            aegis_log("[tunnel] %zu endpoint punch(es) timed out\n",
+                      expired_punches.size());
+
         // 3) Expire learned route candidates whose advertised lease elapsed.
         //    Configured direct routes are never lease-removed.
         const size_t expired_routes =
@@ -819,6 +830,9 @@ void Tunnel::rx_callback(const uint8_t* data, size_t len, Endpoint sender) {
     case TYPE_ENDPOINT_CANDIDATES:
         handle_endpoint_candidates_frame(data, len, *header, sender);
         break;
+    case TYPE_ENDPOINT_PUNCH:
+        handle_endpoint_punch_frame(data, len, *header, sender);
+        break;
     case TYPE_NETWORK_TEARDOWN:
         handle_network_teardown_frame(data, len, *header);
         break;
@@ -890,7 +904,7 @@ void Tunnel::handle_endpoint_candidates_frame(
     const auto update = deserialize_endpoint_candidates(msg->payload);
     if (!session || !update)
         return;
-    peers_.mark_seen(session->peer_id, sender);
+    peers_.mark_seen(session->peer_id);
 
     if (update->subject == session->peer_id) {
         auto candidates = update->candidates;
@@ -899,6 +913,7 @@ void Tunnel::handle_endpoint_candidates_frame(
             {EndpointCandidateType::PeerObserved, sender, 400});
         (void)peers_.set_endpoint_candidates(
             session->peer_id, candidates);
+        begin_endpoint_punching(session->peer_id);
         return;
     }
     if (update->subject != identity_.node_id)
@@ -916,6 +931,51 @@ void Tunnel::handle_endpoint_candidates_frame(
         send_endpoint_candidate_update(
             session->peer_id, {identity_.node_id, local});
     }
+}
+
+void Tunnel::handle_endpoint_punch_frame(
+    const uint8_t* data, size_t len, const PacketHeader& header,
+    Endpoint sender) {
+    if (!running_)
+        return;
+    const auto msg = session_manager_->decrypt_message(data, len);
+    if (!msg || msg->packet_type != TYPE_ENDPOINT_PUNCH)
+        return;
+    const auto session =
+        session_manager_->get_session_by_id(header.session_id);
+    const auto punch = deserialize_endpoint_punch(msg->payload);
+    if (!session || !punch)
+        return;
+    peers_.mark_seen(session->peer_id);
+
+    if (punch->kind == EndpointPunchKind::Challenge) {
+        const auto peer = peers_.get_peer(session->peer_id);
+        if (!peer)
+            return;
+        const bool known_endpoint =
+            (peer->endpoint && *peer->endpoint == sender) ||
+            std::any_of(
+                peer->endpoint_candidates.begin(),
+                peer->endpoint_candidates.end(),
+                [&](const EndpointCandidate& candidate) {
+                    return candidate.endpoint == sender;
+                });
+        if (!known_endpoint)
+            return;
+        (void)send_endpoint_punch(
+            session->peer_id, sender,
+            {EndpointPunchKind::Response, punch->transaction_id});
+        return;
+    }
+
+    const auto target = endpoint_punch_tracker_.acknowledge(
+        punch->transaction_id, session->peer_id, sender, clock_.now());
+    if (!target)
+        return;
+    peers_.mark_seen(target->peer_id, target->endpoint);
+    aegis_log("[tunnel] validated endpoint for %02x%02x... -> %08x:%04x\n",
+              target->peer_id[0], target->peer_id[1],
+              ntohl(target->endpoint.ip), ntohs(target->endpoint.port));
 }
 
 void Tunnel::handle_chat_frame(const uint8_t* data, size_t len,
@@ -1636,6 +1696,54 @@ void Tunnel::record_local_endpoint_candidate(
         return;
     std::lock_guard<std::mutex> lock(endpoint_candidates_mtx_);
     merge_endpoint_candidate(local_endpoint_candidates_, candidate);
+}
+
+bool Tunnel::send_endpoint_punch(
+    const NodeId& peer_id, Endpoint endpoint,
+    const EndpointPunchMessage& message) {
+    const auto payload = serialize_endpoint_punch(message);
+    if (!payload)
+        return false;
+    const auto frame = session_manager_->encrypt_message(
+        peer_id, TYPE_ENDPOINT_PUNCH, payload->data(), payload->size());
+    return frame && transport_.send(
+        frame->data(), frame->size(), endpoint, SendPriority::Control);
+}
+
+void Tunnel::begin_endpoint_punching(const NodeId& peer_id) {
+    if (!session_established(peer_id))
+        return;
+    const auto peer = peers_.get_peer(peer_id);
+    if (!peer)
+        return;
+    const auto now = clock_.now();
+    {
+        std::lock_guard<std::mutex> lock(endpoint_punch_attempts_mtx_);
+        const auto previous = endpoint_punch_attempts_.find(peer_id);
+        if (previous != endpoint_punch_attempts_.end() &&
+            now >= previous->second &&
+            now - previous->second < std::chrono::seconds(30))
+            return;
+        endpoint_punch_attempts_[peer_id] = now;
+    }
+    for (const auto& candidate : peer->endpoint_candidates) {
+        uint64_t transaction_id = 0;
+        for (int attempt = 0; attempt < 8 && transaction_id == 0; ++attempt) {
+            const auto generated = random_.u64();
+            if (!generated || *generated == 0)
+                continue;
+            if (endpoint_punch_tracker_.begin(
+                    *generated,
+                    {peer_id, candidate.endpoint}, now))
+                transaction_id = *generated;
+        }
+        if (transaction_id == 0)
+            continue;
+        if (!send_endpoint_punch(
+                peer_id, candidate.endpoint,
+                {EndpointPunchKind::Challenge, transaction_id}))
+            endpoint_punch_tracker_.cancel(transaction_id);
+    }
 }
 
 void Tunnel::announce_endpoint_candidates(

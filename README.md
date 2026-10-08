@@ -190,7 +190,7 @@ A few design choices that shaped how Aegis works.
 | **Join-Any-Available Bootstrap** | No fixed entry point, no dedicated server. Each configured candidate gets its own background connect loop with exponential backoff (1s → 30s cap). The node routes immediately; sessions form as peers become reachable. |
 | **Session Keep-Alive & Dead Detection** | Keep-alives every 25s. Dead timeout at 180s removes the session and all routes. Configured peers are re-joined automatically on reconnect, routes reinstalled, peer table re-announced. |
 | **Transparent Rekeying** | Fresh authenticated Noise IK handshake every 120s driven by the lower-NodeID peer. Prior session retired to a 10s grace window — in-flight packets decrypt cleanly. Replay windows and sequence numbers reset per session ID. |
-| **Endpoint Candidates** | Established peers exchange at most eight encrypted host, server-reflexive, and peer-observed IPv4 candidates. Third-party subjects and malformed lists are rejected; exchanged candidates remain unvalidated alternatives and do not replace the active endpoint. LAN presence hints remain unauthenticated. |
+| **Endpoint Candidates and UDP Punching** | Established peers exchange at most eight encrypted host, server-reflexive, and peer-observed IPv4 candidates, then send simultaneous session-authenticated challenges to those addresses. A matching response must arrive from the challenged endpoint within five seconds before it is nominated as active. Punch attempts are bounded and throttled; symmetric NAT may still require relay fallback. LAN presence hints remain unauthenticated. |
 | **YAML Config Mode** | `--config <file>` — strict YAML subset parser. Validates all fields, rejects unknown keys. Auto-elevates via UAC (`ShellExecuteW "runas"`) when launched without Administrator rights. |
 | **Replay Protection** | Per-session sliding window of 2048 sequence numbers. Out-of-window and duplicate sequence numbers are silently discarded. |
 | **Layered Packet Processing** | IP parsing, session framing, relay wrapping, UDP transport, and file-transfer payload framing are separate modules with bounded codecs and exact-length validation. File transfers reject unsafe Windows names and inconsistent metadata, key state by authenticated sender plus transfer ID, and count only unique chunks. |
@@ -646,7 +646,7 @@ Unit test coverage:
 | `test_config` | YAML parsing, strict validation, unknown-key rejection, malformed value errors |
 | `test_invite` | AEGIS1 invite code encoding, decoding, validation, round-trip |
 | `test_stun` | RFC 5389 request/response validation, XOR-MAPPED-ADDRESS parsing, and loopback proof that discovery uses the bound mesh UDP port |
-| `test_endpoint_candidate` | Canonical bounded candidate framing, all candidate types, duplicate/invalid address rejection, and malformed length/version/type handling |
+| `test_endpoint_candidate` | Canonical bounded candidate framing, all candidate types, authenticated punch framing, transaction/peer/source matching, timeout boundaries, and malformed length/version/type handling |
 | `test_cli` | CLI parsing, command dispatch, and integrated command behavior |
 
 ---

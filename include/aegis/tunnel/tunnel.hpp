@@ -14,6 +14,7 @@
 #include "aegis/crypto/random.hpp"
 #include "aegis/protocol/sources.hpp"
 #include "aegis/protocol/endpoint_candidate.hpp"
+#include "aegis/protocol/endpoint_punch.hpp"
 #include "aegis/packet/mtu.hpp"
 #include "aegis/packet/relay_limiter.hpp"
 #include "aegis/file/transfer.hpp"
@@ -157,6 +158,9 @@ private:
     RoutingEngine routing_;
     GossipDeltaTracker gossip_delta_tracker_;
     PathProbeTracker path_probe_tracker_;
+    EndpointPunchTracker endpoint_punch_tracker_;
+    std::map<NodeId, ProtocolClock::time_point> endpoint_punch_attempts_;
+    mutable std::mutex endpoint_punch_attempts_mtx_;
     std::vector<EndpointCandidate> local_endpoint_candidates_;
     mutable std::mutex endpoint_candidates_mtx_;
 
@@ -248,6 +252,9 @@ private:
     void handle_endpoint_candidates_frame(
         const uint8_t* data, size_t len, const PacketHeader& header,
         Endpoint sender);
+    void handle_endpoint_punch_frame(
+        const uint8_t* data, size_t len, const PacketHeader& header,
+        Endpoint sender);
     void handle_chat_frame(const uint8_t* data, size_t len,
                            const PacketHeader& header, Endpoint sender);
     void handle_file_header_frame(const uint8_t* data, size_t len,
@@ -298,4 +305,8 @@ private:
         const NodeId& peer_id,
         const EndpointCandidateMessage& update);
     void record_local_endpoint_candidate(const EndpointCandidate& candidate);
+    bool send_endpoint_punch(
+        const NodeId& peer_id, Endpoint endpoint,
+        const EndpointPunchMessage& message);
+    void begin_endpoint_punching(const NodeId& peer_id);
 };

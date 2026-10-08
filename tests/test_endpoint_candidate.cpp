@@ -1,4 +1,5 @@
 #include "aegis/protocol/endpoint_candidate.hpp"
+#include "aegis/protocol/endpoint_punch.hpp"
 #include <cstdio>
 
 static int tests = 0;
@@ -16,6 +17,15 @@ static NodeId make_id(uint8_t tag) {
     id[0] = tag;
     return id;
 }
+
+class ManualClock final : public ProtocolClock {
+public:
+    [[nodiscard]] time_point now() const noexcept override { return now_; }
+    void advance(std::chrono::seconds duration) { now_ += duration; }
+
+private:
+    time_point now_{};
+};
 
 int main() {
     setvbuf(stdout, nullptr, _IONBF, 0);
@@ -85,6 +95,58 @@ int main() {
             static_cast<uint32_t>(100 + i)});
     }
     CHECK(!serialize_endpoint_candidates(too_many));
+
+    const EndpointPunchMessage challenge{
+        EndpointPunchKind::Challenge, 0x0102030405060708ULL};
+    const auto punch_bytes = serialize_endpoint_punch(challenge);
+    CHECK(punch_bytes && punch_bytes->size() == ENDPOINT_PUNCH_WIRE_SIZE);
+    const auto decoded_punch = punch_bytes
+        ? deserialize_endpoint_punch(*punch_bytes) : std::nullopt;
+    CHECK(decoded_punch && decoded_punch->kind == challenge.kind);
+    CHECK(decoded_punch &&
+          decoded_punch->transaction_id == challenge.transaction_id);
+    CHECK(!serialize_endpoint_punch({EndpointPunchKind::Challenge, 0}));
+    if (punch_bytes) {
+        auto bad_version = *punch_bytes;
+        bad_version[0] = 2;
+        CHECK(!deserialize_endpoint_punch(bad_version));
+        auto bad_reserved = *punch_bytes;
+        bad_reserved[2] = 1;
+        CHECK(!deserialize_endpoint_punch(bad_reserved));
+        auto bad_kind = *punch_bytes;
+        bad_kind[1] = 3;
+        CHECK(!deserialize_endpoint_punch(bad_kind));
+        auto truncated = *punch_bytes;
+        truncated.pop_back();
+        CHECK(!deserialize_endpoint_punch(truncated));
+    }
+
+    {
+        ManualClock clock;
+        EndpointPunchTracker tracker(2, std::chrono::seconds(5));
+        const EndpointPunchTarget target{
+            make_id(8), Endpoint::from_parts(198, 51, 100, 8, 62008)};
+        CHECK(tracker.begin(17, target, clock.now()));
+        CHECK(!tracker.begin(18, target, clock.now()));
+        CHECK(!tracker.acknowledge(
+            17, make_id(9), target.endpoint, clock.now()));
+        CHECK(!tracker.acknowledge(
+            17, target.peer_id,
+            Endpoint::from_parts(198, 51, 100, 9, 62008), clock.now()));
+        clock.advance(std::chrono::seconds(4));
+        const auto accepted = tracker.acknowledge(
+            17, target.peer_id, target.endpoint, clock.now());
+        CHECK(accepted && *accepted == target);
+        CHECK(tracker.size() == 0);
+
+        CHECK(tracker.begin(19, target, clock.now()));
+        clock.advance(std::chrono::seconds(5));
+        CHECK(!tracker.acknowledge(
+            19, target.peer_id, target.endpoint, clock.now()));
+        const auto expired = tracker.expire(clock.now());
+        CHECK(expired.size() == 1 && expired[0] == 19);
+        CHECK(tracker.size() == 0);
+    }
 
     std::printf("\n%d / %d passed\n", passed, tests);
     return passed == tests ? 0 : 1;
