@@ -569,7 +569,7 @@ int run_gossip_test() {
             fprintf(stderr, "[gossip-test]   %s routes:\n", names[n]);
             for (const auto& r : nodes[n]->routing().routes())
                 fprintf(stderr, "[gossip-test]     %08x/%u type=%d next=%02x dest=%02x path=",
-                        r.prefix, r.prefix_length, (int)r.type,
+                        r.prefix.ipv4_value(), r.prefix_length, (int)r.type,
                         r.next_hop[0], r.destination[0]);
             fprintf(stderr, "[gossip-test]   %s routes end\n", names[n]);
         }

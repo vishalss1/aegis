@@ -5,8 +5,13 @@
 
 RoutingEngine::RoutingEngine(size_t max_routes) : max_routes_(max_routes) {}
 
-static uint32_t prefix_mask(uint32_t prefix_length) {
-    return prefix_length ? (0xFFFFFFFFu << (32 - prefix_length)) : 0;
+static bool valid_prefix_length(const IPAddress& prefix, uint32_t length) {
+    return prefix.valid_family() && length <= prefix.bit_width();
+}
+
+static IPAddress canonical_prefix(const IPAddress& prefix, uint32_t length) {
+    IPPrefix value(prefix, static_cast<uint8_t>(length));
+    return value.address;
 }
 
 bool learned_route_lease_expired(
@@ -18,7 +23,8 @@ bool learned_route_lease_expired(
 
 bool RoutingEngine::add_route(const Route& route) {
     std::lock_guard<std::mutex> lock(mtx_);
-    if (route.prefix_length > 32 || route.type == NextHopType::Unknown)
+    if (!valid_prefix_length(route.prefix, route.prefix_length) ||
+        route.type == NextHopType::Unknown)
         return false;
     if (route.type == NextHopType::Relay) {
         // A relay must not forward to itself; that route could never be resolved.
@@ -39,7 +45,8 @@ bool RoutingEngine::add_route(const Route& route) {
     }
 
     Route candidate = route;
-    candidate.prefix &= prefix_mask(candidate.prefix_length);
+    candidate.prefix = canonical_prefix(candidate.prefix,
+                                        candidate.prefix_length);
     if (candidate.origin == NodeId{})
         candidate.origin = candidate.destination;
     if (candidate.advertiser == NodeId{})
@@ -96,11 +103,11 @@ void RoutingEngine::remove_route(const NodeId& peer_id) {
 }
 
 size_t RoutingEngine::remove_older_learned_routes(
-    const NodeId& origin, uint32_t prefix, uint32_t prefix_length,
+    const NodeId& origin, IPAddress prefix, uint32_t prefix_length,
     uint64_t minimum_sequence) {
-    if (prefix_length > 32)
+    if (!valid_prefix_length(prefix, prefix_length))
         return 0;
-    const uint32_t canonical = prefix & prefix_mask(prefix_length);
+    const IPAddress canonical = canonical_prefix(prefix, prefix_length);
     std::lock_guard<std::mutex> lock(mtx_);
     const size_t before = routes_.size();
     std::erase_if(routes_, [&](const Route& route) {
@@ -124,11 +131,11 @@ size_t RoutingEngine::expire_learned_routes(
 
 bool RoutingEngine::mark_probe_sent(
     const NodeId& destination, const NodeId& next_hop,
-    uint32_t prefix, uint32_t prefix_length, uint64_t sequence,
+    IPAddress prefix, uint32_t prefix_length, uint64_t sequence,
     ProtocolClock::time_point now) {
-    if (prefix_length > 32)
+    if (!valid_prefix_length(prefix, prefix_length))
         return false;
-    const uint32_t canonical = prefix & prefix_mask(prefix_length);
+    const IPAddress canonical = canonical_prefix(prefix, prefix_length);
     std::lock_guard<std::mutex> lock(mtx_);
     const auto route = std::find_if(routes_.begin(), routes_.end(),
         [&](const Route& candidate) {
@@ -146,12 +153,13 @@ bool RoutingEngine::mark_probe_sent(
 
 bool RoutingEngine::record_probe_success(
     const NodeId& destination, const NodeId& next_hop,
-    uint32_t prefix, uint32_t prefix_length, uint64_t sequence,
+    IPAddress prefix, uint32_t prefix_length, uint64_t sequence,
     ProtocolClock::time_point now,
     std::chrono::steady_clock::duration rtt) {
-    if (prefix_length > 32 || rtt < std::chrono::steady_clock::duration::zero())
+    if (!valid_prefix_length(prefix, prefix_length) ||
+        rtt < std::chrono::steady_clock::duration::zero())
         return false;
-    const uint32_t canonical = prefix & prefix_mask(prefix_length);
+    const IPAddress canonical = canonical_prefix(prefix, prefix_length);
     std::lock_guard<std::mutex> lock(mtx_);
     const auto route = std::find_if(routes_.begin(), routes_.end(),
         [&](const Route& candidate) {
@@ -178,11 +186,11 @@ bool RoutingEngine::record_probe_success(
 
 bool RoutingEngine::record_probe_failure(
     const NodeId& destination, const NodeId& next_hop,
-    uint32_t prefix, uint32_t prefix_length, uint64_t sequence,
+    IPAddress prefix, uint32_t prefix_length, uint64_t sequence,
     ProtocolClock::time_point now) {
-    if (prefix_length > 32)
+    if (!valid_prefix_length(prefix, prefix_length))
         return false;
-    const uint32_t canonical = prefix & prefix_mask(prefix_length);
+    const IPAddress canonical = canonical_prefix(prefix, prefix_length);
     std::lock_guard<std::mutex> lock(mtx_);
     const auto route = std::find_if(routes_.begin(), routes_.end(),
         [&](const Route& candidate) {
@@ -207,15 +215,16 @@ void RoutingEngine::clear() {
     routes_.clear();
 }
 
-std::optional<Route> RoutingEngine::find_route(uint32_t dest_ip) const {
+std::optional<Route> RoutingEngine::find_route(const IPAddress& dest_ip) const {
     std::lock_guard<std::mutex> lock(mtx_);
     const Route* best = nullptr;
 
     for (const auto& route : routes_) {
         if (route.probe_failed)
             continue;
-        uint32_t mask = prefix_mask(route.prefix_length);
-        if ((dest_ip & mask) != (route.prefix & mask)) continue;
+        if (!IPPrefix(route.prefix,
+                      static_cast<uint8_t>(route.prefix_length)).contains(dest_ip))
+            continue;
 
         if (!best) {
             best = &route;
@@ -257,13 +266,13 @@ std::optional<Route> RoutingEngine::find_route(uint32_t dest_ip) const {
     return *best;
 }
 
-std::optional<NodeId> RoutingEngine::find_peer(uint32_t dest_ip) const {
+std::optional<NodeId> RoutingEngine::find_peer(const IPAddress& dest_ip) const {
     auto route = find_route(dest_ip);
     if (!route) return std::nullopt;
     return route->destination;
 }
 
-std::optional<NodeId> RoutingEngine::find_next_hop(uint32_t dest_ip) const {
+std::optional<NodeId> RoutingEngine::find_next_hop(const IPAddress& dest_ip) const {
     auto route = find_route(dest_ip);
     if (!route) return std::nullopt;
     return route->next_hop;

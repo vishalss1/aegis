@@ -1,6 +1,7 @@
 #pragma once
 
 #include "aegis/identity/identity.hpp"
+#include "aegis/net/ip_address.hpp"
 #include "aegis/protocol/sources.hpp"
 #include <chrono>
 #include <cstddef>
@@ -35,7 +36,7 @@ struct PathProbeMessage {
 struct PathProbeTarget {
     NodeId destination{};
     NodeId next_hop{};
-    uint32_t prefix = 0;
+    IPAddress prefix{};
     uint32_t prefix_length = 0;
     uint64_t route_sequence = 0;
 

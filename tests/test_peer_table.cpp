@@ -54,24 +54,25 @@ int main() {
         CHECK(wire.has_value());
         CHECK(wire && wire->size() >= 3);
         if (wire) {
-            CHECK((*wire)[0] == 0x03);
+            CHECK((*wire)[0] == 0x04);
             CHECK((*wire)[1] == 0x00 && (*wire)[2] == 0x02);
             CHECK((*wire)[67] == 0x00);  // first peer has no path hops
             CHECK((*wire)[68] == 0x00);  // reserved flags are canonical zero
             CHECK((*wire)[69] == 0x02);  // two advertised prefixes
-            CHECK((*wire)[70] == 10 && (*wire)[71] == 30 &&
-                  (*wire)[72] == 0 && (*wire)[73] == 0);
-            CHECK((*wire)[74] == 24);
+            CHECK((*wire)[70] == static_cast<uint8_t>(IPAddressFamily::IPv4));
+            CHECK((*wire)[71] == 10 && (*wire)[72] == 30 &&
+                  (*wire)[73] == 0 && (*wire)[74] == 0);
+            CHECK((*wire)[87] == 24);
 
             auto zero_sequence = *wire;
-            std::fill(zero_sequence.begin() + 75,
-                      zero_sequence.begin() + 83, 0);
+            std::fill(zero_sequence.begin() + 88,
+                      zero_sequence.begin() + 96, 0);
             CHECK(!deserialize_peer_table(
                 zero_sequence.data(), zero_sequence.size()).has_value());
 
             auto zero_lease = *wire;
-            std::fill(zero_lease.begin() + 83,
-                      zero_lease.begin() + 87, 0);
+            std::fill(zero_lease.begin() + 96,
+                      zero_lease.begin() + 100, 0);
             CHECK(!deserialize_peer_table(
                 zero_lease.data(), zero_lease.size()).has_value());
         }
@@ -99,6 +100,36 @@ int main() {
         }
     }
 
+    // ---- IPv6 prefix family and all 128 bits survive gossip ---------------
+    {
+        AdvertisedPeer source;
+        source.node_id = charlie.node_id;
+        source.public_key = charlie.keypair.public_key;
+        const IPAddress network = IPAddress::from_ipv6({
+            0x20, 0x01, 0x0d, 0xb8, 0xaa, 0xbb, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0});
+        source.prefixes.emplace_back(network, 48);
+        const auto wire = serialize_peer_table({source});
+        CHECK(wire.has_value());
+        const auto decoded = wire
+            ? deserialize_peer_table(wire->data(), wire->size())
+            : std::nullopt;
+        CHECK(decoded.has_value());
+        CHECK(decoded && decoded->front().prefixes.front().prefix == network);
+        CHECK(decoded && decoded->front().prefixes.front().prefix_length == 48);
+        if (decoded) {
+            PeerManager peers;
+            RoutingEngine routes;
+            const auto stats = merge_peer_table(
+                peers, routes, *decoded, bob.node_id, alice.node_id);
+            CHECK(stats.routes_installed == 1);
+            const auto destination = IPAddress::from_ipv6({
+                0x20, 0x01, 0x0d, 0xb8, 0xaa, 0xbb, 0x12, 0x34,
+                0, 0, 0, 0, 0, 0, 0, 1});
+            CHECK(routes.find_peer(destination) == charlie.node_id);
+        }
+    }
+
     // ---- 2. Truncated / bad-version input is rejected ------------------------
     {
         std::vector<uint8_t> bad = {0x00, 0x00, 0x01};
@@ -107,6 +138,9 @@ int main() {
         CHECK(!deserialize_peer_table(truncated.data(), truncated.size()).has_value());
         std::vector<uint8_t> bad_version = {0x01, 0x00, 0x00};
         CHECK(!deserialize_peer_table(bad_version.data(), bad_version.size()).has_value());
+        std::vector<uint8_t> legacy_v3 = {0x03, 0x00, 0x00};
+        CHECK(deserialize_peer_table(
+            legacy_v3.data(), legacy_v3.size()).has_value());
 
         std::vector<uint8_t> trailing = {0x02, 0x00, 0x00, 0xFF};
         CHECK(!deserialize_peer_table(
@@ -607,7 +641,7 @@ int main() {
             updates.push_back(std::move(update));
         }
 
-        constexpr size_t test_payload_budget = 500;
+        constexpr size_t test_payload_budget = 700;
         const auto batches = make_gossip_batches(
             updates, test_payload_budget);
         CHECK(batches.size() >= 2);
@@ -655,7 +689,7 @@ int main() {
         }
         PeerManager split_peers;
         RoutingEngine split_routes;
-        for (const auto& batch : make_gossip_batches({split_update}, 500)) {
+        for (const auto& batch : make_gossip_batches({split_update}, 700)) {
             const auto stats = merge_peer_table(
                 split_peers, split_routes, batch.peers,
                 bob.node_id, alice.node_id);

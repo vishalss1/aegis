@@ -73,7 +73,7 @@ int main() {
         CHECK(!Discovery::parse_presence(bad_type.data(), bad_type.size()).has_value());
 
         std::vector<uint8_t> bad_version = frame;
-        bad_version[0] = 0x02;
+        bad_version[0] = 0x03;
         CHECK(!Discovery::parse_presence(
             bad_version.data(), bad_version.size()).has_value());
     }

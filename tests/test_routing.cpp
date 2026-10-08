@@ -90,6 +90,49 @@ int main() {
         CHECK(*fp == *nh);
     }
 
+    // ---- IPv6 prefixes are family-separated and use 128-bit LPM ------------
+    {
+        RoutingEngine re;
+        const auto parsed = IPAddress::parse("2001:db8:1234::1");
+        CHECK(parsed.has_value());
+        CHECK(parsed && parsed->family == IPAddressFamily::IPv6);
+        CHECK(parsed && parsed->bytes[0] == 0x20 &&
+              parsed->bytes[1] == 0x01 && parsed->bytes[15] == 1);
+        CHECK(!IPAddress::parse("2001:db8::1::2").has_value());
+        CHECK(!IPAddress::parse("2001:db8::1:").has_value());
+        CHECK(!IPAddress::parse("192.0.2.1.").has_value());
+        const auto parsed_v4 = IPAddress::parse("192.0.2.9");
+        CHECK(parsed_v4 && *parsed_v4 == make_ip(192, 0, 2, 9));
+        const auto address = [](std::array<uint8_t, 16> bytes) {
+            return IPAddress::from_ipv6(bytes);
+        };
+        const IPAddress broad = address({0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0,
+                                         0, 0, 0, 0, 0, 0, 0, 0});
+        const IPAddress narrow = address({0x20, 0x01, 0x0d, 0xb8, 0x12, 0x34,
+                                          0, 0, 0, 0, 0, 0, 0, 0, 0, 0});
+        const IPAddress destination = address({0x20, 0x01, 0x0d, 0xb8, 0x12,
+                                               0x34, 0xab, 0xcd, 0, 0, 0, 0,
+                                               0, 0, 0, 1});
+        Route broad_route = make_direct(0, 32, p1);
+        broad_route.prefix = broad;
+        Route narrow_route = make_direct(0, 48, p2);
+        narrow_route.prefix = narrow;
+        CHECK(re.add_route(broad_route));
+        CHECK(re.add_route(narrow_route));
+        CHECK(re.find_peer(destination).has_value());
+        CHECK(*re.find_peer(destination) == p2);
+        CHECK(!re.find_peer(make_ip(32, 1, 13, 184)).has_value());
+
+        Route invalid = make_direct(0, 129, p1);
+        invalid.prefix = broad;
+        CHECK(!re.add_route(invalid));
+
+        IPPrefix canonical(narrow, 48);
+        CHECK(canonical.valid());
+        CHECK(canonical.contains(destination));
+        CHECK(!canonical.contains(IPAddress::from_ipv4(make_ip(32, 1, 13, 184))));
+    }
+
     // ---- 2. Relay next-hop abstraction --------------------------------------
     {
         RoutingEngine re;

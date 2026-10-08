@@ -1,6 +1,7 @@
 #pragma once
 
 #include "aegis/identity/identity.hpp"
+#include "aegis/net/ip_address.hpp"
 #include "aegis/protocol/sources.hpp"
 #include <chrono>
 #include <cstddef>
@@ -17,7 +18,7 @@ enum class NextHopType {
 };
 
 struct Route {
-    uint32_t prefix = 0;
+    IPAddress prefix{};
     uint32_t prefix_length = 0;
     NextHopType type = NextHopType::Unknown;
     NodeId next_hop{};      // peer to forward to (== destination for Direct)
@@ -62,27 +63,36 @@ public:
     bool add_route(const Route& route);
     void remove_route(const NodeId& peer_id);
     size_t remove_older_learned_routes(
-        const NodeId& origin, uint32_t prefix, uint32_t prefix_length,
+        const NodeId& origin, IPAddress prefix, uint32_t prefix_length,
         uint64_t minimum_sequence);
     size_t expire_learned_routes(ProtocolClock::time_point now);
     bool mark_probe_sent(
         const NodeId& destination, const NodeId& next_hop,
-        uint32_t prefix, uint32_t prefix_length, uint64_t sequence,
+        IPAddress prefix, uint32_t prefix_length, uint64_t sequence,
         ProtocolClock::time_point now);
     bool record_probe_success(
         const NodeId& destination, const NodeId& next_hop,
-        uint32_t prefix, uint32_t prefix_length, uint64_t sequence,
+        IPAddress prefix, uint32_t prefix_length, uint64_t sequence,
         ProtocolClock::time_point now,
         std::chrono::steady_clock::duration rtt);
     bool record_probe_failure(
         const NodeId& destination, const NodeId& next_hop,
-        uint32_t prefix, uint32_t prefix_length, uint64_t sequence,
+        IPAddress prefix, uint32_t prefix_length, uint64_t sequence,
         ProtocolClock::time_point now);
     void clear();
 
-    std::optional<Route> find_route(uint32_t dest_ip) const;
-    std::optional<NodeId> find_peer(uint32_t dest_ip) const;
-    std::optional<NodeId> find_next_hop(uint32_t dest_ip) const;
+    std::optional<Route> find_route(const IPAddress& dest_ip) const;
+    std::optional<Route> find_route(uint32_t dest_ip) const {
+        return find_route(IPAddress::from_ipv4(dest_ip));
+    }
+    std::optional<NodeId> find_peer(const IPAddress& dest_ip) const;
+    std::optional<NodeId> find_peer(uint32_t dest_ip) const {
+        return find_peer(IPAddress::from_ipv4(dest_ip));
+    }
+    std::optional<NodeId> find_next_hop(const IPAddress& dest_ip) const;
+    std::optional<NodeId> find_next_hop(uint32_t dest_ip) const {
+        return find_next_hop(IPAddress::from_ipv4(dest_ip));
+    }
 
     size_t size() const;
     bool empty() const;

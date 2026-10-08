@@ -142,8 +142,11 @@ per peer, and 16 prefixes per peer. The decoder requires complete frame
 consumption, canonical network-byte-order integers, and zero-valued reserved
 flags. Merge results separately report accepted identities, changed peer
 bindings, installed routes, malformed data, stale sequences, identity
-conflicts, and capacity rejection. Version-3 prefix records include a nonzero
-origin sequence, a 1–600 second lease, and a bounded metric. The origin is
+conflicts, and capacity rejection. Version-4 prefix records carry an explicit
+IPv4/IPv6 family and a 16-byte address slot; the decoder also accepts version 3
+IPv4-only records for migration, while all new serialization emits version 4.
+Prefix records include a nonzero origin sequence, a 1–600 second lease, and a
+bounded metric. The origin is
 bound to the advertised NodeID, the advertiser to the authenticated adjacent
 sender, and validation time to the receiver's monotonic clock. These fields
 remain hop-authenticated rather than origin-signed.
