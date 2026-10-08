@@ -133,30 +133,37 @@ int main() {
 
     // 10. Physical-wire overhead follows route encapsulation depth
     {
+        CHECK(PACKET_VERSION == 2);
+        CHECK(session_padded_plaintext_size(0) == 64);
+        CHECK(session_padded_plaintext_size(62) == 64);
+        CHECK(session_padded_plaintext_size(63) == 128);
+        CHECK(session_padded_plaintext_size(
+                  SESSION_MAX_LOGICAL_PAYLOAD_SIZE) ==
+              SESSION_MAX_PAYLOAD_SIZE);
         CHECK(OUTER_IPV4_UDP_OVERHEAD == 28);
-        CHECK(SESSION_FRAME_OVERHEAD == 44);
+        CHECK(SESSION_FRAME_OVERHEAD == 109);
         CHECK(RELAY_SOURCE_OVERHEAD == 33);
         CHECK(ONION_OVERHEAD == 60);
 
         const auto direct = wire_overhead_for_route_depth(1);
         CHECK(direct.has_value());
-        CHECK(direct && *direct == 72);
+        CHECK(direct && *direct == 137);
 
         const auto two_hop = wire_overhead_for_route_depth(2);
         const auto three_hop = wire_overhead_for_route_depth(3);
-        CHECK(two_hop && *two_hop == 225);
-        CHECK(three_hop && *three_hop == 285);
+        CHECK(two_hop && *two_hop == 290);
+        CHECK(three_hop && *three_hop == 350);
         CHECK(two_hop && three_hop && *three_hop - *two_hop == 60);
 
         const auto maximum =
             wire_overhead_for_route_depth(ONION_MAX_HOPS);
-        CHECK(maximum && *maximum == 585);
+        CHECK(maximum && *maximum == 650);
         CHECK(!wire_overhead_for_route_depth(0).has_value());
         CHECK(!wire_overhead_for_route_depth(
             ONION_MAX_HOPS + 1).has_value());
 
         constexpr std::array<size_t, ONION_MAX_HOPS> expected_mtu = {
-            1428, 1275, 1215, 1155, 1095, 1035, 975, 915
+            1363, 1210, 1150, 1090, 1030, 970, 910, 850
         };
         for (size_t depth = 1; depth <= ONION_MAX_HOPS; ++depth) {
             const auto overhead = wire_overhead_for_route_depth(depth);
@@ -170,9 +177,9 @@ int main() {
                   *mtu + 1 + *overhead > DEFAULT_UNDERLAY_MTU);
         }
 
-        CHECK(safe_overlay_mtu(1161, ONION_MAX_HOPS) ==
+        CHECK(safe_overlay_mtu(1226, ONION_MAX_HOPS) ==
               MINIMUM_IPV4_MTU);
-        CHECK(!safe_overlay_mtu(1160, ONION_MAX_HOPS).has_value());
+        CHECK(!safe_overlay_mtu(1225, ONION_MAX_HOPS).has_value());
         CHECK(!safe_overlay_mtu(MAXIMUM_IPV4_MTU + 1, 1).has_value());
     }
 

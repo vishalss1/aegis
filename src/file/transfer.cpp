@@ -341,7 +341,7 @@ std::optional<std::string> sanitize_file_name(std::string_view path) {
 std::optional<uint32_t> file_chunk_size_for_overlay_mtu(
     size_t overlay_mtu) noexcept {
     const size_t payload_budget =
-        (std::min)(overlay_mtu, SESSION_MAX_PAYLOAD_SIZE);
+        (std::min)(overlay_mtu, SESSION_MAX_LOGICAL_PAYLOAD_SIZE);
     if (payload_budget < FILE_CHUNK_FIXED_SIZE +
                              FILE_TRANSFER_MIN_CHUNK_SIZE)
         return std::nullopt;

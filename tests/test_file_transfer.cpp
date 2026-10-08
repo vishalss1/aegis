@@ -131,10 +131,10 @@ int main() {
 
     const auto direct_mtu = safe_overlay_mtu(1500, DIRECT_ROUTE_DEPTH);
     const auto relayed_mtu = safe_overlay_mtu(1500, ONION_MAX_HOPS);
-    CHECK(direct_mtu && *direct_mtu == 1428);
-    CHECK(relayed_mtu && *relayed_mtu == 915);
-    CHECK(direct_mtu && file_chunk_size_for_overlay_mtu(*direct_mtu) == 1412);
-    CHECK(relayed_mtu && file_chunk_size_for_overlay_mtu(*relayed_mtu) == 899);
+    CHECK(direct_mtu && *direct_mtu == 1363);
+    CHECK(relayed_mtu && *relayed_mtu == 850);
+    CHECK(direct_mtu && file_chunk_size_for_overlay_mtu(*direct_mtu) == 1347);
+    CHECK(relayed_mtu && file_chunk_size_for_overlay_mtu(*relayed_mtu) == 834);
     CHECK(file_chunk_size_for_overlay_mtu(576) == 560);
     CHECK(file_chunk_size_for_overlay_mtu(527) == std::nullopt);
     CHECK(file_chunk_size_for_overlay_mtu(65535) ==
@@ -147,7 +147,7 @@ int main() {
         CHECK(mtu && capacity &&
               static_cast<size_t>(*capacity) + FILE_CHUNK_FIXED_SIZE <= *mtu &&
               static_cast<size_t>(*capacity) + FILE_CHUNK_FIXED_SIZE <=
-                  SESSION_MAX_PAYLOAD_SIZE);
+                  SESSION_MAX_LOGICAL_PAYLOAD_SIZE);
     }
 
     const FileTransferChunk chunk{

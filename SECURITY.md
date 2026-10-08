@@ -314,6 +314,10 @@ timeouts, packet loss, hairpin behavior, or vendor-specific filtering.
   grant. The initial grant/key still requires out-of-band trust. Active
   sessions are not bound to enrollment nonces, so notices do not yet enforce
   disconnect or deny access.
+- Session plaintext now carries an authenticated logical length and random
+  padding to 64-byte size buckets. This reduces payload-size precision but
+  does not hide packet timing, volume, or the selected size bucket. Packet
+  version 2 is fail-closed against older version-1 peers.
 - The overlay is IPv4-only.
 
 ### LAN discovery is unauthenticated

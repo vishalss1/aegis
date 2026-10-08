@@ -23,7 +23,8 @@ inline constexpr size_t FILE_ACK_MAX_RANGES = 32;
 inline constexpr size_t FILE_TRANSFER_MAX_NAME_BYTES = 255;
 inline constexpr uint32_t FILE_TRANSFER_MIN_CHUNK_SIZE = 512;
 inline constexpr uint32_t FILE_TRANSFER_MAX_CHUNK_SIZE =
-    static_cast<uint32_t>(SESSION_MAX_PAYLOAD_SIZE - FILE_CHUNK_FIXED_SIZE);
+    static_cast<uint32_t>(
+        SESSION_MAX_LOGICAL_PAYLOAD_SIZE - FILE_CHUNK_FIXED_SIZE);
 inline constexpr uint64_t FILE_TRANSFER_MAX_FILE_SIZE =
     1024ULL * 1024ULL * 1024ULL;
 inline constexpr uint32_t FILE_TRANSFER_MAX_CHUNKS =

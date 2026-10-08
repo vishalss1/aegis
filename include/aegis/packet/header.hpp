@@ -18,7 +18,7 @@ struct PacketHeader {
 };
 #pragma pack(pop)
 
-static constexpr uint8_t PACKET_VERSION = 0x01;
+static constexpr uint8_t PACKET_VERSION = 0x02;
 
 static constexpr uint8_t TYPE_HANDSHAKE_INIT = 0x00;
 static constexpr uint8_t TYPE_HANDSHAKE_RESP = 0x01;
@@ -44,6 +44,20 @@ static constexpr uint8_t FLAG_FRAGMENTED = 0x02;
 
 static constexpr size_t PACKET_HEADER_SIZE = 16;
 static constexpr size_t SESSION_MAX_PAYLOAD_SIZE = 4096;
+static constexpr size_t SESSION_PADDING_BUCKET_SIZE = 64;
+static constexpr size_t SESSION_LENGTH_PREFIX_SIZE = 2;
+static constexpr size_t SESSION_MAX_PADDING_SIZE =
+    SESSION_PADDING_BUCKET_SIZE - 1;
+static constexpr size_t SESSION_MAX_LOGICAL_PAYLOAD_SIZE =
+    SESSION_MAX_PAYLOAD_SIZE - SESSION_LENGTH_PREFIX_SIZE;
+
+[[nodiscard]] constexpr size_t session_padded_plaintext_size(
+    size_t logical_payload_size) noexcept {
+    const size_t prefixed_size =
+        logical_payload_size + SESSION_LENGTH_PREFIX_SIZE;
+    return ((prefixed_size + SESSION_PADDING_BUCKET_SIZE - 1) /
+            SESSION_PADDING_BUCKET_SIZE) * SESSION_PADDING_BUCKET_SIZE;
+}
 static constexpr uint8_t PACKET_KNOWN_FLAGS = FLAG_RELAY | FLAG_FRAGMENTED;
 
 inline std::array<uint8_t, PACKET_HEADER_SIZE> serialize_packet_header(

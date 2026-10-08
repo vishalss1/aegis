@@ -506,13 +506,28 @@ std::optional<std::vector<uint8_t>> SessionManager::encrypt_message(
     const uint8_t* plaintext, size_t pt_len, uint8_t flags)
 {
     if ((pt_len > 0 && !plaintext) ||
-        pt_len > SESSION_MAX_PAYLOAD_SIZE ||
+        pt_len > SESSION_MAX_LOGICAL_PAYLOAD_SIZE ||
         pt_len > static_cast<size_t>((std::numeric_limits<uint32_t>::max)()))
         return std::nullopt;
+
+    const size_t padded_size = session_padded_plaintext_size(pt_len);
+    if (padded_size > SESSION_MAX_PAYLOAD_SIZE)
+        return std::nullopt;
+    std::vector<uint8_t> protected_payload(padded_size);
+    WireWriter payload_writer(protected_payload);
+    if (!payload_writer.write_u16(static_cast<uint16_t>(pt_len)) ||
+        (pt_len > 0 && !payload_writer.write_bytes(
+            std::span<const uint8_t>(plaintext, pt_len))))
+        return std::nullopt;
+    const size_t padding_size = payload_writer.remaining();
 
     std::lock_guard<std::mutex> lock(mtx_);
     SessionState* sess = find_session_locked(peer_id);
     if (!sess)
+        return std::nullopt;
+    if (padding_size > 0 && !random_.fill(
+            std::span<uint8_t>(protected_payload).subspan(
+                payload_writer.position(), padding_size)))
         return std::nullopt;
 
     uint64_t send_seq = sess->send_seq++;
@@ -538,23 +553,23 @@ std::optional<std::vector<uint8_t>> SessionManager::encrypt_message(
     hdr.reserved = 0;
     hdr.session_id = sess->id;
     hdr.sequence_number = (uint32_t)(send_seq & 0xFFFFFFFF);
-    hdr.payload_length = (uint32_t)pt_len;
+    hdr.payload_length = static_cast<uint32_t>(protected_payload.size());
 
     auto hdr_bytes = serialize_header(hdr);
 
     if (!chacha20_poly1305_encrypt(
             sess->send_key, nonce,
-            plaintext, pt_len, ct_buf, tag_buf,
+            protected_payload.data(), protected_payload.size(), ct_buf, tag_buf,
             hdr_bytes.data(), hdr_bytes.size())) {
         aegis_log( "[session] encrypt failed\n");
         return std::nullopt;
     }
 
     std::vector<uint8_t> out;
-    out.reserve(16 + 12 + pt_len + 16);
+    out.reserve(16 + 12 + protected_payload.size() + 16);
     out.insert(out.end(), hdr_bytes.begin(), hdr_bytes.end());
     out.insert(out.end(), nonce.begin(), nonce.end());
-    out.insert(out.end(), ct_buf, ct_buf + pt_len);
+    out.insert(out.end(), ct_buf, ct_buf + protected_payload.size());
     out.insert(out.end(), tag_buf, tag_buf + CHACHA20_POLY1305_TAG_SIZE);
 
     return out;
@@ -563,7 +578,8 @@ std::optional<std::vector<uint8_t>> SessionManager::encrypt_message(
 std::optional<SessionManager::DecryptedMessage> SessionManager::decrypt_message(
     const uint8_t* data, size_t len)
 {
-    if (len < 16 + 12 + CHACHA20_POLY1305_TAG_SIZE) {
+    if (len < 16 + 12 + SESSION_PADDING_BUCKET_SIZE +
+                  CHACHA20_POLY1305_TAG_SIZE) {
         aegis_log( "[session] decrypt: packet too small (%zu)\n", len);
         return std::nullopt;
     }
@@ -581,6 +597,10 @@ std::optional<SessionManager::DecryptedMessage> SessionManager::decrypt_message(
     }
 
     size_t ct_len = hdr.payload_length;
+    if (ct_len < SESSION_PADDING_BUCKET_SIZE ||
+        ct_len > SESSION_MAX_PAYLOAD_SIZE ||
+        ct_len % SESSION_PADDING_BUCKET_SIZE != 0)
+        return std::nullopt;
     if (16 + 12 + ct_len + 16 != len) {
         aegis_log( "[session] decrypt: length mismatch (hdr=%u, wire=%zu)\n",
                 hdr.payload_length, len);
@@ -626,9 +646,20 @@ std::optional<SessionManager::DecryptedMessage> SessionManager::decrypt_message(
 
     update_replay(*sess, wire_seq);
 
+    WireReader payload_reader(std::span<const uint8_t>(pt_buf, ct_len));
+    const auto logical_length = payload_reader.read_u16();
+    if (!logical_length ||
+        *logical_length > SESSION_MAX_LOGICAL_PAYLOAD_SIZE ||
+        session_padded_plaintext_size(*logical_length) != ct_len)
+        return std::nullopt;
+    const auto logical_payload = payload_reader.read_bytes(*logical_length);
+    const auto padding = payload_reader.read_bytes(payload_reader.remaining());
+    if (!logical_payload || !padding || !payload_reader.finished())
+        return std::nullopt;
+
     DecryptedMessage out;
     out.packet_type = hdr.packet_type;
-    out.payload.assign(pt_buf, pt_buf + ct_len);
+    out.payload.assign(logical_payload->begin(), logical_payload->end());
     return out;
 }
 

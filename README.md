@@ -514,8 +514,11 @@ overlay MTU = underlay_mtu - wire overhead(max_relay_depth)
 ```
 
 Configuration is rejected unless the result is at least IPv4's 576-byte
-minimum reassembly size. For example, an eight-hop route requires an underlay
-MTU of at least 1,160 bytes.
+minimum reassembly size. Session plaintext is now encoded as a two-byte
+authenticated logical length, payload, and random padding to a 64-byte bucket.
+The session header version is 2; older packet-version peers fail closed. The
+worst-case padding allowance means an eight-hop route requires an underlay MTU
+of at least 1,226 bytes.
 
 ### Wire-overhead calculation
 
@@ -523,7 +526,7 @@ MTU of at least 1,160 bytes.
 |:--|--:|:--|
 | Outer IPv4 header | 20 | Every packet |
 | Outer UDP header | 8 | Every packet |
-| Encrypted session frame | 44 | Every packet: 16-byte header, 12-byte nonce, 16-byte tag |
+| Encrypted session frame | 109 | Worst case: 44-byte header/nonce/tag + 2-byte logical length + up to 63 padding bytes |
 | Relay source NodeID | 32 | Relayed packets only |
 | Relay content class | 1 | Relayed packets only: IP packet or path probe |
 | Onion layer | 60 per hop | Relayed packets only: 32-byte next hop, 12-byte nonce, 16-byte tag |
@@ -531,22 +534,22 @@ MTU of at least 1,160 bytes.
 For route depth `d`:
 
 ```text
-direct (d = 1):   wire overhead = 28 + 44 = 72
-relayed (d >= 2): wire overhead = 28 + 44 + 33 + (60 * d)
+direct (d = 1):   wire overhead = 28 + 109 = 137
+relayed (d >= 2): wire overhead = 28 + 109 + 33 + (60 * d)
 ```
 
 With the default 1,500-byte underlay MTU, the complete budget is:
 
 | Route depth | Route type | Wire overhead | Safe overlay MTU |
 |--:|:--|--:|--:|
-| 1 | Direct | 72 | 1,428 |
-| 2 | Relayed | 225 | 1,275 |
-| 3 | Relayed | 285 | 1,215 |
-| 4 | Relayed | 345 | 1,155 |
-| 5 | Relayed | 405 | 1,095 |
-| 6 | Relayed | 465 | 1,035 |
-| 7 | Relayed | 525 | 975 |
-| 8 | Relayed | 585 | 915 |
+| 1 | Direct | 137 | 1,363 |
+| 2 | Relayed | 290 | 1,210 |
+| 3 | Relayed | 350 | 1,150 |
+| 4 | Relayed | 410 | 1,090 |
+| 5 | Relayed | 470 | 1,030 |
+| 6 | Relayed | 530 | 970 |
+| 7 | Relayed | 590 | 910 |
+| 8 | Relayed | 650 | 850 |
 
 The configured Wintun MTU uses the row for `max_relay_depth`. Outbound
 processing also checks the resolved route's actual depth before encryption.

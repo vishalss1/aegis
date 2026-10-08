@@ -153,7 +153,8 @@ int main() {
         CHECK(enc.has_value());
 
         // Wire format: [16 header][12 nonce][ct][16 tag]
-        CHECK(enc->size() == 16 + 12 + pt_len + 16);
+        CHECK(enc->size() == 16 + 12 +
+              session_padded_plaintext_size(pt_len) + 16);
 
         // B decrypts
         auto dec = sm_b.decrypt_data(enc->data(), enc->size());
@@ -174,7 +175,8 @@ int main() {
         CHECK(dec2.has_value());
         CHECK(std::memcmp(dec2->data(), reply, sizeof(reply)) == 0);
 
-        std::vector<uint8_t> oversized(4097, 0x5a);
+        std::vector<uint8_t> oversized(
+            SESSION_MAX_LOGICAL_PAYLOAD_SIZE + 1, 0x5a);
         CHECK(!sm_a.encrypt_data(
             bob.node_id, oversized.data(), oversized.size()).has_value());
     }
