@@ -61,6 +61,7 @@ set(AEGIS_SOURCES
     src/main.cpp
     src/adapter/adapter.cpp
     src/identity/identity.cpp
+    src/identity/revocation.cpp
     src/crypto/x25519.cpp
     src/crypto/chacha20poly1305.cpp
     src/crypto/primitives.cpp

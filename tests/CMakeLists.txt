@@ -68,6 +68,11 @@ target_include_directories(test_identity PRIVATE ../include)
 target_link_libraries(test_identity OpenSSL::Crypto)
 add_test(NAME test_identity COMMAND test_identity)
 
+add_executable(test_revocation test_revocation.cpp ../src/identity/revocation.cpp ../src/identity/identity.cpp ../src/crypto/x25519.cpp)
+target_include_directories(test_revocation PRIVATE ../include)
+target_link_libraries(test_revocation OpenSSL::Crypto)
+add_test(NAME test_revocation COMMAND test_revocation)
+
 add_executable(test_tunnel test_tunnel.cpp ../src/crypto/chacha20poly1305.cpp)
 target_include_directories(test_tunnel PRIVATE ../include)
 target_link_libraries(test_tunnel OpenSSL::Crypto)
@@ -163,6 +168,7 @@ target_link_libraries(test_nat_simulation OpenSSL::Crypto ws2_32)
 add_test(NAME test_nat_simulation COMMAND test_nat_simulation)
 
 add_executable(test_cli test_cli.cpp ../src/cli/input_parser.cpp ../src/cli/command_registry.cpp ../src/cli/commands.cpp ../src/cli/identity_store.cpp ../src/identity/identity.cpp ../src/crypto/x25519.cpp ../src/crypto/chacha20poly1305.cpp ../src/crypto/primitives.cpp ../src/crypto/random.cpp ../src/config/config.cpp ../src/invite/invite.cpp ../src/platform/platform.cpp ../src/platform/logger.cpp ../src/tunnel/tunnel.cpp ../src/file/transfer.cpp ../src/peer/peer.cpp ../src/peer/gossip.cpp ../src/peer/peer_table.cpp ../src/session/session.cpp ../src/session/handshake_v2.cpp ../src/session/noise_ik.cpp ../src/adapter/adapter.cpp ../src/packet/packet.cpp ../src/packet/relay.cpp ../src/packet/relay_limiter.cpp ../src/routing/routing.cpp ../src/routing/path_probe.cpp ../src/protocol/endpoint_candidate.cpp ../src/protocol/endpoint_punch.cpp ../src/transport/handshake_cookie.cpp ../src/transport/handshake_rate_limiter.cpp ../src/transport/transport.cpp ../src/discovery/discovery.cpp ../src/stun/stun.cpp)
+target_sources(test_cli PRIVATE ../src/identity/revocation.cpp)
 target_include_directories(test_cli PRIVATE ../include)
 target_link_libraries(test_cli OpenSSL::Crypto NoiseC::Protocol ws2_32 wintun iphlpapi)
 add_test(NAME test_cli COMMAND test_cli)
@@ -181,6 +187,7 @@ set(AEGIS_TEST_TARGETS
     test_secret
     test_aead
     test_identity
+    test_revocation
     test_tunnel
     test_session
     test_peer
@@ -214,6 +221,7 @@ add_custom_target(check
     COMMAND test_secret
     COMMAND test_aead
     COMMAND test_identity
+    COMMAND test_revocation
     COMMAND test_tunnel
     COMMAND test_session
     COMMAND test_peer

@@ -1015,6 +1015,8 @@ static int run_config(const std::string& path) {
             if (!tcfg.identity)
                 tcfg.identity = Identity::create(grant->network_id);
             tcfg.identity->creator_node_id = grant->issuer_node_id;
+            tcfg.trusted_membership_issuer =
+                grant->issuer_signing_public_key;
             for (const auto& candidate : grant->bootstrap_candidates) {
                 TunnelPeer tp;
                 tp.node_id = hash_public_key(candidate.x25519_public_key);

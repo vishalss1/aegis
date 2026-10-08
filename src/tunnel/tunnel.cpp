@@ -332,6 +332,7 @@ void Tunnel::connect_loop(const TunnelPeer& peer) {
             install_configured_routes(peer);
             send_peer_table(peer.node_id, /*force_full=*/true);
             announce_peer_table(peer.node_id);
+            announce_membership_revocations();
             backoff_ms = CONNECT_BACKOFF_BASE_MS;
 
             std::unique_lock<std::mutex> lock(hs_mtx_);
@@ -648,6 +649,8 @@ void Tunnel::gossip_loop() {
         // Deltas propagate changed knowledge without repeating the complete
         // table. A periodic full resync repairs a delta lost by UDP.
         announce_peer_table(std::nullopt, force_full);
+        if (force_full)
+            announce_membership_revocations();
     }
     aegis_log( "[tunnel] gossip loop ended\n");
 }
@@ -811,6 +814,9 @@ void Tunnel::rx_callback(const uint8_t* data, size_t len, Endpoint sender) {
     case TYPE_PEER_TABLE:
         handle_peer_table_frame(data, len, *header, sender);
         break;
+    case TYPE_MEMBERSHIP_REVOCATION:
+        handle_membership_revocation_frame(data, len, *header, sender);
+        break;
     case TYPE_CHAT_MSG:
         handle_chat_frame(data, len, *header, sender);
         break;
@@ -891,6 +897,82 @@ void Tunnel::handle_peer_table_frame(const uint8_t* data, size_t len,
     if (!sess) return;
     peers_.mark_seen(sess->peer_id, sender);
     handle_peer_table(sess->peer_id, msg->payload.data(), msg->payload.size());
+}
+
+void Tunnel::handle_membership_revocation_frame(
+    const uint8_t* data, size_t len, const PacketHeader& header,
+    Endpoint sender) {
+    if (!running_) return;
+    const auto msg = session_manager_->decrypt_message(data, len);
+    if (!msg || msg->packet_type != TYPE_MEMBERSHIP_REVOCATION) return;
+    const auto session = session_manager_->get_session_by_id(header.session_id);
+    const auto revocations = deserialize_membership_revocations(
+        msg->payload.data(), msg->payload.size());
+    if (!session || !revocations) return;
+    peers_.mark_seen(session->peer_id, sender);
+    bool changed = false;
+    for (const auto& revocation : *revocations) {
+        if (revocation.network_id == identity_.network_id &&
+            config_.trusted_membership_issuer &&
+            revocation.issuer_signing_public_key ==
+                *config_.trusted_membership_issuer)
+            changed = membership_revocations_.add(revocation) || changed;
+    }
+    if (changed)
+        announce_membership_revocations(session->peer_id);
+}
+
+bool Tunnel::add_membership_revocation(
+    const MembershipRevocation& revocation) {
+    if (revocation.network_id != identity_.network_id ||
+        !config_.trusted_membership_issuer ||
+        revocation.issuer_signing_public_key !=
+            *config_.trusted_membership_issuer ||
+        !membership_revocations_.add(revocation))
+        return false;
+    announce_membership_revocations();
+    return true;
+}
+
+void Tunnel::announce_membership_revocations(
+    const std::optional<NodeId>& exclude) {
+    const auto all_revocations = membership_revocations_.snapshot();
+    if (all_revocations.empty()) return;
+    std::vector<MembershipRevocation> local_network_revocations;
+    for (const auto& revocation : all_revocations) {
+        if (revocation.network_id == identity_.network_id &&
+            config_.trusted_membership_issuer &&
+            revocation.issuer_signing_public_key ==
+                *config_.trusted_membership_issuer)
+            local_network_revocations.push_back(revocation);
+    }
+    if (local_network_revocations.empty()) return;
+
+    std::lock_guard<std::mutex> send_lock(gossip_send_mtx_);
+    for (const auto& peer : peers_.all_peers()) {
+        if ((exclude && peer.node_id == *exclude) || !peer.endpoint ||
+            !session_established(peer.node_id))
+            continue;
+        for (size_t offset = 0; offset < local_network_revocations.size();
+             offset += MEMBERSHIP_REVOCATION_MAX_RECORDS) {
+            const size_t end = (std::min)(
+                local_network_revocations.size(),
+                offset + MEMBERSHIP_REVOCATION_MAX_RECORDS);
+            const std::vector<MembershipRevocation> batch(
+                local_network_revocations.begin() +
+                    static_cast<std::vector<MembershipRevocation>::difference_type>(offset),
+                local_network_revocations.begin() +
+                    static_cast<std::vector<MembershipRevocation>::difference_type>(end));
+            const auto payload = serialize_membership_revocations(batch);
+            if (!payload) break;
+            const auto frame = session_manager_->encrypt_message(
+                peer.node_id, TYPE_MEMBERSHIP_REVOCATION,
+                payload->data(), payload->size());
+            if (!frame || !transport_.send(
+                    frame->data(), frame->size(), *peer.endpoint))
+                break;
+        }
+    }
 }
 
 void Tunnel::handle_endpoint_candidates_frame(

@@ -309,6 +309,11 @@ timeouts, packet loss, hairpin behavior, or vendor-specific filtering.
   configuration, revocation enforcement, and application of granted prefixes
   to local address policy remain incomplete. The embedded signing key is not
   itself a trust anchor.
+- Signed revocation notices are bounded, signature-checked, and propagated
+  over encrypted sessions using the issuer key supplied in an AEGIS2 config
+  grant. The initial grant/key still requires out-of-band trust. Active
+  sessions are not bound to enrollment nonces, so notices do not yet enforce
+  disconnect or deny access.
 - The overlay is IPv4-only.
 
 ### LAN discovery is unauthenticated

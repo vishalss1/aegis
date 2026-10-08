@@ -1,6 +1,7 @@
 #pragma once
 
 #include "aegis/session/session.hpp"
+#include "aegis/identity/revocation.hpp"
 #include "aegis/peer/peer.hpp"
 #include "aegis/peer/peer_table.hpp"
 #include "aegis/peer/gossip.hpp"
@@ -58,6 +59,7 @@ struct TunnelConfig {
     uint32_t underlay_mtu = static_cast<uint32_t>(DEFAULT_UNDERLAY_MTU);
     uint8_t max_relay_depth = static_cast<uint8_t>(ONION_MAX_HOPS);
     std::optional<std::string> stun_server; // e.g. "stun.l.google.com:19302"
+    std::optional<Key> trusted_membership_issuer;
     std::vector<TunnelPeer> peers;      // bootstrap candidates
 
     // Step 15 lifecycle tuning (ms). Zero values fall back to the defaults.
@@ -119,6 +121,10 @@ public:
     // returns before any session exists; background connect loops establish
     // them as the peers become available.
     bool session_established(const NodeId& node_id) const;
+    [[nodiscard]] bool add_membership_revocation(
+        const MembershipRevocation& revocation);
+    [[nodiscard]] std::vector<MembershipRevocation>
+    membership_revocations() const { return membership_revocations_.snapshot(); }
 
     // Messaging & File Sharing over active sessions
     bool broadcast_chat(const std::string& text);
@@ -157,6 +163,7 @@ private:
     PeerManager peers_;
     RoutingEngine routing_;
     GossipDeltaTracker gossip_delta_tracker_;
+    MembershipRevocationStore membership_revocations_;
     PathProbeTracker path_probe_tracker_;
     EndpointPunchTracker endpoint_punch_tracker_;
     std::map<NodeId, ProtocolClock::time_point> endpoint_punch_attempts_;
@@ -251,6 +258,9 @@ private:
                                 const PacketHeader& header, Endpoint sender);
     void handle_peer_table_frame(const uint8_t* data, size_t len,
                                  const PacketHeader& header, Endpoint sender);
+    void handle_membership_revocation_frame(
+        const uint8_t* data, size_t len, const PacketHeader& header,
+        Endpoint sender);
     void handle_endpoint_candidates_frame(
         const uint8_t* data, size_t len, const PacketHeader& header,
         Endpoint sender);
@@ -300,6 +310,8 @@ private:
     void send_peer_table(const NodeId& to_peer, bool force_full = false);
     void announce_peer_table(const std::optional<NodeId>& exclude,
                              bool force_full = false);
+    void announce_membership_revocations(
+        const std::optional<NodeId>& exclude = std::nullopt);
     void handle_peer_table(const NodeId& sender, const uint8_t* data, size_t len);
     void announce_endpoint_candidates(
         const NodeId& peer_id, Endpoint observed_peer);
