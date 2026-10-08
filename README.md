@@ -647,6 +647,7 @@ Unit test coverage:
 | `test_invite` | AEGIS1 invite code encoding, decoding, validation, round-trip |
 | `test_stun` | RFC 5389 request/response validation, XOR-MAPPED-ADDRESS parsing, and loopback proof that discovery uses the bound mesh UDP port |
 | `test_endpoint_candidate` | Canonical bounded candidate framing, all candidate types, authenticated punch framing, transaction/peer/source matching, timeout boundaries, and malformed length/version/type handling |
+| `test_nat_simulation` | Deterministic endpoint-independent and symmetric NAT mappings, direct punch reachability, failed-punch retention, relay-route fallback, and onion delivery through a relay circuit |
 | `test_cli` | CLI parsing, command dispatch, and integrated command behavior |
 
 ---

@@ -278,6 +278,12 @@ address-dependent mappings, but symmetric NAT and restrictive firewalls still
 need relay fallback. Candidate exchange and punching do not authenticate
 ownership of an address against a malicious authorized peer.
 
+The deterministic NAT simulator covers endpoint-independent mappings that
+permit direct punching and destination-specific symmetric mappings that do
+not. In the latter case, tests verify route selection falls back to an
+authenticated onion circuit. This model does not emulate operating-system NAT
+timeouts, packet loss, hairpin behavior, or vendor-specific filtering.
+
 ### Credential lifecycle is incomplete
 
 - Secret key material is not consistently zeroized.
