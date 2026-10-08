@@ -83,6 +83,10 @@ The implementation currently provides the following limited properties:
 - UDP punch challenges and responses are session-encrypted. A response can
   nominate an endpoint only when its random transaction, authenticated peer,
   source address, and five-second deadline match bounded pending state.
+- Established sessions periodically revalidate the active endpoint and
+  candidate alternatives. A missed refresh does not clear or replace the
+  existing endpoint; promotion still requires the matching authenticated
+  response from the exact candidate source.
 - AEGIS1 invite payloads use bounded codecs, canonical base64url, exact name
   lengths, exact frame consumption, and valid IPv4 prefix lengths.
 - Session data has a 2,048-packet replay window.
@@ -263,8 +267,9 @@ authenticated session frames. A legitimate member can still lie about a
 candidate, so exchanged addresses are retained as unvalidated alternatives
 until coordinated authenticated UDP punching succeeds. Punch responses are
 bound to a random transaction, the expected peer and candidate source, and a
-five-second deadline; concurrent attempts are capped and each peer's round is
-throttled to 30 seconds. This supports endpoint-independent and some
+five-second deadline; concurrent attempts are capped, each peer's punch round
+is throttled to 30 seconds, and established bindings/candidates are refreshed
+every 30 seconds. This supports endpoint-independent and some
 address-dependent mappings, but symmetric NAT and restrictive firewalls still
 need relay fallback. Candidate exchange and punching do not authenticate
 ownership of an address against a malicious authorized peer.

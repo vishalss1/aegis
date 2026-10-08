@@ -160,6 +160,7 @@ private:
     PathProbeTracker path_probe_tracker_;
     EndpointPunchTracker endpoint_punch_tracker_;
     std::map<NodeId, ProtocolClock::time_point> endpoint_punch_attempts_;
+    std::map<NodeId, ProtocolClock::time_point> endpoint_binding_refreshes_;
     mutable std::mutex endpoint_punch_attempts_mtx_;
     std::vector<EndpointCandidate> local_endpoint_candidates_;
     mutable std::mutex endpoint_candidates_mtx_;
@@ -182,6 +183,7 @@ private:
     static constexpr int KEEPALIVE_INTERVAL_MS = 25000;
     static constexpr int DEAD_TIMEOUT_MS = 180000;
     static constexpr int REKEY_INTERVAL_MS = 120000;
+    static constexpr int ENDPOINT_BINDING_REFRESH_MS = 30000;
     static constexpr int MAINTENANCE_TICK_MS = 1000;
     static constexpr int CONNECT_BACKOFF_BASE_MS = 1000;
     static constexpr int CONNECT_BACKOFF_CAP_MS = 30000;
@@ -309,4 +311,5 @@ private:
         const NodeId& peer_id, Endpoint endpoint,
         const EndpointPunchMessage& message);
     void begin_endpoint_punching(const NodeId& peer_id);
+    void refresh_endpoint_bindings();
 };

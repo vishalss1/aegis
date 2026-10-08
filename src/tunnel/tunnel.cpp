@@ -242,6 +242,7 @@ void Tunnel::stop() {
     {
         std::lock_guard<std::mutex> lock(endpoint_punch_attempts_mtx_);
         endpoint_punch_attempts_.clear();
+        endpoint_binding_refreshes_.clear();
     }
 }
 
@@ -740,6 +741,7 @@ void Tunnel::maintenance_loop() {
         if (!expired_punches.empty())
             aegis_log("[tunnel] %zu endpoint punch(es) timed out\n",
                       expired_punches.size());
+        refresh_endpoint_bindings();
 
         // 3) Expire learned route candidates whose advertised lease elapsed.
         //    Configured direct routes are never lease-removed.
@@ -1726,7 +1728,17 @@ void Tunnel::begin_endpoint_punching(const NodeId& peer_id) {
             return;
         endpoint_punch_attempts_[peer_id] = now;
     }
-    for (const auto& candidate : peer->endpoint_candidates) {
+    auto candidates = peer->endpoint_candidates;
+    if (peer->endpoint) {
+        const bool active_is_candidate = std::any_of(
+            candidates.begin(), candidates.end(), [&](const auto& candidate) {
+                return candidate.endpoint == *peer->endpoint;
+            });
+        if (!active_is_candidate)
+            candidates.push_back({
+                EndpointCandidateType::PeerObserved, *peer->endpoint, 500});
+    }
+    for (const auto& candidate : candidates) {
         uint64_t transaction_id = 0;
         for (int attempt = 0; attempt < 8 && transaction_id == 0; ++attempt) {
             const auto generated = random_.u64();
@@ -1743,6 +1755,32 @@ void Tunnel::begin_endpoint_punching(const NodeId& peer_id) {
                 peer_id, candidate.endpoint,
                 {EndpointPunchKind::Challenge, transaction_id}))
             endpoint_punch_tracker_.cancel(transaction_id);
+    }
+}
+
+void Tunnel::refresh_endpoint_bindings() {
+    const auto now = clock_.now();
+    for (const auto& peer : peers_.all_peers()) {
+        if (peer.state != PeerState::Established ||
+            !session_established(peer.node_id))
+            continue;
+        {
+            std::lock_guard<std::mutex> lock(endpoint_punch_attempts_mtx_);
+            const auto previous =
+                endpoint_binding_refreshes_.find(peer.node_id);
+            if (previous != endpoint_binding_refreshes_.end() &&
+                now >= previous->second &&
+                now - previous->second <
+                    std::chrono::milliseconds(ENDPOINT_BINDING_REFRESH_MS))
+                continue;
+            endpoint_binding_refreshes_[peer.node_id] = now;
+        }
+
+        // Refresh the active mapping as well as alternatives. Promotion still
+        // requires a response from the exact endpoint before the punch timeout.
+        begin_endpoint_punching(peer.node_id);
+        if (peer.endpoint)
+            announce_endpoint_candidates(peer.node_id, *peer.endpoint);
     }
 }
 
