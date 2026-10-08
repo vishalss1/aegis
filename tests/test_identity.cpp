@@ -33,12 +33,39 @@ int main() {
             if (b != 0) { pub_nonzero = true; break; }
         CHECK(pub_nonzero);
 
+        bool signing_pub_nonzero = false;
+        for (auto b : id.signing_keypair.public_key)
+            if (b != 0) { signing_pub_nonzero = true; break; }
+        CHECK(signing_pub_nonzero);
+        CHECK(id.signing_keypair.public_key != id.keypair.public_key);
+        CHECK(verify_key_agreement_binding(id));
+
         bool nid_nonzero = false;
         for (auto b : id.node_id)
             if (b != 0) { nid_nonzero = true; break; }
         CHECK(nid_nonzero);
 
         CHECK(id.network_id == net);
+    }
+
+    // ---- 1b. Binding signature commits to the Noise key -------------------
+    {
+        NetworkId net{};
+        Identity id = Identity::create(net);
+        Identity tampered_key = id;
+        tampered_key.keypair.public_key[0] ^= 0x01;
+        CHECK(!verify_key_agreement_binding(tampered_key));
+
+        Identity tampered_signer = id;
+        tampered_signer.signing_keypair.public_key[0] ^= 0x01;
+        CHECK(!verify_key_agreement_binding(tampered_signer));
+
+        Identity tampered_signature = id;
+        tampered_signature.key_agreement_binding[0] ^= 0x01;
+        CHECK(!verify_key_agreement_binding(tampered_signature));
+
+        const NodeId legacy_node_id = id.node_id;
+        CHECK(legacy_node_id == hash_public_key(id.keypair.public_key));
     }
 
     // ---- 2. NodeID is deterministic for a given public key ------------------

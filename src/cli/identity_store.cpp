@@ -4,6 +4,7 @@
 #include <shlobj.h>
 #include <cstdio>
 #include <fstream>
+#include <stdexcept>
 
 std::string get_identity_file_path() {
     char path[MAX_PATH];
@@ -36,6 +37,9 @@ Identity load_or_create_identity(const NetworkId& network_id, const std::string&
                 if (extracted == 1 && len == KEY_SIZE) {
                     id.node_id = hash_public_key(id.keypair.public_key);
                     id.network_id = network_id;
+                    if (!bind_identity_keys(id))
+                        throw std::runtime_error(
+                            "failed to bind loaded key-agreement identity");
                     return id;
                 }
             }

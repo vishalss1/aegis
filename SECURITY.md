@@ -152,6 +152,13 @@ These checks bind a public key to its self-certifying NodeID. Noise IK also
 proves control of that key for an adjacent session. Neither mechanism
 establishes prefix ownership or proves that an advertised route exists.
 
+Identity objects now carry a distinct Ed25519 keypair and a signature binding
+the current X25519 Noise public key. This signature is currently local state:
+it is not persisted in the legacy 32-byte identity file or transmitted in
+peer-table/handshake frames. Network identity therefore remains X25519-based
+until credential versioning and protocol adoption are completed; the local
+binding alone does not strengthen remote peer authentication.
+
 ## Known Critical Limitations
 
 ### Peer authentication is not membership authorization

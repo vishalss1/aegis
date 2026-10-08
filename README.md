@@ -55,7 +55,7 @@ A VPN point-to-point tunnel is only the first application of this overlay. The m
 
 A few design choices that shaped how Aegis works.
 
-**NodeID, not IP, is the intended identity.** Every node derives a 32-byte `NodeID` as `BLAKE2b(PublicKey)`. Peer-table merge rejects a public key that does not hash to its advertised NodeID, established non-empty peer keys are immutable through `upsert`, and Noise IK proves control of the corresponding static private key for adjacent sessions.
+**NodeID, not IP, is the intended identity.** In the current wire-compatible phase, each node still derives `NodeID` as `BLAKE2b(X25519 public key)`. Identity objects now also create a separate Ed25519 signing key that signs a domain-separated binding to the Noise X25519 key. The signer/binding is not yet persisted or carried on the wire; versioned credentials and peer-protocol adoption are explicit follow-ups. Peer-table merge and Noise IK therefore continue to enforce the legacy X25519-derived NodeID contract for now.
 
 **Onion routing is a core requirement, not a stretch goal.** Each hop decrypts one `ChaCha20-Poly1305` layer keyed by `SHA256("aegis-onion-v1" ‖ X25519(our_priv, source_pub))`. The current framing exposes the source NodeID to every relay and does not pad length or timing, so it should not yet be treated as a complete anonymity system.
 
@@ -635,7 +635,7 @@ Unit test coverage:
 | `test_primitives` | SHA-256/BLAKE2s transcript hashes, HMAC/HKDF vectors, constant-time comparison |
 | `test_secret` | Cleansing secret storage copy, move, overwrite, and destruction behavior |
 | `test_aead` | ChaCha20-Poly1305 RFC 8439 test vectors, tamper rejection |
-| `test_identity` | NodeID hashing, NetworkID equality, keypair round-trip |
+| `test_identity` | Legacy NodeID hashing, separate Ed25519/X25519 keys, signed key-binding verification/tamper rejection, and NetworkID equality |
 | `test_tunnel` | Nonce counter arithmetic, wire format round-trip, AEAD integration |
 | `test_session` | Authenticated Noise IK integration, concurrent lifecycle/snapshot safety, bounded session state, pending-state expiry, INIT replay caching, simultaneous-init convergence, transport replay windows, and rekey grace |
 | `test_peer` | Multi-peer table — concurrent lifecycle/snapshot safety, states, endpoints, session lookup, health tracking |

@@ -90,6 +90,8 @@ void test_identity_store_roundtrip() {
     assert(id1.node_id == id2.node_id);
     assert(id1.keypair.public_key == id2.keypair.public_key);
     assert(id1.keypair.private_key == id2.keypair.private_key);
+    assert(verify_key_agreement_binding(id1));
+    assert(verify_key_agreement_binding(id2));
 
     std::remove(temp_file.c_str());
     printf("[test_cli] test_identity_store_roundtrip passed\n");
