@@ -39,5 +39,7 @@ struct Identity {
 // Recreate a signing identity and binding around an existing legacy X25519
 // key. Credential persistence is versioned in the following migration step.
 [[nodiscard]] bool bind_identity_keys(Identity& identity);
+[[nodiscard]] bool bind_identity_keys(
+    Identity& identity, const Key& signing_private_key);
 [[nodiscard]] bool verify_key_agreement_binding(
     const Identity& identity);

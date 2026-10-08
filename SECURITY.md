@@ -153,11 +153,11 @@ proves control of that key for an adjacent session. Neither mechanism
 establishes prefix ownership or proves that an advertised route exists.
 
 Identity objects now carry a distinct Ed25519 keypair and a signature binding
-the current X25519 Noise public key. This signature is currently local state:
-it is not persisted in the legacy 32-byte identity file or transmitted in
-peer-table/handshake frames. Network identity therefore remains X25519-based
-until credential versioning and protocol adoption are completed; the local
-binding alone does not strengthen remote peer authentication.
+the current X25519 Noise public key. Version-1 credential files persist these
+keys and the signature; legacy 32-byte X25519 files are migrated while
+preserving their existing NodeID. The signature is not transmitted in
+peer-table/handshake frames, so network identity remains X25519-based and the
+local binding alone does not strengthen remote peer authentication.
 
 ## Known Critical Limitations
 

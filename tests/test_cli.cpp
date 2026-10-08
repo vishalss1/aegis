@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <fstream>
 #include <iostream>
+#include <stdexcept>
 
 void test_input_parser_command() {
     ParsedInput res = parse_cli_input("/help");
@@ -90,11 +91,102 @@ void test_identity_store_roundtrip() {
     assert(id1.node_id == id2.node_id);
     assert(id1.keypair.public_key == id2.keypair.public_key);
     assert(id1.keypair.private_key == id2.keypair.private_key);
+    assert(id1.signing_keypair.public_key == id2.signing_keypair.public_key);
+    assert(id1.signing_keypair.private_key == id2.signing_keypair.private_key);
+    assert(id1.key_agreement_binding == id2.key_agreement_binding);
     assert(verify_key_agreement_binding(id1));
     assert(verify_key_agreement_binding(id2));
 
+    std::ifstream stored(temp_file, std::ios::binary | std::ios::ate);
+    assert(stored.is_open());
+    assert(static_cast<std::streamoff>(stored.tellg()) == 168);
+    stored.seekg(0);
+    char magic[8]{};
+    stored.read(magic, sizeof(magic));
+    assert(std::string(magic, 7) == "AEGISID");
+    assert(static_cast<unsigned char>(magic[7]) == 1);
+    stored.close();
+
     std::remove(temp_file.c_str());
     printf("[test_cli] test_identity_store_roundtrip passed\n");
+}
+
+void test_legacy_identity_migration() {
+    const std::string temp_file = "temp_legacy_identity.bin";
+    std::remove(temp_file.c_str());
+    NetworkId network{};
+    network[0] = 0x5A;
+    const Identity legacy = Identity::create(network);
+    {
+        std::ofstream out(temp_file, std::ios::binary);
+        assert(out.is_open());
+        out.write(
+            reinterpret_cast<const char*>(legacy.keypair.private_key.data()),
+            static_cast<std::streamsize>(legacy.keypair.private_key.size()));
+        assert(out.good());
+    }
+
+    const Identity migrated = load_or_create_identity(network, temp_file);
+    assert(migrated.node_id == legacy.node_id);
+    assert(migrated.keypair.private_key == legacy.keypair.private_key);
+    assert(verify_key_agreement_binding(migrated));
+    const Identity reloaded = load_or_create_identity(network, temp_file);
+    assert(reloaded.node_id == migrated.node_id);
+    assert(reloaded.signing_keypair.public_key ==
+           migrated.signing_keypair.public_key);
+    assert(reloaded.signing_keypair.private_key ==
+           migrated.signing_keypair.private_key);
+
+    std::remove(temp_file.c_str());
+    printf("[test_cli] test_legacy_identity_migration passed\n");
+}
+
+void test_corrupt_identity_fails_closed() {
+    const std::string temp_file = "temp_corrupt_identity.bin";
+    std::remove(temp_file.c_str());
+    {
+        std::ofstream out(temp_file, std::ios::binary);
+        const char corrupt[] = "bad";
+        out.write(corrupt, sizeof(corrupt));
+    }
+    bool rejected = false;
+    try {
+        (void)load_or_create_identity(NetworkId{}, temp_file);
+    } catch (const std::runtime_error&) {
+        rejected = true;
+    }
+    assert(rejected);
+    std::ifstream in(temp_file, std::ios::binary | std::ios::ate);
+    assert(in.is_open() && static_cast<std::streamoff>(in.tellg()) == 4);
+    in.close();
+    std::remove(temp_file.c_str());
+
+    (void)load_or_create_identity(NetworkId{}, temp_file);
+    {
+        std::fstream file(
+            temp_file, std::ios::binary | std::ios::in | std::ios::out);
+        assert(file.is_open());
+        file.seekg(167);
+        char byte = 0;
+        file.read(&byte, 1);
+        assert(file.gcount() == 1);
+        byte ^= 0x01;
+        file.seekp(167);
+        file.write(&byte, 1);
+        assert(file.good());
+    }
+    rejected = false;
+    try {
+        (void)load_or_create_identity(NetworkId{}, temp_file);
+    } catch (const std::runtime_error&) {
+        rejected = true;
+    }
+    assert(rejected);
+    in.open(temp_file, std::ios::binary | std::ios::ate);
+    assert(in.is_open() && static_cast<std::streamoff>(in.tellg()) == 168);
+    in.close();
+    std::remove(temp_file.c_str());
+    printf("[test_cli] test_corrupt_identity_fails_closed passed\n");
 }
 
 void test_invite_trimming() {
@@ -127,6 +219,8 @@ int main() {
     test_unknown_command();
     test_help_lists_all_commands();
     test_identity_store_roundtrip();
+    test_legacy_identity_migration();
+    test_corrupt_identity_fails_closed();
     test_invite_trimming();
     printf("[test_cli] ALL CLI TESTS PASSED\n");
     return 0;

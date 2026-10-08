@@ -77,12 +77,30 @@ bool bind_identity_keys(Identity& identity) {
     if (!generate_signing_keypair(identity.signing_keypair))
         return false;
 
+    const auto private_key = identity.signing_keypair.private_key;
+    return bind_identity_keys(identity, private_key);
+}
+
+bool bind_identity_keys(
+    Identity& identity, const Key& signing_private_key) {
+    identity.signing_keypair.private_key = signing_private_key;
+    identity.signing_keypair.public_key = {};
+    identity.key_agreement_binding = {};
+
     EVP_PKEY* key = EVP_PKEY_new_raw_private_key(
         EVP_PKEY_ED25519, nullptr,
-        identity.signing_keypair.private_key.data(),
-        identity.signing_keypair.private_key.size());
+        signing_private_key.data(), signing_private_key.size());
     if (!key)
         return false;
+    size_t public_size = identity.signing_keypair.public_key.size();
+    if (EVP_PKEY_get_raw_public_key(
+            key, identity.signing_keypair.public_key.data(),
+            &public_size) != 1 ||
+        public_size != identity.signing_keypair.public_key.size()) {
+        EVP_PKEY_free(key);
+        identity.signing_keypair.public_key = {};
+        return false;
+    }
     EVP_MD_CTX* context = EVP_MD_CTX_new();
     const auto message = key_binding_message(identity.keypair.public_key);
     size_t signature_size = identity.key_agreement_binding.size();

@@ -55,7 +55,7 @@ A VPN point-to-point tunnel is only the first application of this overlay. The m
 
 A few design choices that shaped how Aegis works.
 
-**NodeID, not IP, is the intended identity.** In the current wire-compatible phase, each node still derives `NodeID` as `BLAKE2b(X25519 public key)`. Identity objects now also create a separate Ed25519 signing key that signs a domain-separated binding to the Noise X25519 key. The signer/binding is not yet persisted or carried on the wire; versioned credentials and peer-protocol adoption are explicit follow-ups. Peer-table merge and Noise IK therefore continue to enforce the legacy X25519-derived NodeID contract for now.
+**NodeID, not IP, is the intended identity.** In the current wire-compatible phase, each node still derives `NodeID` as `BLAKE2b(X25519 public key)`. Identity objects also hold a separate Ed25519 signing key that signs a domain-separated binding to the Noise X25519 key. Version-1 credential files persist both private keys and the binding; exact legacy 32-byte X25519 files are migrated without changing their NodeID. The signer/binding is not yet carried on the wire, so peer-table merge and Noise IK still enforce the legacy X25519-derived NodeID contract.
 
 **Onion routing is a core requirement, not a stretch goal.** Each hop decrypts one `ChaCha20-Poly1305` layer keyed by `SHA256("aegis-onion-v1" ‖ X25519(our_priv, source_pub))`. The current framing exposes the source NodeID to every relay and does not pad length or timing, so it should not yet be treated as a complete anonymity system.
 
@@ -648,7 +648,7 @@ Unit test coverage:
 | `test_stun` | RFC 5389 request/response validation, XOR-MAPPED-ADDRESS parsing, and loopback proof that discovery uses the bound mesh UDP port |
 | `test_endpoint_candidate` | Canonical bounded candidate framing, all candidate types, authenticated punch framing, transaction/peer/source matching, timeout boundaries, and malformed length/version/type handling |
 | `test_nat_simulation` | Deterministic endpoint-independent and symmetric NAT mappings, direct punch reachability, failed-punch retention, relay-route fallback, and onion delivery through a relay circuit |
-| `test_cli` | CLI parsing, command dispatch, and integrated command behavior |
+| `test_cli` | CLI parsing/dispatch, versioned identity persistence, stable signer round-trip, legacy-key migration, and fail-closed corrupt-credential handling |
 
 ---
 
