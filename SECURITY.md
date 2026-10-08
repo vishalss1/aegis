@@ -278,6 +278,11 @@ address-dependent mappings, but symmetric NAT and restrictive firewalls still
 need relay fallback. Candidate exchange and punching do not authenticate
 ownership of an address against a malicious authorized peer.
 
+The `/peers` path label is local routing/session state, not a remote attestation:
+`Direct` and `Hole-punched` record the most recently validated adjacent
+endpoint path, while `Relayed` means a viable learned relay route exists for
+that peer. It does not prove that every packet is currently using that path.
+
 The deterministic NAT simulator covers endpoint-independent mappings that
 permit direct punching and destination-specific symmetric mappings that do
 not. In the latter case, tests verify route selection falls back to an

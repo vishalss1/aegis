@@ -105,7 +105,13 @@ void PeerManager::mark_seen(const NodeId& node_id, std::optional<Endpoint> endpo
     if (it == peers_.end()) return;
     auto& peer = it->second;
     auto now = clock_.now();
-    if (endpoint) peer.endpoint = endpoint;
+    if (endpoint) {
+        const bool same_endpoint =
+            peer.endpoint && *peer.endpoint == *endpoint;
+        peer.endpoint = endpoint;
+        if (!same_endpoint || peer.path == PeerPath::Unknown)
+            peer.path = PeerPath::Direct;
+    }
     if (peer.state != PeerState::Established) {
         peer.connected_since = now;
     }
@@ -115,6 +121,23 @@ void PeerManager::mark_seen(const NodeId& node_id, std::optional<Endpoint> endpo
     // otherwise a busy peer would keep getting unsolicited keep-alives.
     peer.last_keepalive = now;
     peer.last_seen = now;
+    peer.state = PeerState::Established;
+}
+
+void PeerManager::mark_hole_punched(
+    const NodeId& node_id, const Endpoint& endpoint) {
+    std::lock_guard<std::mutex> lock(mtx_);
+    const auto it = peers_.find(node_id);
+    if (it == peers_.end())
+        return;
+    auto& peer = it->second;
+    peer.endpoint = endpoint;
+    peer.path = PeerPath::HolePunched;
+    const auto now = clock_.now();
+    if (peer.state != PeerState::Established)
+        peer.connected_since = now;
+    peer.last_seen = now;
+    peer.last_keepalive = now;
     peer.state = PeerState::Established;
 }
 
@@ -131,12 +154,15 @@ void PeerManager::mark_dead(const NodeId& node_id) {
     auto it = peers_.find(node_id);
     if (it == peers_.end()) return;
     it->second.state = PeerState::Dead;
+    it->second.path = PeerPath::Unknown;
 }
 
 void PeerManager::update_endpoint(const NodeId& node_id, const Endpoint& endpoint) {
     std::lock_guard<std::mutex> lock(mtx_);
     auto it = peers_.find(node_id);
     if (it == peers_.end()) return;
+    if (!it->second.endpoint || *it->second.endpoint != endpoint)
+        it->second.path = PeerPath::Unknown;
     it->second.endpoint = endpoint;
     it->second.last_seen = clock_.now();
 }

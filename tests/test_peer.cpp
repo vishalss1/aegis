@@ -157,7 +157,36 @@ int main() {
         CHECK(!pm.set_endpoint_candidates(charlie.node_id, candidates));
     }
 
-    // ---- 2c. Static identity keys are immutable after binding ---------------
+    // ---- 2c. Peer path status distinguishes direct and punched endpoints ---
+    {
+        PeerManager pm;
+        CHECK(pm.upsert(bob.node_id, bob.keypair.public_key, ep_bob) ==
+              PeerUpsertResult::Inserted);
+        pm.mark_seen(bob.node_id, ep_bob);
+        auto peer = pm.get_peer(bob.node_id);
+        CHECK(peer && peer->path == PeerPath::Direct);
+
+        const Endpoint punched =
+            Endpoint::from_parts(198, 51, 100, 8, 62008);
+        pm.mark_hole_punched(bob.node_id, punched);
+        peer = pm.get_peer(bob.node_id);
+        CHECK(peer && peer->path == PeerPath::HolePunched);
+        CHECK(peer && peer->endpoint == punched);
+
+        // Authenticated data from the same punched endpoint must not erase
+        // the fact that the binding was established by coordinated punching.
+        pm.mark_seen(bob.node_id, punched);
+        peer = pm.get_peer(bob.node_id);
+        CHECK(peer && peer->path == PeerPath::HolePunched);
+
+        const Endpoint rebound =
+            Endpoint::from_parts(198, 51, 100, 9, 62009);
+        pm.mark_seen(bob.node_id, rebound);
+        peer = pm.get_peer(bob.node_id);
+        CHECK(peer && peer->path == PeerPath::Direct);
+    }
+
+    // ---- 2d. Static identity keys are immutable after binding ---------------
     {
         PeerManager pm;
         CHECK(pm.upsert(bob.node_id, bob.keypair.public_key, ep_bob) ==

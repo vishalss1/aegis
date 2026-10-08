@@ -974,7 +974,7 @@ void Tunnel::handle_endpoint_punch_frame(
         punch->transaction_id, session->peer_id, sender, clock_.now());
     if (!target)
         return;
-    peers_.mark_seen(target->peer_id, target->endpoint);
+    peers_.mark_hole_punched(target->peer_id, target->endpoint);
     aegis_log("[tunnel] validated endpoint for %02x%02x... -> %08x:%04x\n",
               target->peer_id[0], target->peer_id[1],
               ntohl(target->endpoint.ip), ntohs(target->endpoint.port));

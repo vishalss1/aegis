@@ -3,6 +3,8 @@
 #include "aegis/invite/invite.hpp"
 #include "aegis/platform/platform.hpp"
 #include "aegis/platform/logger.hpp"
+#include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -381,8 +383,9 @@ static int cmd_peers(const ParsedInput& input, CliContext& ctx) {
 
     auto peers = ctx.tunnel->peers().all_peers();
     std::printf("\nKnown Peers in '%s' (%zu total):\n", ctx.tunnel->network_name().c_str(), peers.size());
-    std::printf("%-16s %-12s %-22s %-8s\n", "NodeID (prefix)", "State", "Endpoint", "Type");
-    std::printf("------------------------------------------------------------\n");
+    std::printf("%-16s %-12s %-22s %-14s %-8s\n",
+                "NodeID (prefix)", "State", "Endpoint", "Path", "Type");
+    std::printf("------------------------------------------------------------------------\n");
     for (const auto& p : peers) {
         std::string nid_str = to_hex(p.node_id.data(), 8) + "...";
         std::string state_str = "Unknown";
@@ -403,9 +406,37 @@ static int cmd_peers(const ParsedInput& input, CliContext& ctx) {
                      (ip_h >> 8) & 0xFF, ip_h & 0xFF, port_h);
             ep_str = buf;
         }
-        std::printf("%-16s %-12s %-22s %-8s\n",
+        const char* path_str = "Unknown";
+        switch (p.path) {
+            case PeerPath::Direct: path_str = "Direct"; break;
+            case PeerPath::HolePunched: path_str = "Hole-punched"; break;
+            case PeerPath::Unknown: {
+                const auto routes =
+                    ctx.tunnel->routing().routes_to(p.node_id);
+                const auto now = std::chrono::steady_clock::now();
+                const auto viable = [&](const Route& route) {
+                    return !route.probe_failed &&
+                        !learned_route_lease_expired(route, now);
+                };
+                const bool direct = std::any_of(
+                    routes.begin(), routes.end(), [&](const Route& route) {
+                        return route.type == NextHopType::Direct &&
+                               viable(route);
+                    });
+                const bool relayed = std::any_of(
+                    routes.begin(), routes.end(), [&](const Route& route) {
+                        return route.type == NextHopType::Relay && viable(route);
+                    });
+                if (direct)
+                    path_str = "Direct";
+                else if (relayed)
+                    path_str = "Relayed";
+                break;
+            }
+        }
+        std::printf("%-16s %-12s %-22s %-14s %-8s\n",
                     nid_str.c_str(), state_str.c_str(), ep_str.c_str(),
-                    p.trusted ? "Trusted" : "Gossiped");
+                    path_str, p.trusted ? "Trusted" : "Gossiped");
     }
     std::printf("\n");
     return 0;

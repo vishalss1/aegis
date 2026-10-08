@@ -21,6 +21,12 @@ enum class PeerState {
     Dead
 };
 
+enum class PeerPath {
+    Unknown,
+    Direct,
+    HolePunched
+};
+
 enum class PeerUpsertResult {
     Inserted,          // A new peer record was created.
     Updated,           // Existing non-identity fields were accepted.
@@ -39,6 +45,7 @@ struct Peer {
     // exchange never promotes one into `endpoint`.
     std::vector<EndpointCandidate> endpoint_candidates;
     PeerState state = PeerState::Unknown;
+    PeerPath path = PeerPath::Unknown;
     std::chrono::steady_clock::time_point created_at{};
     std::chrono::steady_clock::time_point last_seen{};
     std::chrono::steady_clock::time_point last_keepalive{};
@@ -77,6 +84,7 @@ public:
     std::vector<Peer> all_peers() const;
 
     void mark_seen(const NodeId& node_id, std::optional<Endpoint> endpoint = std::nullopt);
+    void mark_hole_punched(const NodeId& node_id, const Endpoint& endpoint);
     void mark_connecting(const NodeId& node_id);
     void mark_dead(const NodeId& node_id);
     void update_endpoint(const NodeId& node_id, const Endpoint& endpoint);
