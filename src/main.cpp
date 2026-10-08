@@ -998,22 +998,48 @@ static int run_config(const std::string& path) {
         tcfg.identity = Identity::create(*app.network_id);
 
     if (app.invite) {
-        auto inv = decode_invite(*app.invite);
-        if (!inv) {
-            fprintf(stderr, "error: invalid invite code in config\n");
-            return 1;
+        if (app.invite->rfind("AEGIS2:", 0) == 0) {
+            const auto grant = decode_aegis2_grant(*app.invite);
+            const auto now = static_cast<uint64_t>(std::chrono::duration_cast<
+                std::chrono::seconds>(std::chrono::system_clock::now()
+                .time_since_epoch()).count());
+            if (!grant || !validate_aegis2_grant(
+                    *grant, now, AEGIS2_CAPABILITY_JOIN)) {
+                fprintf(stderr, "error: invalid, expired, or unauthorized AEGIS2 grant\n");
+                return 1;
+            }
+            if (app.network_id && *app.network_id != grant->network_id) {
+                fprintf(stderr, "error: AEGIS2 grant NetworkID conflicts with config\n");
+                return 1;
+            }
+            if (!tcfg.identity)
+                tcfg.identity = Identity::create(grant->network_id);
+            tcfg.identity->creator_node_id = grant->issuer_node_id;
+            for (const auto& candidate : grant->bootstrap_candidates) {
+                TunnelPeer tp;
+                tp.node_id = hash_public_key(candidate.x25519_public_key);
+                tp.public_key = candidate.x25519_public_key;
+                tp.endpoint = candidate.endpoint;
+                tcfg.peers.push_back(std::move(tp));
+            }
+        } else {
+            const auto inv = decode_invite(*app.invite);
+            if (!inv) {
+                fprintf(stderr, "error: invalid invite code in config\n");
+                return 1;
+            }
+            if (!tcfg.identity)
+                tcfg.identity = Identity::create(inv->network_id);
+            TunnelPeer tp;
+            tp.node_id = hash_public_key(inv->bootstrap_pubkey);
+            tp.public_key = inv->bootstrap_pubkey;
+            tp.endpoint = inv->bootstrap_endpoint;
+            AllowedIP aip;
+            aip.prefix = inv->bootstrap_prefix;
+            aip.prefix_length = inv->bootstrap_prefix_len;
+            tp.allowed_ips.push_back(aip);
+            tcfg.peers.push_back(std::move(tp));
         }
-        if (!tcfg.identity)
-            tcfg.identity = Identity::create(inv->network_id);
-        TunnelPeer tp;
-        tp.node_id = hash_public_key(inv->bootstrap_pubkey);
-        tp.public_key = inv->bootstrap_pubkey;
-        tp.endpoint = inv->bootstrap_endpoint;
-        AllowedIP aip;
-        aip.prefix = inv->bootstrap_prefix;
-        aip.prefix_length = inv->bootstrap_prefix_len;
-        tp.allowed_ips.push_back(aip);
-        tcfg.peers.push_back(std::move(tp));
     }
 
     for (const auto& pc : app.peers) {

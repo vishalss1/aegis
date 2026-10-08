@@ -27,7 +27,7 @@ struct InterfaceConfig {
 struct AppConfig {
     InterfaceConfig iface;                 // field name avoids the MSVC `interface` macro
     std::optional<NetworkId> network_id;   // absent -> all-zero default network
-    std::optional<std::string> invite;     // AEGIS1 invite code
+    std::optional<std::string> invite;     // AEGIS1 or AEGIS2 invite/grant
     std::vector<PeerConfig> peers;
 };
 

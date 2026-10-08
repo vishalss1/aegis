@@ -90,6 +90,16 @@ int main() {
     CHECK(decoded_grant && decoded_grant->allowed_prefixes.size() == 1);
     CHECK(decoded_grant && decoded_grant->bootstrap_candidates.size() == 1);
     CHECK(decoded_grant && decoded_grant->capabilities == grant.capabilities);
+    CHECK(decoded_grant && validate_aegis2_grant(
+        *decoded_grant, 1'850'000'000, AEGIS2_CAPABILITY_JOIN));
+    CHECK(decoded_grant && !validate_aegis2_grant(
+        *decoded_grant, 1'900'000'000, AEGIS2_CAPABILITY_JOIN));
+    CHECK(decoded_grant && !validate_aegis2_grant(
+        *decoded_grant, 1'799'999'999, AEGIS2_CAPABILITY_JOIN));
+    CHECK(decoded_grant && !validate_aegis2_grant(
+        *decoded_grant, 1'850'000'000, AEGIS2_CAPABILITY_ADMIN));
+    CHECK(decoded_grant && !validate_aegis2_grant(
+        *decoded_grant, 1'850'000'000, 1ull << 63));
     CHECK(!decode_aegis2_grant(aegis2 + "A").has_value());
     Key unrelated_signing_key{};
     CHECK(encode_aegis2_grant(grant, unrelated_signing_key).empty());

@@ -87,7 +87,9 @@ std::optional<std::vector<uint8_t>> aegis2_signed_bytes(
     if (!writer.write_u8(static_cast<uint8_t>(grant.bootstrap_candidates.size())))
         return std::nullopt;
     for (const auto& candidate : grant.bootstrap_candidates) {
-        if (!writer.write_bytes(candidate.x25519_public_key) ||
+        if (candidate.x25519_public_key == Key{} ||
+            candidate.endpoint.ip == 0 || candidate.endpoint.port == 0 ||
+            !writer.write_bytes(candidate.x25519_public_key) ||
             !writer.write_u32(candidate.endpoint.ip) ||
             !writer.write_u16(candidate.endpoint.port))
             return std::nullopt;
@@ -157,6 +159,20 @@ bool verify_aegis2_grant_signature(const Aegis2MembershipGrant& grant) {
                                     grant.signature);
 }
 
+bool validate_aegis2_grant(
+    const Aegis2MembershipGrant& grant, uint64_t now_utc_seconds,
+    uint64_t required_capabilities) {
+    if ((grant.capabilities & ~AEGIS2_KNOWN_CAPABILITIES) != 0 ||
+        (required_capabilities & ~AEGIS2_KNOWN_CAPABILITIES) != 0 ||
+        (grant.capabilities & required_capabilities) != required_capabilities ||
+        grant.bootstrap_candidates.empty() ||
+        grant.expires_at <= grant.issued_at ||
+        now_utc_seconds < grant.issued_at ||
+        now_utc_seconds >= grant.expires_at)
+        return false;
+    return verify_aegis2_grant_signature(grant);
+}
+
 std::optional<Aegis2MembershipGrant> decode_aegis2_grant(
     const std::string& invite_str) {
     size_t start = invite_str.find_first_not_of(" \t\r\n\"");
@@ -210,7 +226,10 @@ std::optional<Aegis2MembershipGrant> decode_aegis2_grant(
         const auto key = reader.read_bytes(32);
         const auto ip = reader.read_u32();
         const auto port = reader.read_u16();
-        if (!key || !ip || !port) return std::nullopt;
+        if (!key || !ip || !port || *ip == 0 || *port == 0 ||
+            std::all_of(key->begin(), key->end(),
+                        [](uint8_t byte) { return byte == 0; }))
+            return std::nullopt;
         Aegis2BootstrapCandidate candidate;
         std::copy(key->begin(), key->end(), candidate.x25519_public_key.begin());
         candidate.endpoint.ip = *ip;

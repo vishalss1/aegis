@@ -49,6 +49,13 @@ struct Aegis2MembershipGrant {
 
 inline constexpr size_t AEGIS2_MAX_PREFIXES = 16;
 inline constexpr size_t AEGIS2_MAX_BOOTSTRAP_CANDIDATES = 4;
+inline constexpr uint64_t AEGIS2_CAPABILITY_JOIN = 1ull << 0;
+inline constexpr uint64_t AEGIS2_CAPABILITY_ROUTE = 1ull << 1;
+inline constexpr uint64_t AEGIS2_CAPABILITY_RELAY = 1ull << 2;
+inline constexpr uint64_t AEGIS2_CAPABILITY_ADMIN = 1ull << 3;
+inline constexpr uint64_t AEGIS2_KNOWN_CAPABILITIES =
+    AEGIS2_CAPABILITY_JOIN | AEGIS2_CAPABILITY_ROUTE |
+    AEGIS2_CAPABILITY_RELAY | AEGIS2_CAPABILITY_ADMIN;
 
 // The signer private key must correspond to issuer_signing_public_key.
 [[nodiscard]] std::string encode_aegis2_grant(
@@ -59,3 +66,8 @@ inline constexpr size_t AEGIS2_MAX_BOOTSTRAP_CANDIDATES = 4;
     const std::string& invite_str);
 [[nodiscard]] bool verify_aegis2_grant_signature(
     const Aegis2MembershipGrant& grant);
+// Validate the signature, validity interval [issued_at, expires_at), known
+// capability set, and caller-required capabilities at an injected UTC time.
+[[nodiscard]] bool validate_aegis2_grant(
+    const Aegis2MembershipGrant& grant, uint64_t now_utc_seconds,
+    uint64_t required_capabilities);
