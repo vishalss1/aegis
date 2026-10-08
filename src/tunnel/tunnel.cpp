@@ -56,7 +56,8 @@ Tunnel::~Tunnel() { stop(); }
 
 bool Tunnel::start(const TunnelConfig& config, const std::string& adapter_name) {
     const auto overlay_mtu = safe_overlay_mtu(
-        config.underlay_mtu, config.max_relay_depth);
+        config.underlay_mtu, config.max_relay_depth,
+        config.padding_bucket_size);
     if (!overlay_mtu) {
         aegis_log("[tunnel] invalid MTU contract: underlay=%u route-depth=%u\n",
                   config.underlay_mtu,
@@ -94,7 +95,9 @@ bool Tunnel::start(const TunnelConfig& config, const std::string& adapter_name) 
     for (auto b : identity_.node_id) aegis_log( "%02x", b);
     aegis_log( "\n");
 
-    session_manager_ = std::make_unique<SessionManager>(identity_, clock_);
+    session_manager_ = std::make_unique<SessionManager>(
+        identity_, clock_, random_, SessionCapacityLimits{},
+        config_.padding_bucket_size);
     peers_.set_session_manager(session_manager_.get());
 
     // Step 15 lifecycle: keep-alive and dead-detection intervals feed the
@@ -278,7 +281,8 @@ std::vector<EndpointCandidate> Tunnel::local_endpoint_candidates() const {
 }
 
 bool Tunnel::packet_fits_route(size_t packet_size, size_t route_depth) {
-    const auto route_mtu = safe_overlay_mtu(config_.underlay_mtu, route_depth);
+    const auto route_mtu = safe_overlay_mtu(
+        config_.underlay_mtu, route_depth, config_.padding_bucket_size);
     if (route_mtu && packet_size <= *route_mtu)
         return true;
 
@@ -1741,7 +1745,8 @@ void Tunnel::handle_relay(const uint8_t* data, size_t len, uint32_t session_id) 
     }
 
     const size_t forwarded_size =
-        SESSION_FRAME_OVERHEAD + RELAY_SOURCE_OVERHEAD + peeled->inner.size();
+        session_frame_overhead(config_.padding_bucket_size) +
+        RELAY_SOURCE_OVERHEAD + peeled->inner.size();
     const auto quota = relay_forward_limiter_.allow(
         authenticated_sender, forwarded_size);
     if (quota != RelayQuotaResult::Allowed) {
@@ -1960,8 +1965,10 @@ void Tunnel::send_peer_table(const NodeId& to_peer, bool force_full) {
         return;
 
     const size_t max_payload_bytes =
-        transport_.max_datagram_size() > SESSION_FRAME_OVERHEAD
-            ? transport_.max_datagram_size() - SESSION_FRAME_OVERHEAD
+        transport_.max_datagram_size() >
+                session_frame_overhead(config_.padding_bucket_size)
+            ? transport_.max_datagram_size() -
+                session_frame_overhead(config_.padding_bucket_size)
             : 0;
     const auto batches = make_gossip_batches(updates, max_payload_bytes);
     size_t sent_batches = 0;

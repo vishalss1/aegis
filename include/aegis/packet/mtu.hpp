@@ -19,9 +19,7 @@ inline constexpr size_t OUTER_UDP_HEADER_SIZE = 8;
 inline constexpr size_t OUTER_IPV4_UDP_OVERHEAD =
     OUTER_IPV4_HEADER_SIZE + OUTER_UDP_HEADER_SIZE;
 inline constexpr size_t SESSION_FRAME_OVERHEAD =
-    PACKET_HEADER_SIZE + CHACHA20_POLY1305_NONCE_SIZE +
-    CHACHA20_POLY1305_TAG_SIZE + SESSION_LENGTH_PREFIX_SIZE +
-    SESSION_MAX_PADDING_SIZE;
+    session_frame_overhead(SESSION_PADDING_BUCKET_SIZE);
 inline constexpr size_t RELAY_SOURCE_OVERHEAD =
     NODE_ID_SIZE + RELAY_CONTENT_TYPE_SIZE;
 
@@ -33,11 +31,15 @@ static_assert(ONION_OVERHEAD == 60,
 // Relayed routes additionally carry the source NodeID and one onion layer per
 // peer in the route path.
 [[nodiscard]] constexpr std::optional<size_t>
-wire_overhead_for_route_depth(size_t route_depth) noexcept {
-    if (route_depth < DIRECT_ROUTE_DEPTH || route_depth > ONION_MAX_HOPS)
+wire_overhead_for_route_depth(
+    size_t route_depth,
+    size_t padding_bucket_size = SESSION_PADDING_BUCKET_SIZE) noexcept {
+    if (route_depth < DIRECT_ROUTE_DEPTH || route_depth > ONION_MAX_HOPS ||
+        !is_supported_session_padding_bucket(padding_bucket_size))
         return std::nullopt;
 
-    size_t overhead = OUTER_IPV4_UDP_OVERHEAD + SESSION_FRAME_OVERHEAD;
+    size_t overhead = OUTER_IPV4_UDP_OVERHEAD +
+                      session_frame_overhead(padding_bucket_size);
     if (route_depth > DIRECT_ROUTE_DEPTH) {
         overhead += RELAY_SOURCE_OVERHEAD + route_depth * ONION_OVERHEAD;
     }
@@ -49,10 +51,13 @@ wire_overhead_for_route_depth(size_t route_depth) noexcept {
 // 576-byte minimum reassembly size are rejected instead of configuring an
 // unusably small virtual interface.
 [[nodiscard]] constexpr std::optional<size_t>
-safe_overlay_mtu(size_t underlay_mtu, size_t route_depth) noexcept {
+safe_overlay_mtu(
+    size_t underlay_mtu, size_t route_depth,
+    size_t padding_bucket_size = SESSION_PADDING_BUCKET_SIZE) noexcept {
     if (underlay_mtu > MAXIMUM_IPV4_MTU)
         return std::nullopt;
-    const auto overhead = wire_overhead_for_route_depth(route_depth);
+    const auto overhead = wire_overhead_for_route_depth(
+        route_depth, padding_bucket_size);
     if (!overhead || underlay_mtu < *overhead + MINIMUM_IPV4_MTU)
         return std::nullopt;
     return underlay_mtu - *overhead;

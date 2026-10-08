@@ -42,7 +42,8 @@ public:
         const Identity& identity,
         ProtocolClock& clock = system_protocol_clock(),
         RandomSource& random = system_random_source(),
-        SessionCapacityLimits capacity = {});
+        SessionCapacityLimits capacity = {},
+        size_t padding_bucket_size = SESSION_PADDING_BUCKET_SIZE);
 
     SessionManager(const SessionManager&) = delete;
     SessionManager& operator=(const SessionManager&) = delete;
@@ -147,6 +148,7 @@ private:
     ProtocolClock& clock_;
     RandomSource& random_;
     SessionCapacityLimits capacity_;
+    size_t padding_bucket_size_ = SESSION_PADDING_BUCKET_SIZE;
     std::map<NodeId, SessionState> sessions_;
     std::map<uint32_t, NodeId> session_to_peer_;
 

@@ -21,6 +21,8 @@ struct InterfaceConfig {
     uint16_t listen_port = 0;
     uint32_t underlay_mtu = static_cast<uint32_t>(DEFAULT_UNDERLAY_MTU);
     uint8_t max_relay_depth = static_cast<uint8_t>(ONION_MAX_HOPS);
+    uint16_t padding_bucket_size =
+        static_cast<uint16_t>(SESSION_PADDING_BUCKET_SIZE);
     std::optional<std::string> stun_server; // "stun.l.google.com:19302"
 };
 

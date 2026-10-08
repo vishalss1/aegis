@@ -172,6 +172,15 @@ bool Config::parse_yaml(const std::string& content) {
                 cfg.iface.max_relay_depth = static_cast<uint8_t>(depth);
                 continue;
             }
+            if (key == "padding_bucket_size") {
+                uint32_t bucket_size = 0;
+                if (!parse_bounded_uint32(value, 32, 256, bucket_size) ||
+                    !is_supported_session_padding_bucket(bucket_size))
+                    return false;
+                cfg.iface.padding_bucket_size =
+                    static_cast<uint16_t>(bucket_size);
+                continue;
+            }
             if (key == "stun_server") {
                 if (value.empty()) return false;
                 cfg.iface.stun_server = value;
@@ -272,7 +281,8 @@ bool Config::parse_yaml(const std::string& content) {
         return false;
     }
     if (!safe_overlay_mtu(
-            cfg.iface.underlay_mtu, cfg.iface.max_relay_depth)) {
+            cfg.iface.underlay_mtu, cfg.iface.max_relay_depth,
+            cfg.iface.padding_bucket_size)) {
         fprintf(stderr,
                 "[config] parse_yaml: underlay_mtu cannot support the "
                 "configured max_relay_depth\n");

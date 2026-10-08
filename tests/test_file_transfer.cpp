@@ -131,10 +131,10 @@ int main() {
 
     const auto direct_mtu = safe_overlay_mtu(1500, DIRECT_ROUTE_DEPTH);
     const auto relayed_mtu = safe_overlay_mtu(1500, ONION_MAX_HOPS);
-    CHECK(direct_mtu && *direct_mtu == 1363);
-    CHECK(relayed_mtu && *relayed_mtu == 850);
-    CHECK(direct_mtu && file_chunk_size_for_overlay_mtu(*direct_mtu) == 1347);
-    CHECK(relayed_mtu && file_chunk_size_for_overlay_mtu(*relayed_mtu) == 834);
+    CHECK(direct_mtu && *direct_mtu == 1361);
+    CHECK(relayed_mtu && *relayed_mtu == 848);
+    CHECK(direct_mtu && file_chunk_size_for_overlay_mtu(*direct_mtu) == 1345);
+    CHECK(relayed_mtu && file_chunk_size_for_overlay_mtu(*relayed_mtu) == 832);
     CHECK(file_chunk_size_for_overlay_mtu(576) == 560);
     CHECK(file_chunk_size_for_overlay_mtu(527) == std::nullopt);
     CHECK(file_chunk_size_for_overlay_mtu(65535) ==

@@ -135,35 +135,43 @@ int main() {
     {
         CHECK(PACKET_VERSION == 2);
         CHECK(session_padded_plaintext_size(0) == 64);
-        CHECK(session_padded_plaintext_size(62) == 64);
-        CHECK(session_padded_plaintext_size(63) == 128);
+        CHECK(session_padded_plaintext_size(60) == 64);
+        CHECK(session_padded_plaintext_size(61) == 128);
+        CHECK(session_padded_plaintext_size(20, 32) == 32);
+        CHECK(session_padded_plaintext_size(125, 128) == 256);
+        CHECK(!is_supported_session_padding_bucket(96));
+        CHECK(session_frame_overhead(32) == 79);
+        CHECK(session_frame_overhead(64) == 111);
+        CHECK(session_frame_overhead(128) == 175);
+        CHECK(session_frame_overhead(256) == 303);
+        CHECK(!wire_overhead_for_route_depth(2, 96).has_value());
         CHECK(session_padded_plaintext_size(
                   SESSION_MAX_LOGICAL_PAYLOAD_SIZE) ==
               SESSION_MAX_PAYLOAD_SIZE);
         CHECK(OUTER_IPV4_UDP_OVERHEAD == 28);
-        CHECK(SESSION_FRAME_OVERHEAD == 109);
+        CHECK(SESSION_FRAME_OVERHEAD == 111);
         CHECK(RELAY_SOURCE_OVERHEAD == 33);
         CHECK(ONION_OVERHEAD == 60);
 
         const auto direct = wire_overhead_for_route_depth(1);
         CHECK(direct.has_value());
-        CHECK(direct && *direct == 137);
+        CHECK(direct && *direct == 139);
 
         const auto two_hop = wire_overhead_for_route_depth(2);
         const auto three_hop = wire_overhead_for_route_depth(3);
-        CHECK(two_hop && *two_hop == 290);
-        CHECK(three_hop && *three_hop == 350);
+        CHECK(two_hop && *two_hop == 292);
+        CHECK(three_hop && *three_hop == 352);
         CHECK(two_hop && three_hop && *three_hop - *two_hop == 60);
 
         const auto maximum =
             wire_overhead_for_route_depth(ONION_MAX_HOPS);
-        CHECK(maximum && *maximum == 650);
+        CHECK(maximum && *maximum == 652);
         CHECK(!wire_overhead_for_route_depth(0).has_value());
         CHECK(!wire_overhead_for_route_depth(
             ONION_MAX_HOPS + 1).has_value());
 
         constexpr std::array<size_t, ONION_MAX_HOPS> expected_mtu = {
-            1363, 1210, 1150, 1090, 1030, 970, 910, 850
+            1361, 1208, 1148, 1088, 1028, 968, 908, 848
         };
         for (size_t depth = 1; depth <= ONION_MAX_HOPS; ++depth) {
             const auto overhead = wire_overhead_for_route_depth(depth);
@@ -177,9 +185,9 @@ int main() {
                   *mtu + 1 + *overhead > DEFAULT_UNDERLAY_MTU);
         }
 
-        CHECK(safe_overlay_mtu(1226, ONION_MAX_HOPS) ==
+        CHECK(safe_overlay_mtu(1228, ONION_MAX_HOPS) ==
               MINIMUM_IPV4_MTU);
-        CHECK(!safe_overlay_mtu(1225, ONION_MAX_HOPS).has_value());
+        CHECK(!safe_overlay_mtu(1227, ONION_MAX_HOPS).has_value());
         CHECK(!safe_overlay_mtu(MAXIMUM_IPV4_MTU + 1, 1).has_value());
     }
 

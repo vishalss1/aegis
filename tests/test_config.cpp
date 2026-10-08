@@ -20,6 +20,7 @@ interface:
   listen_port: 51820
   underlay_mtu: 1500
   max_relay_depth: 8
+  padding_bucket_size: 128
 
 identity:
   network_id: 000102030405060708090a0b0c0d0e0f000102030405060708090a0b0c0d0e0f
@@ -49,9 +50,11 @@ int main() {
         CHECK(app.iface.listen_port == 51820);
         CHECK(app.iface.underlay_mtu == 1500);
         CHECK(app.iface.max_relay_depth == 8);
+        CHECK(app.iface.padding_bucket_size == 128);
         const auto overlay_mtu = safe_overlay_mtu(
-            app.iface.underlay_mtu, app.iface.max_relay_depth);
-    CHECK(overlay_mtu && *overlay_mtu == 915);
+            app.iface.underlay_mtu, app.iface.max_relay_depth,
+            app.iface.padding_bucket_size);
+        CHECK(overlay_mtu && *overlay_mtu == 784);
         CHECK(app.network_id.has_value());
         CHECK(app.network_id->size() == 32);
         CHECK((*app.network_id)[0] == 0x00 && (*app.network_id)[1] == 0x01);
@@ -99,6 +102,8 @@ int main() {
         CHECK(cfg.get().peers.empty());
         CHECK(cfg.get().iface.underlay_mtu == DEFAULT_UNDERLAY_MTU);
         CHECK(cfg.get().iface.max_relay_depth == ONION_MAX_HOPS);
+        CHECK(cfg.get().iface.padding_bucket_size ==
+              SESSION_PADDING_BUCKET_SIZE);
     }
 
     // ---- 4. Errors ----------------------------------------------------------
@@ -117,6 +122,9 @@ int main() {
         CHECK(!cfg.parse_yaml(
             "interface:\n  address: 10.0.0.1/24\n  listen_port: 51820\n"
             "  underlay_mtu: 1500\n  max_relay_depth: 9\n"));  // depth above range
+        CHECK(!cfg.parse_yaml(
+            "interface:\n  address: 10.0.0.1/24\n  listen_port: 51820\n"
+            "  padding_bucket_size: 96\n"));  // unsupported bucket
         CHECK(!cfg.parse_yaml("foo:\n  bar: 1\n"));                          // unknown top-level
         CHECK(!cfg.parse_yaml("interface:\n  bogus: 1\n"));                  // unknown key
         CHECK(!cfg.parse_yaml(

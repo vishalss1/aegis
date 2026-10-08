@@ -181,6 +181,38 @@ int main() {
             bob.node_id, oversized.data(), oversized.size()).has_value());
     }
 
+    // ---- 2b. Configured buckets interoperate across supported policies -----
+    {
+        SessionManager sm_a(
+            alice, system_protocol_clock(), system_random_source(), {}, 128);
+        SessionManager sm_b(bob);
+        const uint32_t session_id = 0xABCD0202;
+        const auto init = sm_a.create_handshake_init(
+            session_id, bob.node_id, bob.keypair.public_key);
+        CHECK(init.has_value());
+        if (init) {
+            const auto response = sm_b.handle_handshake_init(*init, session_id);
+            CHECK(response.has_value());
+            if (response)
+                CHECK(sm_a.handle_handshake_resp(response->message, session_id));
+        }
+        const uint8_t plaintext[] = {1, 2, 3, 4, 5};
+        const auto encrypted = sm_a.encrypt_message(
+            bob.node_id, TYPE_CHAT_MSG, plaintext, sizeof(plaintext));
+        CHECK(encrypted && encrypted->size() == 16 + 12 + 128 + 16);
+        const auto decrypted = encrypted
+            ? sm_b.decrypt_message(encrypted->data(), encrypted->size())
+            : std::nullopt;
+        CHECK(decrypted && decrypted->payload.size() == sizeof(plaintext) &&
+              std::memcmp(decrypted->payload.data(), plaintext,
+                          sizeof(plaintext)) == 0);
+
+        SessionManager invalid_bucket(alice, system_protocol_clock(),
+                                      system_random_source(), {}, 96);
+        CHECK(!invalid_bucket.encrypt_message(
+            bob.node_id, TYPE_CHAT_MSG, plaintext, sizeof(plaintext)));
+    }
+
     // ---- 3. Replay rejection ------------------------------------------------
     {
         SessionManager sm_a(alice);

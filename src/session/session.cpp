@@ -20,9 +20,9 @@ static uint32_t bswap32(uint32_t x) {
 
 SessionManager::SessionManager(
     const Identity& identity, ProtocolClock& clock, RandomSource& random,
-    SessionCapacityLimits capacity)
+    SessionCapacityLimits capacity, size_t padding_bucket_size)
     : identity_(identity), clock_(clock), random_(random),
-      capacity_(capacity) {}
+      capacity_(capacity), padding_bucket_size_(padding_bucket_size) {}
 
 std::array<uint8_t, 16> SessionManager::serialize_header(const PacketHeader& hdr) {
     return serialize_packet_header(hdr);
@@ -506,16 +506,19 @@ std::optional<std::vector<uint8_t>> SessionManager::encrypt_message(
     const uint8_t* plaintext, size_t pt_len, uint8_t flags)
 {
     if ((pt_len > 0 && !plaintext) ||
+        !is_supported_session_padding_bucket(padding_bucket_size_) ||
         pt_len > SESSION_MAX_LOGICAL_PAYLOAD_SIZE ||
         pt_len > static_cast<size_t>((std::numeric_limits<uint32_t>::max)()))
         return std::nullopt;
 
-    const size_t padded_size = session_padded_plaintext_size(pt_len);
+    const size_t padded_size = session_padded_plaintext_size(
+        pt_len, padding_bucket_size_);
     if (padded_size > SESSION_MAX_PAYLOAD_SIZE)
         return std::nullopt;
     std::vector<uint8_t> protected_payload(padded_size);
     WireWriter payload_writer(protected_payload);
     if (!payload_writer.write_u16(static_cast<uint16_t>(pt_len)) ||
+        !payload_writer.write_u16(static_cast<uint16_t>(padding_bucket_size_)) ||
         (pt_len > 0 && !payload_writer.write_bytes(
             std::span<const uint8_t>(plaintext, pt_len))))
         return std::nullopt;
@@ -578,7 +581,7 @@ std::optional<std::vector<uint8_t>> SessionManager::encrypt_message(
 std::optional<SessionManager::DecryptedMessage> SessionManager::decrypt_message(
     const uint8_t* data, size_t len)
 {
-    if (len < 16 + 12 + SESSION_PADDING_BUCKET_SIZE +
+    if (len < 16 + 12 + SESSION_PADDING_BUCKET_MIN +
                   CHACHA20_POLY1305_TAG_SIZE) {
         aegis_log( "[session] decrypt: packet too small (%zu)\n", len);
         return std::nullopt;
@@ -597,9 +600,8 @@ std::optional<SessionManager::DecryptedMessage> SessionManager::decrypt_message(
     }
 
     size_t ct_len = hdr.payload_length;
-    if (ct_len < SESSION_PADDING_BUCKET_SIZE ||
-        ct_len > SESSION_MAX_PAYLOAD_SIZE ||
-        ct_len % SESSION_PADDING_BUCKET_SIZE != 0)
+    if (ct_len < SESSION_PADDING_BUCKET_MIN ||
+        ct_len > SESSION_MAX_PAYLOAD_SIZE)
         return std::nullopt;
     if (16 + 12 + ct_len + 16 != len) {
         aegis_log( "[session] decrypt: length mismatch (hdr=%u, wire=%zu)\n",
@@ -648,9 +650,11 @@ std::optional<SessionManager::DecryptedMessage> SessionManager::decrypt_message(
 
     WireReader payload_reader(std::span<const uint8_t>(pt_buf, ct_len));
     const auto logical_length = payload_reader.read_u16();
-    if (!logical_length ||
+    const auto bucket_size = payload_reader.read_u16();
+    if (!logical_length || !bucket_size ||
+        !is_supported_session_padding_bucket(*bucket_size) ||
         *logical_length > SESSION_MAX_LOGICAL_PAYLOAD_SIZE ||
-        session_padded_plaintext_size(*logical_length) != ct_len)
+        session_padded_plaintext_size(*logical_length, *bucket_size) != ct_len)
         return std::nullopt;
     const auto logical_payload = payload_reader.read_bytes(*logical_length);
     const auto padding = payload_reader.read_bytes(payload_reader.remaining());

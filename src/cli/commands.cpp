@@ -119,6 +119,8 @@ static int cmd_config(const ParsedInput& input, CliContext& ctx) {
             std::to_string(ctx.active_config.iface.underlay_mtu) + "\n";
         yaml += "  max_relay_depth: " +
             std::to_string(ctx.active_config.iface.max_relay_depth) + "\n";
+        yaml += "  padding_bucket_size: " +
+            std::to_string(ctx.active_config.iface.padding_bucket_size) + "\n";
         if (ctx.active_config.iface.stun_server) {
             yaml += "  stun_server: " + *ctx.active_config.iface.stun_server + "\n";
         }

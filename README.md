@@ -461,6 +461,8 @@ interface:
   underlay_mtu: 1500
   # Maximum Route::path peer count (1 = direct only, 8 = protocol maximum)
   max_relay_depth: 8
+  # Session payload size bucket: 32, 64, 128, or 256 bytes
+  padding_bucket_size: 64
   # Optional STUN server; discovery uses the bound mesh UDP socket (RFC 5389)
   stun_server: stun.l.google.com:19302
 
@@ -494,6 +496,8 @@ peer:
 - `underlay_mtu` must leave at least a 576-byte overlay MTU after framing.
 - `max_relay_depth` must be in range 1–8; its worst-case overhead determines
   the Wintun IPv4 MTU.
+- `padding_bucket_size` must be 32, 64, 128, or 256; all nodes should use the
+  same value to apply a consistent relay-size policy.
 
 ## Overlay MTU Policy
 
@@ -514,11 +518,12 @@ overlay MTU = underlay_mtu - wire overhead(max_relay_depth)
 ```
 
 Configuration is rejected unless the result is at least IPv4's 576-byte
-minimum reassembly size. Session plaintext is now encoded as a two-byte
-authenticated logical length, payload, and random padding to a 64-byte bucket.
-The session header version is 2; older packet-version peers fail closed. The
-worst-case padding allowance means an eight-hop route requires an underlay MTU
-of at least 1,226 bytes.
+minimum reassembly size. Session plaintext carries an authenticated logical
+length and selected bucket size, followed by random padding to that bucket.
+Supported bucket sizes are 32, 64, 128, and 256 bytes; larger buckets reduce
+size precision but consume more MTU. The session header version is 2; older
+packet-version peers fail closed. With the default 64-byte bucket, an eight-hop
+route requires an underlay MTU of at least 1,228 bytes.
 
 ### Wire-overhead calculation
 
@@ -526,7 +531,7 @@ of at least 1,226 bytes.
 |:--|--:|:--|
 | Outer IPv4 header | 20 | Every packet |
 | Outer UDP header | 8 | Every packet |
-| Encrypted session frame | 109 | Worst case: 44-byte header/nonce/tag + 2-byte logical length + up to 63 padding bytes |
+| Encrypted session frame | 111 | Default 64-byte bucket: 44-byte header/nonce/tag + 4-byte logical length/bucket + up to 63 padding bytes |
 | Relay source NodeID | 32 | Relayed packets only |
 | Relay content class | 1 | Relayed packets only: IP packet or path probe |
 | Onion layer | 60 per hop | Relayed packets only: 32-byte next hop, 12-byte nonce, 16-byte tag |
@@ -534,22 +539,22 @@ of at least 1,226 bytes.
 For route depth `d`:
 
 ```text
-direct (d = 1):   wire overhead = 28 + 109 = 137
-relayed (d >= 2): wire overhead = 28 + 109 + 33 + (60 * d)
+direct (d = 1):   wire overhead = 28 + 111 = 139
+relayed (d >= 2): wire overhead = 28 + 111 + 33 + (60 * d)
 ```
 
 With the default 1,500-byte underlay MTU, the complete budget is:
 
 | Route depth | Route type | Wire overhead | Safe overlay MTU |
 |--:|:--|--:|--:|
-| 1 | Direct | 137 | 1,363 |
-| 2 | Relayed | 290 | 1,210 |
-| 3 | Relayed | 350 | 1,150 |
-| 4 | Relayed | 410 | 1,090 |
-| 5 | Relayed | 470 | 1,030 |
-| 6 | Relayed | 530 | 970 |
-| 7 | Relayed | 590 | 910 |
-| 8 | Relayed | 650 | 850 |
+| 1 | Direct | 139 | 1,361 |
+| 2 | Relayed | 292 | 1,208 |
+| 3 | Relayed | 352 | 1,148 |
+| 4 | Relayed | 412 | 1,088 |
+| 5 | Relayed | 472 | 1,028 |
+| 6 | Relayed | 532 | 968 |
+| 7 | Relayed | 592 | 908 |
+| 8 | Relayed | 652 | 848 |
 
 The configured Wintun MTU uses the row for `max_relay_depth`. Outbound
 processing also checks the resolved route's actual depth before encryption.
