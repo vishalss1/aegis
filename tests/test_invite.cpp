@@ -62,6 +62,47 @@ int main() {
     CHECK(decoded_long_name.has_value());
     CHECK(decoded_long_name && decoded_long_name->network_name.size() == 64);
 
+    NetworkId grant_network{};
+    grant_network[0] = 9;
+    const Identity issuer = Identity::create(grant_network);
+    Aegis2MembershipGrant grant;
+    grant.network_id = grant_network;
+    grant.issuer_signing_public_key = issuer.signing_keypair.public_key;
+    grant.issuer_node_id = issuer.node_id;
+    grant.enrollment_nonce[0] = 0xA5;
+    grant.issued_at = 1'800'000'000;
+    grant.expires_at = 1'900'000'000;
+    grant.capabilities = 0x5;
+    grant.revocation_epoch = 3;
+    grant.allowed_prefixes.push_back({0x0A000000, 24});
+    Aegis2BootstrapCandidate candidate;
+    candidate.x25519_public_key = issuer.keypair.public_key;
+    candidate.endpoint = Endpoint::from_parts(203, 0, 113, 9, 51820);
+    grant.bootstrap_candidates.push_back(candidate);
+    const std::string aegis2 = encode_aegis2_grant(
+        grant, issuer.signing_keypair.private_key);
+    CHECK(aegis2.rfind("AEGIS2:", 0) == 0);
+    const auto decoded_grant = decode_aegis2_grant(aegis2);
+    CHECK(decoded_grant.has_value());
+    CHECK(!decode_invite(aegis2).has_value());
+    CHECK(decoded_grant && decoded_grant->network_id == grant.network_id);
+    CHECK(decoded_grant && decoded_grant->issuer_node_id == grant.issuer_node_id);
+    CHECK(decoded_grant && decoded_grant->allowed_prefixes.size() == 1);
+    CHECK(decoded_grant && decoded_grant->bootstrap_candidates.size() == 1);
+    CHECK(decoded_grant && decoded_grant->capabilities == grant.capabilities);
+    CHECK(!decode_aegis2_grant(aegis2 + "A").has_value());
+    Key unrelated_signing_key{};
+    CHECK(encode_aegis2_grant(grant, unrelated_signing_key).empty());
+    if (aegis2.size() > 16) {
+        std::string tampered = aegis2;
+        tampered[16] = tampered[16] == 'A' ? 'B' : 'A';
+        CHECK(!decode_aegis2_grant(tampered).has_value());
+    }
+    Aegis2MembershipGrant oversized = grant;
+    oversized.allowed_prefixes.resize(AEGIS2_MAX_PREFIXES + 1);
+    CHECK(encode_aegis2_grant(
+        oversized, issuer.signing_keypair.private_key).empty());
+
     printf("\n%d / %d passed\n", passed, tests);
     return (passed == tests) ? 0 : 1;
 }

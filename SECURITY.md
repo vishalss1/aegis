@@ -301,7 +301,10 @@ timeouts, packet loss, hairpin behavior, or vendor-specific filtering.
 - Secret key material is not consistently zeroized.
 - Static identities have no authenticated rotation mechanism.
 - AEGIS1 invites have no signature, expiry, capability restriction, or
-  revocation.
+  revocation. AEGIS2 now defines bounded, domain-separated signed membership
+  grants, but expiry/capability/revocation enforcement and issuer trust
+  configuration remain incomplete. The embedded signing key is not itself a
+  trust anchor.
 - The overlay is IPv4-only.
 
 ### LAN discovery is unauthenticated
