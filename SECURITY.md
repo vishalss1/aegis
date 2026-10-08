@@ -299,7 +299,9 @@ timeouts, packet loss, hairpin behavior, or vendor-specific filtering.
 ### Credential lifecycle is incomplete
 
 - Secret key material is not consistently zeroized.
-- Static identities have no authenticated rotation mechanism.
+- Rotation certificates can be generated and verified against a pinned prior
+  Ed25519 key, but are not yet persisted, distributed, or accepted by peers;
+  operational key rotation is not available.
 - AEGIS1 invites have no signature, expiry, capability restriction, or
   revocation. Config-based AEGIS2 joins validate the bounded, domain-separated
   grant signature, time window, known capabilities, and required join

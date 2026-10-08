@@ -68,6 +68,34 @@ int main() {
         CHECK(legacy_node_id == hash_public_key(id.keypair.public_key));
     }
 
+    // ---- 1c. Rotation certificate links two bound identities --------------
+    {
+        NetworkId net{};
+        Identity previous = Identity::create(net);
+        Identity next = Identity::create(net);
+        const auto certificate = create_identity_rotation_certificate(
+            previous, next, 1'850'000'000);
+        CHECK(certificate.has_value());
+        CHECK(certificate && verify_identity_rotation_certificate(
+            *certificate, previous.signing_keypair.public_key));
+        CHECK(certificate && !verify_identity_rotation_certificate(
+            *certificate, next.signing_keypair.public_key));
+        if (certificate) {
+            auto tampered = *certificate;
+            tampered.next_key_agreement_public_key[0] ^= 1;
+            CHECK(!verify_identity_rotation_certificate(
+                tampered, previous.signing_keypair.public_key));
+            tampered = *certificate;
+            tampered.issued_at++;
+            CHECK(!verify_identity_rotation_certificate(
+                tampered, previous.signing_keypair.public_key));
+        }
+        Identity invalid_next = next;
+        invalid_next.key_agreement_binding[0] ^= 1;
+        CHECK(!create_identity_rotation_certificate(
+            previous, invalid_next, 1'850'000'000).has_value());
+    }
+
     // ---- 2. NodeID is deterministic for a given public key ------------------
     {
         X25519KeyPair kp = x25519_generate_keypair();
