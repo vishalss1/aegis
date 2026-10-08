@@ -1511,7 +1511,7 @@ void Tunnel::handle_path_probe(
     candidates.erase(std::remove_if(
         candidates.begin(), candidates.end(), [&](const Route& route) {
             return learned_route_lease_expired(route, now) ||
-                (route.type == NextHopType::Relay && route.probe_failed);
+                route.probe_failed;
         }), candidates.end());
     if (candidates.empty())
         return;
@@ -1552,8 +1552,7 @@ void Tunnel::probe_due_routes() {
         aegis_log("[tunnel] %zu path probe(s) timed out\n", expired.size());
 
     for (const auto& route : routing_.routes()) {
-        if (route.type != NextHopType::Relay ||
-            learned_route_lease_expired(route, now))
+        if (learned_route_lease_expired(route, now))
             continue;
         if (route.probe_failed && route.probe_hold_down_until &&
             now < *route.probe_hold_down_until)

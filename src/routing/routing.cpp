@@ -132,8 +132,7 @@ bool RoutingEngine::mark_probe_sent(
     std::lock_guard<std::mutex> lock(mtx_);
     const auto route = std::find_if(routes_.begin(), routes_.end(),
         [&](const Route& candidate) {
-            return candidate.type == NextHopType::Relay &&
-                candidate.destination == destination &&
+            return candidate.destination == destination &&
                 candidate.next_hop == next_hop &&
                 candidate.prefix == canonical &&
                 candidate.prefix_length == prefix_length &&
@@ -156,8 +155,7 @@ bool RoutingEngine::record_probe_success(
     std::lock_guard<std::mutex> lock(mtx_);
     const auto route = std::find_if(routes_.begin(), routes_.end(),
         [&](const Route& candidate) {
-            return candidate.type == NextHopType::Relay &&
-                candidate.destination == destination &&
+            return candidate.destination == destination &&
                 candidate.next_hop == next_hop &&
                 candidate.prefix == canonical &&
                 candidate.prefix_length == prefix_length &&
@@ -188,8 +186,7 @@ bool RoutingEngine::record_probe_failure(
     std::lock_guard<std::mutex> lock(mtx_);
     const auto route = std::find_if(routes_.begin(), routes_.end(),
         [&](const Route& candidate) {
-            return candidate.type == NextHopType::Relay &&
-                candidate.destination == destination &&
+            return candidate.destination == destination &&
                 candidate.next_hop == next_hop &&
                 candidate.prefix == canonical &&
                 candidate.prefix_length == prefix_length &&
@@ -215,7 +212,7 @@ std::optional<Route> RoutingEngine::find_route(uint32_t dest_ip) const {
     const Route* best = nullptr;
 
     for (const auto& route : routes_) {
-        if (route.type == NextHopType::Relay && route.probe_failed)
+        if (route.probe_failed)
             continue;
         uint32_t mask = prefix_mask(route.prefix_length);
         if ((dest_ip & mask) != (route.prefix & mask)) continue;

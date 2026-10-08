@@ -388,6 +388,42 @@ int main() {
               !failed->probe_hold_down_until.has_value());
     }
 
+    // ---- 12. Failed configured direct path falls back to relay circuit -----
+    {
+        RoutingEngine re;
+        const auto start = ProtocolClock::time_point{} +
+            std::chrono::seconds(200);
+        const uint32_t prefix = make_ip(10,130,0,0);
+        const NodeId relay_peer = make_id(81);
+        const NodeId relay_mid = make_id(82);
+        const NodeId destination = make_id(83);
+
+        Route direct = make_direct(prefix, 24, destination);
+        Route circuit = make_relay(
+            prefix, 24, relay_peer, destination,
+            {relay_peer, relay_mid, destination});
+        circuit.validated_at = start;
+        CHECK(re.add_route(direct));
+        CHECK(re.add_route(circuit));
+        auto selected = re.find_route(make_ip(10,130,0,5));
+        CHECK(selected && selected->type == NextHopType::Direct);
+
+        CHECK(re.mark_probe_sent(destination, destination, prefix, 24, 1,
+                                 start));
+        CHECK(re.record_probe_failure(
+            destination, destination, prefix, 24, 1,
+            start + std::chrono::seconds(5)));
+        selected = re.find_route(make_ip(10,130,0,5));
+        CHECK(selected && selected->type == NextHopType::Relay &&
+              selected->path.size() == 3);
+
+        CHECK(re.record_probe_success(
+            destination, destination, prefix, 24, 1,
+            start + std::chrono::seconds(36), std::chrono::milliseconds(12)));
+        selected = re.find_route(make_ip(10,130,0,5));
+        CHECK(selected && selected->type == NextHopType::Direct);
+    }
+
     printf("\n%d / %d passed\n", passed, tests);
     return (passed == tests) ? 0 : 1;
 }
