@@ -90,7 +90,7 @@ int main() {
         CHECK(same_network.has_value());
         CHECK(same_network->node_id == bob.node_id);
         CHECK(same_network->network_id == net1);
-        CHECK(same_network->reachable_endpoint.ip == sender.ip);
+        CHECK(same_network->reachable_endpoint.address == sender.address);
         CHECK(same_network->reachable_endpoint.port == ep_bob.port);
         CHECK(same_network->last_seen_ms == observed_at_ms);
 
@@ -102,7 +102,7 @@ int main() {
         CHECK(cross_network.has_value());
         CHECK(cross_network->node_id == mallory.node_id);
         CHECK(cross_network->network_id == net2);
-        CHECK(cross_network->reachable_endpoint.ip == sender.ip);
+        CHECK(cross_network->reachable_endpoint.address == sender.address);
         CHECK(cross_network->reachable_endpoint.port == ep_mallory.port);
 
         // A node never records its own broadcast as a peer.

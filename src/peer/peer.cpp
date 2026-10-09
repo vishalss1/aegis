@@ -173,11 +173,11 @@ bool PeerManager::set_endpoint_candidates(
     if (candidates.empty() ||
         candidates.size() > ENDPOINT_CANDIDATE_MAX_COUNT)
         return false;
-    std::set<std::pair<uint32_t, uint16_t>> endpoints;
+    std::set<std::pair<IPAddress, uint16_t>> endpoints;
     for (const auto& candidate : candidates) {
         if (!valid_endpoint_candidate(candidate) ||
             !endpoints.emplace(
-                candidate.endpoint.ip, candidate.endpoint.port).second)
+                candidate.endpoint.address, candidate.endpoint.port).second)
             return false;
     }
     std::lock_guard<std::mutex> lock(mtx_);

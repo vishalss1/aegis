@@ -1,5 +1,6 @@
 #pragma once
 
+#include "aegis/net/endpoint.hpp"
 #include "aegis/transport/send_queue.hpp"
 #include <cstdint>
 #include <cstddef>
@@ -11,27 +12,9 @@
 #include <optional>
 #include <vector>
 #include <winsock2.h>
+#include <ws2tcpip.h>
 
 inline constexpr size_t IPV4_UDP_MAX_DATAGRAM_SIZE = 65507;
-
-struct Endpoint {
-    uint32_t ip;       // Network byte order
-    uint16_t port;     // Network byte order
-
-    bool operator==(const Endpoint& other) const {
-        return ip == other.ip && port == other.port;
-    }
-
-    static Endpoint from_parts(uint8_t a, uint8_t b, uint8_t c, uint8_t d, uint16_t port) {
-        Endpoint e;
-        e.ip = htonl((static_cast<uint32_t>(a) << 24) |
-                      (static_cast<uint32_t>(b) << 16) |
-                      (static_cast<uint32_t>(c) << 8) |
-                      static_cast<uint32_t>(d));
-        e.port = htons(port);
-        return e;
-    }
-};
 
 using OnReceiveCallback = std::function<void(const uint8_t* data, size_t len, Endpoint sender)>;
 
@@ -76,10 +59,26 @@ private:
 // broadcast address; `reuseaddr` allows multiple sockets (e.g. every Aegis
 // node on a LAN) to bind the same discovery port — broadcast datagrams are
 // then delivered to all of them (standard Windows SO_REUSEADDR semantics).
+//
+// `dual_stack` requests an IPv6 socket that also carries IPv4 as v4-mapped
+// addresses; it falls back to an IPv4-only socket if the host has no IPv6.
+// Broadcast needs an IPv4 socket, so `broadcast` overrides `dual_stack`.
 struct SocketOptions {
     bool broadcast = false;
     bool reuseaddr = false;
+    bool dual_stack = false;
 };
+
+// Converts a socket address to an Endpoint; v4-mapped IPv6 becomes IPv4.
+[[nodiscard]] std::optional<Endpoint> endpoint_from_sockaddr(
+    const sockaddr* address, size_t length) noexcept;
+
+// Fills `out` for sending on a socket of the given family. IPv4 destinations
+// on an IPv6 socket are v4-mapped; IPv6 destinations on an IPv4 socket fail.
+// Returns the sockaddr length, or 0 if the endpoint cannot be expressed.
+[[nodiscard]] int endpoint_to_sockaddr(
+    const Endpoint& endpoint, bool ipv6_socket,
+    sockaddr_storage& out) noexcept;
 
 struct ReceivedDatagram {
     std::vector<uint8_t> bytes;
@@ -134,12 +133,15 @@ public:
     bool start_receive(OnReceiveCallback callback);
     void stop_receive();
 
+    // True when the bound socket accepts IPv6 (and v4-mapped IPv4) peers.
+    bool ipv6_enabled() const { return ipv6_socket_; }
     uint16_t local_port() const { return local_port_; }
     bool is_open() const { return sock_ != INVALID_SOCKET; }
 
 private:
     SOCKET sock_ = INVALID_SOCKET;
     uint16_t local_port_ = 0;
+    bool ipv6_socket_ = false;
     std::thread send_thread_;
     std::thread recv_thread_;
     bool send_running_ = false;
@@ -151,7 +153,7 @@ private:
     std::mutex send_mutex_;
     std::mutex socket_send_mutex_;
     std::condition_variable send_cv_;
-    BoundedSendQueue send_queue_;
+    BasicBoundedSendQueue<Endpoint> send_queue_;
 
     void send_loop();
     void recv_loop(OnReceiveCallback callback);

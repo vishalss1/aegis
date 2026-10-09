@@ -131,7 +131,7 @@ int main() {
         pm.update_endpoint(bob.node_id, ep_new);
         b = pm.get_peer(bob.node_id);
         CHECK(b->endpoint.has_value());
-        CHECK(b->endpoint->ip == ep_new.ip);
+        CHECK(b->endpoint->address == ep_new.address);
         CHECK(b->endpoint->port == ep_new.port);
 
         pm.mark_dead(bob.node_id);
@@ -201,7 +201,7 @@ int main() {
         if (existing) {
             CHECK(existing->public_key == bob.keypair.public_key);
             CHECK(existing->endpoint.has_value());
-            CHECK(existing->endpoint->ip == ep_bob.ip);
+            CHECK(existing->endpoint->address == ep_bob.address);
             CHECK(existing->endpoint->port == ep_bob.port);
         }
 
@@ -211,7 +211,7 @@ int main() {
         CHECK(existing.has_value());
         if (existing) {
             CHECK(existing->endpoint.has_value());
-            CHECK(existing->endpoint->ip == ep_new.ip);
+            CHECK(existing->endpoint->address == ep_new.address);
             CHECK(existing->endpoint->port == ep_new.port);
         }
 
@@ -257,7 +257,7 @@ int main() {
         auto updated = pm.get_peer(bob.node_id);
         CHECK(updated.has_value());
         CHECK(updated && updated->endpoint.has_value());
-        CHECK(updated && updated->endpoint && updated->endpoint->ip == ep_new.ip);
+        CHECK(updated && updated->endpoint && updated->endpoint->address == ep_new.address);
         CHECK(updated && updated->endpoint && updated->endpoint->port == ep_new.port);
 
         Peer replacement = *pm.get_peer(alice.node_id);

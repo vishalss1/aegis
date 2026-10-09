@@ -58,10 +58,11 @@ std::optional<HandshakeCookie> HandshakeCookieManager::derive(
         return std::nullopt;
 
     std::array<uint8_t,
-        COOKIE_DOMAIN.size() + 4 + 2 + 4 + CryptoHash{}.size()> context{};
+        COOKIE_DOMAIN.size() + 1 + 16 + 2 + 4 + CryptoHash{}.size()> context{};
     WireWriter writer(context);
     if (!writer.write_bytes(COOKIE_DOMAIN) ||
-        !writer.write_u32(ntohl(source.ip)) ||
+        !writer.write_u8(static_cast<uint8_t>(source.address.family)) ||
+        !writer.write_bytes(source.address.bytes) ||
         !writer.write_u16(ntohs(source.port)) ||
         !writer.write_u32(session_id) ||
         !writer.write_bytes(*init_hash) || !writer.finished())

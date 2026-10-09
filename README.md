@@ -191,6 +191,7 @@ Signed membership revocation notices can be stored and propagated over encrypted
 | **Multi-hop Onion Routing** | Each hop decrypts one layer and learns the next hop. Relays also receive the source NodeID, and unpadded packet size and timing remain visible. |
 | **Bounded Route Candidates and Circuit Fallback** | Each prefix retains up to eight distinct destination/next-hop candidates instead of overwriting alternatives. Direct and learned relay routes receive bounded 30-second end-to-end probes with authenticated responses and RTT observations. A timeout suppresses only that route, falling back to another viable route (including a bounded onion circuit) and resumes probing after a 30-second hold-down; only a later success restores the route. Relay paths remain capped by `max_relay_depth` and forwarding quotas. |
 | **Typed IPv4/IPv6 Routing Prefixes** | Routing uses family-tagged addresses and 32-/128-bit longest-prefix matching. IPv6 prefixes propagate in peer-table v4 records; adapter IPv6 address configuration and IPv6 packet injection remain follow-up work. |
+| **IPv6 Transport Endpoints and STUN** | Endpoints are family-tagged. The mesh UDP socket is dual-stack (IPv6 with v4-mapped IPv4, falling back to IPv4-only when the host has no IPv6), and STUN parses IPv4 and IPv6 XOR-MAPPED-ADDRESS and resolves the server to a family the socket can reach. Handshake admission budgets IPv6 sources per /64. Presence, invite, and endpoint-candidate wire formats are still IPv4-only and reject IPv6 endpoints, so IPv6 endpoints are not yet advertised or gossiped. |
 | **Wintun IPv6 Address Configuration** | IPv4 or IPv6 overlay host addresses can be configured with their CIDR prefix. Wintun's IPv6 interface MTU is clamped to at least 1280; the packet tunnel still accepts IPv4 only, so this does not yet provide end-to-end IPv6 traffic. |
 | **Peer Table Gossip** | Full mesh convergence without a coordinator. Version-4 prefix records carry family, origin sequence, bounded lease, and metric metadata; receivers bind the advertiser to the authenticated adjacent sender and reject older learned sequences. Version-3 IPv4 records remain readable. Changes fan out as bounded, coalesced per-recipient deltas with periodic full resynchronization. |
 | **Identity-Hiding Gossip** | Peer tables carry NodeID + public key + IP prefix routes. Physical endpoints are never transmitted in gossip — non-adjacent nodes cannot learn each other's real IP. |
@@ -648,7 +649,7 @@ Unit test coverage:
 | `test_handshake_v2` | Canonical Noise IK INIT/RESP envelope framing and malformed-frame rejection |
 | `test_noise_dependency` | Pinned Noise-C suite availability and unsupported-algorithm confinement |
 | `test_noise_ik` | Noise vectors, transcript/split verification, malformed-message rejection, and failed-state destruction |
-| `test_transport` | Winsock loopback, bounded priority send queues, control-capacity reservation, queue-drop accounting, MTU-derived datagram limits, socket lifecycle, bounded handshake admission, and stateless retry cookies |
+| `test_transport` | Winsock loopback, dual-stack IPv6/v4-mapped sockets, family-tagged endpoints, per-/64 handshake admission, bounded priority send queues, control-capacity reservation, queue-drop accounting, MTU-derived datagram limits, socket lifecycle, bounded handshake admission, and stateless retry cookies |
 | `test_crypto` | X25519 keygen, shared secret derivation, determinism |
 | `test_random` | Checked random-source injection and CSPRNG generation |
 | `test_primitives` | SHA-256/BLAKE2s transcript hashes, HMAC/HKDF vectors, constant-time comparison |
@@ -664,7 +665,7 @@ Unit test coverage:
 | `test_discovery` | LAN presence broadcast format, NetworkID extraction, endpoint parsing |
 | `test_config` | YAML parsing, strict validation, unknown-key rejection, malformed value errors |
 | `test_invite` | AEGIS1 invite code encoding, decoding, validation, round-trip |
-| `test_stun` | RFC 5389 request/response validation, XOR-MAPPED-ADDRESS parsing, and loopback proof that discovery uses the bound mesh UDP port |
+| `test_stun` | RFC 5389 request/response validation, IPv4 and IPv6 XOR-MAPPED-ADDRESS parsing, and loopback proof that discovery uses the bound mesh UDP port |
 | `test_endpoint_candidate` | Canonical bounded candidate framing, all candidate types, authenticated punch framing, transaction/peer/source matching, timeout boundaries, and malformed length/version/type handling |
 | `test_nat_simulation` | Deterministic endpoint-independent and symmetric NAT mappings, direct punch reachability, failed-punch retention, relay-route fallback, and onion delivery through a relay circuit |
 | `test_cli` | CLI parsing/dispatch, versioned identity persistence, stable signer round-trip, legacy-key migration, and fail-closed corrupt-credential handling |

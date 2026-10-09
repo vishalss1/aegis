@@ -64,7 +64,7 @@ int main() {
     CHECK(parsed.has_value());
     if (parsed) {
         CHECK(ntohs(parsed->port) == 51820);
-        uint32_t ip_host = ntohl(parsed->ip);
+        uint32_t ip_host = ntohl(parsed->ipv4_network());
         CHECK(ip_host == 0xC0A80132); // 192.168.1.50
     }
 
@@ -147,7 +147,7 @@ int main() {
         const auto discovered = stun_discover(
             client, "127.0.0.1", server_port, 2000, random);
         CHECK(discovered.has_value());
-        CHECK(discovered && ntohl(discovered->ip) == mapped_ip);
+        CHECK(discovered && ntohl(discovered->ipv4_network()) == mapped_ip);
         CHECK(discovered && ntohs(discovered->port) == mapped_port);
         {
             std::lock_guard<std::mutex> lock(observation_mutex);
@@ -157,6 +157,47 @@ int main() {
         server.stop_receive();
         client.close();
         server.close();
+    }
+
+    // IPv6 XOR-MAPPED-ADDRESS is masked with the cookie and transaction ID.
+    {
+        // 2001:db8::1 port 40000
+        const std::array<uint8_t, 16> address{
+            0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
+        std::vector<uint8_t> v6 = {
+            0x01, 0x01, 0x00, 0x18,
+            0x21, 0x12, 0xA4, 0x42,
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+            0x00, 0x20, 0x00, 0x14, 0x00, 0x02};
+        const uint16_t encoded_port = static_cast<uint16_t>(40000u ^ 0x2112u);
+        v6.push_back(static_cast<uint8_t>(encoded_port >> 8));
+        v6.push_back(static_cast<uint8_t>(encoded_port));
+        const uint8_t mask[16] = {0x21, 0x12, 0xA4, 0x42,
+                                  1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12};
+        for (size_t i = 0; i < 16; ++i)
+            v6.push_back(static_cast<uint8_t>(address[i] ^ mask[i]));
+
+        const auto parsed_v6 = parse_stun_binding_response(
+            v6.data(), v6.size(), tx_id);
+        CHECK(parsed_v6.has_value());
+        CHECK(parsed_v6 && parsed_v6->is_ipv6());
+        CHECK(parsed_v6 && parsed_v6->address.bytes == address);
+        CHECK(parsed_v6 && ntohs(parsed_v6->port) == 40000);
+        CHECK(parsed_v6 &&
+              endpoint_to_string(*parsed_v6) == "[2001:db8::1]:40000");
+
+        // A different transaction ID changes the mask, so a response bound
+        // to another request cannot be replayed.
+        uint8_t other_tx[12] = {12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1};
+        CHECK(!parse_stun_binding_response(
+            v6.data(), v6.size(), other_tx).has_value());
+
+        auto short_v6 = v6;
+        short_v6[3] = 0x14;
+        short_v6[23] = 0x10;
+        short_v6.resize(short_v6.size() - 4);
+        CHECK(!parse_stun_binding_response(
+            short_v6.data(), short_v6.size(), tx_id).has_value());
     }
 
     platform_cleanup_winsock();

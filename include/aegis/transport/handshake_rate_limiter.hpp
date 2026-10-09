@@ -3,11 +3,13 @@
 #include "aegis/protocol/sources.hpp"
 #include "aegis/transport/transport.hpp"
 
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <map>
 #include <mutex>
+#include <utility>
 
 struct HandshakeRateLimitConfig {
     size_t per_source_limit = 8;
@@ -44,6 +46,11 @@ private:
     HandshakeRateLimitConfig config_;
     ProtocolClock::time_point global_window_start_;
     size_t global_count_ = 0;
-    std::map<uint32_t, Bucket> sources_;
+    // IPv4 sources are tracked per address; IPv6 per /64, since a single
+    // subscriber normally controls an entire /64.
+    using SourceKey = std::pair<uint8_t, std::array<uint8_t, 16>>;
+    [[nodiscard]] static SourceKey source_key(const Endpoint& source);
+
+    std::map<SourceKey, Bucket> sources_;
     mutable std::mutex mutex_;
 };

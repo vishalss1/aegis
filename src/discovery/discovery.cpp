@@ -22,12 +22,15 @@ std::vector<uint8_t> Discovery::build_presence(const Identity& identity,
     auto hdr_bytes = serialize_packet_header(hdr);
 
     std::vector<uint8_t> out(DISCOVERY_FRAME_SIZE);
+    // The presence wire format carries an IPv4 address only.
+    if (!endpoint.is_ipv4())
+        return {};
     WireWriter writer(out);
     const bool encoded = writer.write_bytes(hdr_bytes) &&
         writer.write_bytes(identity.node_id) &&
         writer.write_bytes(identity.network_id) &&
         writer.write_bytes(identity.creator_node_id) &&
-        writer.write_u32(ntohl(endpoint.ip)) &&
+        writer.write_u32(ntohl(endpoint.ipv4_network())) &&
         writer.write_u16(ntohs(endpoint.port)) && writer.finished();
     if (!encoded)
         return {};
@@ -65,8 +68,7 @@ std::optional<Presence> Discovery::parse_presence(const uint8_t* data, size_t le
     std::copy(network_id->begin(), network_id->end(), p.network_id.begin());
     std::copy(creator_node_id->begin(), creator_node_id->end(),
               p.creator_node_id.begin());
-    p.endpoint.ip = htonl(*endpoint_ip);
-    p.endpoint.port = htons(*endpoint_port);
+    p.endpoint = Endpoint(htonl(*endpoint_ip), htons(*endpoint_port));
     return p;
 }
 
@@ -80,8 +82,8 @@ std::optional<Presence> Discovery::parse_received_presence(
 
     // The announced IP is the peer's overlay address. The routable discovery
     // target is the datagram's source IP paired with the announced tunnel port.
-    presence->reachable_endpoint.ip = sender.ip;
-    presence->reachable_endpoint.port = presence->endpoint.port;
+    presence->reachable_endpoint =
+        Endpoint(sender.address, presence->endpoint.port);
     presence->last_seen_ms = observed_at_ms;
     return presence;
 }
@@ -157,7 +159,7 @@ void Discovery::on_presence(const uint8_t* data, size_t len, Endpoint sender) {
     aegis_log( "[discovery] presence from %02x%02x... (net %02x..., %s) at %08x:%04x\n",
             p->node_id[0], p->node_id[1], p->network_id[0],
             same_net ? "same network" : "DIFFERENT network",
-            ntohl(p->endpoint.ip), ntohs(p->endpoint.port));
+            ntohl(p->endpoint.ipv4_network()), ntohs(p->endpoint.port));
 }
 
 std::map<NodeId, Presence> Discovery::presences() const {

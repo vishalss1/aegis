@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <compare>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -151,6 +152,7 @@ struct IPAddress {
     }
 
     [[nodiscard]] bool operator==(const IPAddress&) const = default;
+    [[nodiscard]] auto operator<=>(const IPAddress&) const = default;
     [[nodiscard]] bool operator==(uint32_t ipv4) const noexcept {
         return family == IPAddressFamily::IPv4 && *this == from_ipv4(ipv4);
     }

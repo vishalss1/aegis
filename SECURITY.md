@@ -321,7 +321,10 @@ timeouts, packet loss, hairpin behavior, or vendor-specific filtering.
   padding to a configured 32/64/128/256-byte bucket. This reduces payload-size
   precision but does not hide packet timing, volume, or the selected size
   bucket. Packet version 2 is fail-closed against older version-1 peers.
-- The overlay is IPv4-only.
+- The overlay packet path is IPv4-only. The UDP transport and STUN client
+  handle IPv6 endpoints, but presence, invites, and endpoint candidates carry
+  IPv4 addresses only and reject IPv6 endpoints rather than truncating them.
+  Handshake rate limiting groups IPv6 sources by /64.
 
 ### LAN discovery is unauthenticated
 

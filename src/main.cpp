@@ -83,18 +83,20 @@ static bool parse_cidr(const char* s, IPAddress& prefix, uint8_t& plen) {
     return true;
 }
 
-// "host:port" -> Endpoint. Numeric IPv4 or a resolvable hostname.
+// "host:port" -> Endpoint. Numeric IPv4, bracketed or bare IPv6, or an
+// IPv4 hostname.
 static bool parse_endpoint(const std::string& s, Endpoint& out) {
     size_t colon = s.rfind(':');
     if (colon == std::string::npos || colon == s.size() - 1) return false;
     std::string host = s.substr(0, colon);
+    if (host.size() >= 2 && host.front() == '[' && host.back() == ']')
+        host = host.substr(1, host.size() - 2);
     char* end = nullptr;
     unsigned long port = std::strtoul(s.c_str() + colon + 1, &end, 10);
     if (end == s.c_str() + colon + 1 || port == 0 || port > 65535) return false;
 
-    uint32_t ip = 0;
-    if (parse_ipv4(host.c_str(), ip)) {
-        out = Endpoint{ip, htons((uint16_t)port)};
+    if (const auto literal = IPAddress::parse(host)) {
+        out = Endpoint(*literal, htons((uint16_t)port));
         return true;
     }
     addrinfo hints{};
@@ -657,7 +659,7 @@ static int run_peer_test() {
     pm.update_endpoint(alice.node_id, ep_new);
     a = pm.get_peer(alice.node_id);
     if (!a || !a->endpoint.has_value() ||
-        a->endpoint->ip != ep_new.ip || a->endpoint->port != ep_new.port) {
+        !(*a->endpoint == ep_new)) {
         fprintf(stderr, "[peer-test] FAIL: endpoint update failed\n");
         return 1;
     }
@@ -1184,8 +1186,9 @@ static int run_transport_test() {
     // Verify sender endpoint (127.0.0.1:7001)
     Endpoint expected_sender = Endpoint::from_parts(127, 0, 0, 1, 7001);
     if (!(recv_from == expected_sender)) {
-        fprintf(stderr, "[transport-test] FAIL — sender mismatch: got %08x:%04x, expected %08x:%04x\n",
-                recv_from.ip, recv_from.port, expected_sender.ip, expected_sender.port);
+        fprintf(stderr, "[transport-test] FAIL - sender mismatch: got %s, expected %s\n",
+                endpoint_to_string(recv_from).c_str(),
+                endpoint_to_string(expected_sender).c_str());
         rx.stop_receive();
         tx.close();
         rx.close();
@@ -1259,11 +1262,8 @@ static int run_invite(int argc, char* argv[]) {
         for (auto b : p->network_id) printf("%02x", b);
         printf("\nBootstrap PubKey: ");
         for (auto b : p->bootstrap_pubkey) printf("%02x", b);
-        uint32_t ip_h = ntohl(p->bootstrap_endpoint.ip);
-        uint16_t port_h = ntohs(p->bootstrap_endpoint.port);
-        printf("\nEndpoint:         %u.%u.%u.%u:%u",
-               (ip_h >> 24) & 0xFF, (ip_h >> 16) & 0xFF,
-               (ip_h >> 8) & 0xFF, ip_h & 0xFF, port_h);
+        printf("\nEndpoint:         %s",
+               endpoint_to_string(p->bootstrap_endpoint).c_str());
         uint32_t pref_h = ntohl(p->bootstrap_prefix);
         printf("\nAllowed Prefix:   %u.%u.%u.%u/%u\n",
                (pref_h >> 24) & 0xFF, (pref_h >> 16) & 0xFF,

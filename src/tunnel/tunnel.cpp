@@ -149,7 +149,9 @@ bool Tunnel::start(const TunnelConfig& config, const std::string& adapter_name) 
     uint16_t actual_port = config.listen_port;
     bool bound = false;
     for (int retry = 0; retry < 10; retry++) {
-        if (transport_.bind(actual_port)) {
+        SocketOptions socket_options;
+        socket_options.dual_stack = true;
+        if (transport_.bind(actual_port, socket_options)) {
             bound = true;
             break;
         }
@@ -170,15 +172,14 @@ bool Tunnel::start(const TunnelConfig& config, const std::string& adapter_name) 
         std::string host = (colon != std::string::npos) ? server.substr(0, colon) : server;
         uint16_t port = (colon != std::string::npos) ? (uint16_t)std::atoi(server.c_str() + colon + 1) : 3478;
 
+        // Endpoint candidates and presence are IPv4-only on the wire, so
+        // discover the IPv4 mapping even though the socket is dual-stack.
         auto st_ep = stun_discover(
-            transport_, host, port, 2000, random_);
+            transport_, host, port, 2000, random_, IPAddressFamily::IPv4);
         if (st_ep) {
             stun_public_endpoint_ = st_ep;
-            uint32_t ip_h = ntohl(st_ep->ip);
-            uint16_t port_h = ntohs(st_ep->port);
-            aegis_log( "[tunnel] STUN public endpoint: %u.%u.%u.%u:%u\n",
-                    (ip_h >> 24) & 0xFF, (ip_h >> 16) & 0xFF,
-                    (ip_h >> 8) & 0xFF, ip_h & 0xFF, port_h);
+            aegis_log( "[tunnel] STUN public endpoint: %s\n",
+                    endpoint_to_string(*st_ep).c_str());
         } else {
             aegis_log( "[tunnel] STUN discovery failed for %s\n", server.c_str());
         }
@@ -204,7 +205,7 @@ bool Tunnel::start(const TunnelConfig& config, const std::string& adapter_name) 
         announced = *stun_public_endpoint_;
     } else {
         if (overlay_address.address.family == IPAddressFamily::IPv4)
-            announced.ip = htonl(overlay_address.address.ipv4_value());
+            announced = Endpoint(htonl(overlay_address.address.ipv4_value()), 0);
         announced.port = htons(config.listen_port);
     }
     if (!discovery_.start(identity_, announced)) {
@@ -411,7 +412,7 @@ bool Tunnel::handshake_peer(const TunnelPeer& peer, bool force) {
     peers_.mark_connecting(peer.node_id);
 
     // Initiate if our NodeID is lower, or if we have an explicit non-zero endpoint for the candidate.
-    bool initiator = (identity_.node_id < peer.node_id) || (peer.endpoint.ip != 0);
+    bool initiator = (identity_.node_id < peer.node_id) || !peer.endpoint.unspecified();
 
     aegis_log( "[tunnel] handshake with peer %02x%02x... (%s)\n",
             peer.node_id[0], peer.node_id[1],
@@ -807,9 +808,9 @@ void Tunnel::refresh_endpoints_from_discovery() {
         if (peer->endpoint && *peer->endpoint == presence.reachable_endpoint)
             continue;
         peers_.update_endpoint(id, presence.reachable_endpoint);
-        aegis_log( "[tunnel] discovery updated endpoint for %02x%02x... -> %08x:%04x\n",
-                id[0], id[1], ntohl(presence.reachable_endpoint.ip),
-                ntohs(presence.reachable_endpoint.port));
+        aegis_log( "[tunnel] discovery updated endpoint for %02x%02x... -> %s\n",
+                id[0], id[1],
+                endpoint_to_string(presence.reachable_endpoint).c_str());
     }
 }
 
@@ -1078,9 +1079,9 @@ void Tunnel::handle_endpoint_punch_frame(
     if (!target)
         return;
     peers_.mark_hole_punched(target->peer_id, target->endpoint);
-    aegis_log("[tunnel] validated endpoint for %02x%02x... -> %08x:%04x\n",
+    aegis_log("[tunnel] validated endpoint for %02x%02x... -> %s\n",
               target->peer_id[0], target->peer_id[1],
-              ntohl(target->endpoint.ip), ntohs(target->endpoint.port));
+              endpoint_to_string(target->endpoint).c_str());
 }
 
 void Tunnel::handle_chat_frame(const uint8_t* data, size_t len,

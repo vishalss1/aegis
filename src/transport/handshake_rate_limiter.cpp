@@ -1,5 +1,7 @@
 #include "aegis/transport/handshake_rate_limiter.hpp"
 
+#include <algorithm>
+
 HandshakeRateLimiter::HandshakeRateLimiter(
     ProtocolClock& clock,
     HandshakeRateLimitConfig config)
@@ -31,6 +33,15 @@ void HandshakeRateLimiter::purge_expired_sources(
     }
 }
 
+HandshakeRateLimiter::SourceKey HandshakeRateLimiter::source_key(
+    const Endpoint& source) {
+    SourceKey key{static_cast<uint8_t>(source.address.family),
+                  source.address.bytes};
+    if (source.is_ipv6())
+        std::fill(key.second.begin() + 8, key.second.end(), uint8_t{0});
+    return key;
+}
+
 bool HandshakeRateLimiter::allow(const Endpoint& source) {
     const auto now = clock_.now();
     std::lock_guard<std::mutex> lock(mutex_);
@@ -38,7 +49,7 @@ bool HandshakeRateLimiter::allow(const Endpoint& source) {
     reset_global_if_expired(now);
     purge_expired_sources(now);
 
-    auto source_it = sources_.find(source.ip);
+    auto source_it = sources_.find(source_key(source));
     if (source_it != sources_.end() &&
         source_it->second.count >= config_.per_source_limit)
         return false;
@@ -48,7 +59,7 @@ bool HandshakeRateLimiter::allow(const Endpoint& source) {
     if (source_it == sources_.end()) {
         if (sources_.size() >= config_.max_sources)
             return false;
-        source_it = sources_.emplace(source.ip, Bucket{now, 0}).first;
+        source_it = sources_.emplace(source_key(source), Bucket{now, 0}).first;
     }
 
     ++source_it->second.count;

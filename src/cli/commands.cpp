@@ -412,13 +412,7 @@ static int cmd_peers(const ParsedInput& input, CliContext& ctx) {
         }
         std::string ep_str = "N/A";
         if (p.endpoint) {
-            uint32_t ip_h = ntohl(p.endpoint->ip);
-            uint16_t port_h = ntohs(p.endpoint->port);
-            char buf[32];
-            snprintf(buf, sizeof(buf), "%u.%u.%u.%u:%u",
-                     (ip_h >> 24) & 0xFF, (ip_h >> 16) & 0xFF,
-                     (ip_h >> 8) & 0xFF, ip_h & 0xFF, port_h);
-            ep_str = buf;
+            ep_str = endpoint_to_string(*p.endpoint);
         }
         const char* path_str = "Unknown";
         switch (p.path) {
@@ -632,12 +626,8 @@ static int cmd_discover(const ParsedInput& input, CliContext& ctx) {
         std::string name_str = info.network_name.empty() ? "Aegis Mesh" : info.network_name;
         std::string net_hex = to_hex(net_id.data(), 16);
         std::string creator_hex = to_hex(info.creator_id.data(), 8);
-        uint32_t ip_h = ntohl(info.bootstrap_ep.ip);
-        uint16_t port_h = ntohs(info.bootstrap_ep.port);
-        char ep_buf[32];
-        std::snprintf(ep_buf, sizeof(ep_buf), "%u.%u.%u.%u:%u",
-                      (ip_h >> 24) & 0xFF, (ip_h >> 16) & 0xFF,
-                      (ip_h >> 8) & 0xFF, ip_h & 0xFF, port_h);
+        const std::string ep_text = endpoint_to_string(info.bootstrap_ep);
+        const char* ep_buf = ep_text.c_str();
 
         std::printf("%-20s %-34s %-7zu %-22s %-16s\n",
                     name_str.c_str(), net_hex.c_str(), info.node_count, ep_buf, creator_hex.c_str());

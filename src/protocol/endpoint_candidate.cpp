@@ -18,10 +18,12 @@ bool known_type(EndpointCandidateType type) noexcept {
 
 bool valid_endpoint_candidate(
     const EndpointCandidate& candidate) noexcept {
-    if (!known_type(candidate.type) || candidate.endpoint.ip == 0 ||
+    // The candidate wire format is IPv4-only until it is versioned.
+    if (!known_type(candidate.type) || !candidate.endpoint.is_ipv4() ||
+        candidate.endpoint.unspecified() ||
         candidate.endpoint.port == 0 || candidate.priority == 0)
         return false;
-    const uint32_t ip = ntohl(candidate.endpoint.ip);
+    const uint32_t ip = ntohl(candidate.endpoint.ipv4_network());
     return ip != 0xFFFFFFFFu && (ip & 0xF0000000u) != 0xE0000000u;
 }
 
@@ -30,11 +32,11 @@ std::optional<std::vector<uint8_t>> serialize_endpoint_candidates(
     if (message.subject == NodeId{} || message.candidates.empty() ||
         message.candidates.size() > ENDPOINT_CANDIDATE_MAX_COUNT)
         return std::nullopt;
-    std::set<std::pair<uint32_t, uint16_t>> endpoints;
+    std::set<std::pair<IPAddress, uint16_t>> endpoints;
     for (const auto& candidate : message.candidates) {
         if (!valid_endpoint_candidate(candidate) ||
             !endpoints.emplace(
-                candidate.endpoint.ip, candidate.endpoint.port).second)
+                candidate.endpoint.address, candidate.endpoint.port).second)
             return std::nullopt;
     }
 
@@ -50,7 +52,7 @@ std::optional<std::vector<uint8_t>> serialize_endpoint_candidates(
         if (!writer.write_u8(static_cast<uint8_t>(candidate.type)) ||
             !writer.write_u8(0) ||
             !writer.write_u16(ntohs(candidate.endpoint.port)) ||
-            !writer.write_u32(ntohl(candidate.endpoint.ip)) ||
+            !writer.write_u32(ntohl(candidate.endpoint.ipv4_network())) ||
             !writer.write_u32(candidate.priority))
             return std::nullopt;
     }
@@ -77,7 +79,7 @@ std::optional<EndpointCandidateMessage> deserialize_endpoint_candidates(
     std::copy(subject->begin(), subject->end(), message.subject.begin());
     if (message.subject == NodeId{})
         return std::nullopt;
-    std::set<std::pair<uint32_t, uint16_t>> endpoints;
+    std::set<std::pair<IPAddress, uint16_t>> endpoints;
     message.candidates.reserve(*count);
     for (size_t i = 0; i < *count; ++i) {
         const auto type = reader.read_u8();
@@ -93,7 +95,7 @@ std::optional<EndpointCandidateMessage> deserialize_endpoint_candidates(
             Endpoint{htonl(*ip), htons(*port)}, *priority};
         if (!valid_endpoint_candidate(candidate) ||
             !endpoints.emplace(
-                candidate.endpoint.ip, candidate.endpoint.port).second)
+                candidate.endpoint.address, candidate.endpoint.port).second)
             return std::nullopt;
         message.candidates.push_back(candidate);
     }
@@ -131,7 +133,7 @@ std::vector<EndpointCandidate> gather_host_candidates(uint16_t local_port) {
             Endpoint{address->sin_addr.s_addr, htons(local_port)},
             300u - static_cast<uint32_t>(candidates.size())};
         if (valid_endpoint_candidate(candidate) &&
-            seen.insert(candidate.endpoint.ip).second)
+            seen.insert(candidate.endpoint.ipv4_network()).second)
             candidates.push_back(candidate);
     }
     freeaddrinfo(addresses);

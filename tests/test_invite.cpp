@@ -38,7 +38,7 @@ int main() {
         CHECK(decoded->network_id == p1.network_id);
         CHECK(decoded->bootstrap_pubkey == p1.bootstrap_pubkey);
         CHECK(decoded->creator_node_id == p1.creator_node_id);
-        CHECK(decoded->bootstrap_endpoint.ip == p1.bootstrap_endpoint.ip);
+        CHECK(decoded->bootstrap_endpoint.address == p1.bootstrap_endpoint.address);
         CHECK(decoded->bootstrap_endpoint.port == p1.bootstrap_endpoint.port);
         CHECK(decoded->bootstrap_prefix == p1.bootstrap_prefix);
         CHECK(decoded->bootstrap_prefix_len == p1.bootstrap_prefix_len);

@@ -431,6 +431,159 @@ int main() {
         CHECK(!cookies.verify(forged, source, 1, init));
     }
 
+    // ---- 12. Endpoints are family-tagged and round-trip through sockaddr ----
+    {
+        const Endpoint v4 = Endpoint::from_parts(192, 0, 2, 7, 4000);
+        const auto v6_address = IPAddress::parse("2001:db8::7");
+        CHECK(v6_address.has_value());
+        const Endpoint v6(*v6_address, htons(4000));
+        CHECK(v4.is_ipv4() && !v4.is_ipv6());
+        CHECK(v6.is_ipv6() && !v6.is_ipv4());
+        CHECK(!(v4 == v6));
+        CHECK(endpoint_to_string(v4) == "192.0.2.7:4000");
+        CHECK(endpoint_to_string(v6) == "[2001:db8::7]:4000");
+        CHECK(endpoint_to_string(Endpoint(IPAddress::from_ipv6({}), 0)) ==
+              "[::]:0");
+
+        sockaddr_storage storage{};
+        for (const bool ipv6_socket : {false, true}) {
+            for (const Endpoint& endpoint : {v4, v6}) {
+                const int length =
+                    endpoint_to_sockaddr(endpoint, ipv6_socket, storage);
+                if (endpoint.is_ipv6() && !ipv6_socket) {
+                    CHECK(length == 0);
+                    continue;
+                }
+                CHECK(length > 0);
+                const auto round_trip = endpoint_from_sockaddr(
+                    reinterpret_cast<const sockaddr*>(&storage), length);
+                CHECK(round_trip && *round_trip == endpoint);
+            }
+        }
+        // IPv4 on an IPv6 socket is carried v4-mapped.
+        CHECK(endpoint_to_sockaddr(v4, true, storage) > 0);
+        CHECK(storage.ss_family == AF_INET6);
+        CHECK(!endpoint_from_sockaddr(nullptr, 0).has_value());
+        sockaddr_in truncated{};
+        truncated.sin_family = AF_INET;
+        CHECK(!endpoint_from_sockaddr(
+            reinterpret_cast<const sockaddr*>(&truncated), 4).has_value());
+    }
+
+    // ---- 13. Send queues key on endpoints of either family ------------------
+    {
+        const Endpoint v4 = Endpoint::from_parts(192, 0, 2, 7, 4000);
+        const Endpoint v6(*IPAddress::parse("2001:db8::7"), htons(4000));
+        BasicBoundedSendQueue<Endpoint> queue;
+        const std::array<uint8_t, 1> payload{1};
+        CHECK(queue.enqueue(v4, payload.data(), 1) == SendQueueResult::Queued);
+        CHECK(queue.enqueue(v6, payload.data(), 1) == SendQueueResult::Queued);
+        CHECK(queue.enqueue(v4, payload.data(), 1) == SendQueueResult::Queued);
+        CHECK(queue.peer_count() == 2);
+        const auto first = queue.pop();
+        const auto second = queue.pop();
+        CHECK(first && first->peer_key == v4);
+        CHECK(second && second->peer_key == v6);
+    }
+
+    // ---- 14. Handshake limiter budgets IPv6 sources per /64 ------------------
+    {
+        ManualClock clock;
+        HandshakeRateLimitConfig config;
+        config.per_source_limit = 2;
+        config.global_limit = 10;
+        config.max_sources = 4;
+        HandshakeRateLimiter limiter(clock, config);
+
+        const auto in_subnet = [](const char* text) {
+            return Endpoint(*IPAddress::parse(text), htons(4000));
+        };
+        CHECK(limiter.allow(in_subnet("2001:db8:0:1::1")));
+        CHECK(limiter.allow(in_subnet("2001:db8:0:1::2")));
+        // Rotating the host half of the /64 does not earn a new budget.
+        CHECK(!limiter.allow(in_subnet("2001:db8:0:1:ffff::9")));
+        CHECK(limiter.allow(in_subnet("2001:db8:0:2::1")));
+        CHECK(limiter.tracked_sources() == 2);
+    }
+
+    // ---- 15. Retry cookies bind the full source address ----------------------
+    {
+        ManualClock clock;
+        IncrementingRandom random;
+        HandshakeCookieManager cookies(clock, random);
+        const std::array<uint8_t, 1> init{0x42};
+        const Endpoint a(*IPAddress::parse("2001:db8::1"), htons(5000));
+        const Endpoint b(*IPAddress::parse("2001:db8::2"), htons(5000));
+        const auto cookie = cookies.issue(a, 7, init);
+        CHECK(cookie && cookies.verify(*cookie, a, 7, init));
+        CHECK(cookie && !cookies.verify(*cookie, b, 7, init));
+    }
+
+    // ---- 16. Dual-stack socket carries IPv6 and v4-mapped IPv4 ---------------
+    {
+        SocketOptions dual;
+        dual.dual_stack = true;
+        Transport rx;
+        Transport v6_tx;
+        Transport v4_tx;
+        CHECK(rx.bind(7120, dual));
+        if (!rx.ipv6_enabled()) {
+            printf("  SKIP: host has no IPv6; dual-stack coverage skipped\n");
+        } else {
+            CHECK(v6_tx.bind(7121, dual));
+            CHECK(v4_tx.bind(7122));
+            CHECK(!v4_tx.ipv6_enabled());
+
+            std::mutex mtx;
+            std::condition_variable cv;
+            std::vector<Endpoint> senders;
+            CHECK(rx.start_receive(
+                [&](const uint8_t*, size_t, Endpoint sender) {
+                    std::lock_guard<std::mutex> lock(mtx);
+                    senders.push_back(sender);
+                    cv.notify_all();
+                }));
+
+            const uint8_t byte = 0x5a;
+            const Endpoint loopback6(*IPAddress::parse("::1"), htons(7120));
+            CHECK(v6_tx.send(&byte, 1, loopback6));
+            CHECK(v4_tx.send(&byte, 1, Endpoint::from_parts(127, 0, 0, 1, 7120)));
+            // An IPv4-only socket cannot reach an IPv6 destination.
+            CHECK(!v4_tx.send(&byte, 1, loopback6));
+            {
+                std::unique_lock<std::mutex> lock(mtx);
+                CHECK(cv.wait_for(lock, std::chrono::seconds(2),
+                                  [&] { return senders.size() >= 2; }));
+            }
+            bool saw_v6 = false;
+            bool saw_v4 = false;
+            {
+                std::lock_guard<std::mutex> lock(mtx);
+                for (const auto& sender : senders) {
+                    saw_v6 |= sender.is_ipv6() &&
+                              sender.address == loopback6.address &&
+                              ntohs(sender.port) == 7121;
+                    saw_v4 |= sender == Endpoint::from_parts(127, 0, 0, 1, 7122);
+                }
+            }
+            CHECK(saw_v6);
+            CHECK(saw_v4);
+            rx.stop_receive();
+        }
+        v4_tx.close();
+        v6_tx.close();
+        rx.close();
+
+        // Broadcast needs an IPv4 socket, so it overrides dual_stack.
+        SocketOptions broadcast;
+        broadcast.dual_stack = true;
+        broadcast.broadcast = true;
+        Transport discovery_socket;
+        CHECK(discovery_socket.bind(7123, broadcast));
+        CHECK(!discovery_socket.ipv6_enabled());
+        discovery_socket.close();
+    }
+
     printf("\n%d / %d passed\n", passed, tests);
     platform_cleanup_winsock();
     return (passed == tests) ? 0 : 1;

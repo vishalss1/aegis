@@ -61,8 +61,9 @@ enum class SendQueueResult {
     GlobalByteLimit
 };
 
-struct QueuedDatagram {
-    uint64_t peer_key = 0;
+template <class Key>
+struct BasicQueuedDatagram {
+    Key peer_key{};
     SendPriority priority = SendPriority::Data;
     std::vector<uint8_t> bytes;
 };
@@ -71,13 +72,16 @@ struct QueuedDatagram {
 // always selected first; peers within each priority drain round-robin. The
 // owner provides synchronization so it can combine empty checks, waits, and
 // pops under one condition-variable mutex.
-class BoundedSendQueue {
+template <class Key>
+class BasicBoundedSendQueue {
 public:
-    explicit BoundedSendQueue(SendQueueLimits limits = {})
+    using QueuedDatagram = BasicQueuedDatagram<Key>;
+
+    explicit BasicBoundedSendQueue(SendQueueLimits limits = {})
         : limits_(limits) {}
 
     [[nodiscard]] SendQueueResult enqueue(
-        uint64_t peer_key, const uint8_t* data, size_t len,
+        const Key& peer_key, const uint8_t* data, size_t len,
         SendPriority priority = SendPriority::Data) {
         if ((len > 0 && !data) || !valid_limits())
             return SendQueueResult::Invalid;
@@ -184,7 +188,7 @@ private:
         auto& active = priority == SendPriority::Control
             ? active_control_peers_
             : active_data_peers_;
-        const uint64_t peer_key = active.front();
+        const Key peer_key = active.front();
         active.pop_front();
         auto peer = peers_.find(peer_key);
         if (peer == peers_.end())
@@ -230,11 +234,14 @@ private:
     }
 
     SendQueueLimits limits_;
-    std::unordered_map<uint64_t, PeerQueue> peers_;
-    std::deque<uint64_t> active_control_peers_;
-    std::deque<uint64_t> active_data_peers_;
+    std::unordered_map<Key, PeerQueue> peers_;
+    std::deque<Key> active_control_peers_;
+    std::deque<Key> active_data_peers_;
     size_t control_items_ = 0;
     size_t control_bytes_ = 0;
     size_t data_items_ = 0;
     size_t data_bytes_ = 0;
 };
+
+using QueuedDatagram = BasicQueuedDatagram<uint64_t>;
+using BoundedSendQueue = BasicBoundedSendQueue<uint64_t>;

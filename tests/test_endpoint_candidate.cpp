@@ -62,6 +62,11 @@ int main() {
         message.subject,
         {{EndpointCandidateType::Host,
           Endpoint::from_parts(224, 0, 0, 1, 5000), 1}}}));
+    // The wire format is IPv4-only: IPv6 candidates fail closed.
+    CHECK(!serialize_endpoint_candidates({
+        message.subject,
+        {{EndpointCandidateType::Host,
+          Endpoint(*IPAddress::parse("2001:db8::7"), htons(5000)), 1}}}));
     CHECK(!serialize_endpoint_candidates({
         message.subject,
         {message.candidates[0], message.candidates[0]}}));

@@ -88,9 +88,10 @@ std::optional<std::vector<uint8_t>> aegis2_signed_bytes(
         return std::nullopt;
     for (const auto& candidate : grant.bootstrap_candidates) {
         if (candidate.x25519_public_key == Key{} ||
-            candidate.endpoint.ip == 0 || candidate.endpoint.port == 0 ||
+            !candidate.endpoint.is_ipv4() ||
+            candidate.endpoint.ipv4_network() == 0 || candidate.endpoint.port == 0 ||
             !writer.write_bytes(candidate.x25519_public_key) ||
-            !writer.write_u32(candidate.endpoint.ip) ||
+            !writer.write_u32(candidate.endpoint.ipv4_network()) ||
             !writer.write_u16(candidate.endpoint.port))
             return std::nullopt;
     }
@@ -232,8 +233,7 @@ std::optional<Aegis2MembershipGrant> decode_aegis2_grant(
             return std::nullopt;
         Aegis2BootstrapCandidate candidate;
         std::copy(key->begin(), key->end(), candidate.x25519_public_key.begin());
-        candidate.endpoint.ip = *ip;
-        candidate.endpoint.port = *port;
+        candidate.endpoint = Endpoint(*ip, *port);
         grant.bootstrap_candidates.push_back(candidate);
     }
     const auto signature = reader.read_bytes(64);
@@ -253,7 +253,8 @@ std::string encode_invite(const InvitePayload& payload) {
     if (!writer.write_bytes(payload.network_id) ||
         !writer.write_bytes(payload.bootstrap_pubkey) ||
         !writer.write_bytes(payload.creator_node_id) ||
-        !writer.write_u32(payload.bootstrap_endpoint.ip) ||
+        !payload.bootstrap_endpoint.is_ipv4() ||
+        !writer.write_u32(payload.bootstrap_endpoint.ipv4_network()) ||
         !writer.write_u16(payload.bootstrap_endpoint.port) ||
         !writer.write_u32(payload.bootstrap_prefix) ||
         !writer.write_u8(payload.bootstrap_prefix_len) ||
@@ -307,8 +308,7 @@ std::optional<InvitePayload> decode_invite(const std::string& invite_str) {
               payload.bootstrap_pubkey.begin());
     std::copy(creator_node_id->begin(), creator_node_id->end(),
               payload.creator_node_id.begin());
-    payload.bootstrap_endpoint.ip = *endpoint_ip;
-    payload.bootstrap_endpoint.port = *endpoint_port;
+    payload.bootstrap_endpoint = Endpoint(*endpoint_ip, *endpoint_port);
     payload.bootstrap_prefix = *bootstrap_prefix;
     payload.bootstrap_prefix_len = *bootstrap_prefix_len;
     payload.network_name.assign(

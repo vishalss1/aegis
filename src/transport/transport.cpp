@@ -2,9 +2,59 @@
 #include "aegis/platform/platform.hpp"
 #include <winsock2.h>
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+
+std::optional<Endpoint> endpoint_from_sockaddr(
+    const sockaddr* address, size_t length) noexcept {
+    if (!address) return std::nullopt;
+    if (address->sa_family == AF_INET && length >= sizeof(sockaddr_in)) {
+        const auto* v4 = reinterpret_cast<const sockaddr_in*>(address);
+        return Endpoint(v4->sin_addr.s_addr, v4->sin_port);
+    }
+    if (address->sa_family == AF_INET6 && length >= sizeof(sockaddr_in6)) {
+        const auto* v6 = reinterpret_cast<const sockaddr_in6*>(address);
+        std::array<uint8_t, 16> bytes{};
+        std::memcpy(bytes.data(), &v6->sin6_addr, bytes.size());
+        static constexpr std::array<uint8_t, 12> mapped_prefix{
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff};
+        if (std::equal(mapped_prefix.begin(), mapped_prefix.end(),
+                       bytes.begin())) {
+            uint32_t ipv4 = 0;
+            std::memcpy(&ipv4, bytes.data() + 12, sizeof(ipv4));
+            return Endpoint(ipv4, v6->sin6_port);
+        }
+        return Endpoint(IPAddress::from_ipv6(bytes), v6->sin6_port);
+    }
+    return std::nullopt;
+}
+
+int endpoint_to_sockaddr(const Endpoint& endpoint, bool ipv6_socket,
+                         sockaddr_storage& out) noexcept {
+    std::memset(&out, 0, sizeof(out));
+    if (endpoint.is_ipv4() && !ipv6_socket) {
+        auto* v4 = reinterpret_cast<sockaddr_in*>(&out);
+        v4->sin_family = AF_INET;
+        v4->sin_addr.s_addr = endpoint.ipv4_network();
+        v4->sin_port = endpoint.port;
+        return sizeof(sockaddr_in);
+    }
+    if (!ipv6_socket) return 0;
+    if (!endpoint.is_ipv4() && !endpoint.is_ipv6()) return 0;
+    auto* v6 = reinterpret_cast<sockaddr_in6*>(&out);
+    v6->sin6_family = AF_INET6;
+    v6->sin6_port = endpoint.port;
+    if (endpoint.is_ipv4()) {
+        v6->sin6_addr.u.Byte[10] = 0xff;
+        v6->sin6_addr.u.Byte[11] = 0xff;
+        std::memcpy(&v6->sin6_addr.u.Byte[12], &endpoint.address.bytes[0], 4);
+    } else {
+        std::memcpy(&v6->sin6_addr, endpoint.address.bytes.data(), 16);
+    }
+    return sizeof(sockaddr_in6);
+}
 
 Transport::Transport() = default;
 
@@ -16,30 +66,56 @@ bool Transport::bind(uint16_t port, const SocketOptions& opts) {
     oversize_receive_drops_.store(0, std::memory_order_relaxed);
     queue_metrics_.reset();
 
-    sock_ = socket(AF_INET, SOCK_DGRAM, 0);
-    if (sock_ == INVALID_SOCKET) {
-        fprintf(stderr, "[transport] socket: error %d\n", platform_last_error());
-        return false;
+    ipv6_socket_ = false;
+    if (opts.dual_stack && !opts.broadcast) {
+        sock_ = socket(AF_INET6, SOCK_DGRAM, 0);
+        if (sock_ != INVALID_SOCKET) {
+            DWORD v6only = 0;
+            sockaddr_in6 any6{};
+            any6.sin6_family = AF_INET6;
+            any6.sin6_port = htons(port);
+            const bool configured =
+                setsockopt(sock_, IPPROTO_IPV6, IPV6_V6ONLY,
+                           reinterpret_cast<const char*>(&v6only),
+                           sizeof(v6only)) != SOCKET_ERROR &&
+                ::bind(sock_, reinterpret_cast<sockaddr*>(&any6),
+                       sizeof(any6)) != SOCKET_ERROR;
+            if (configured) {
+                ipv6_socket_ = true;
+            } else {
+                closesocket(sock_);
+                sock_ = INVALID_SOCKET;
+            }
+        }
     }
 
-    if (opts.broadcast) {
-        BOOL bcast = TRUE;
-        setsockopt(sock_, SOL_SOCKET, SO_BROADCAST, (const char*)&bcast, sizeof(bcast));
-    }
-    if (opts.reuseaddr) {
-        BOOL reuse = TRUE;
-        setsockopt(sock_, SOL_SOCKET, SO_REUSEADDR, (const char*)&reuse, sizeof(reuse));
-    }
+    if (!ipv6_socket_) {
+        sock_ = socket(AF_INET, SOCK_DGRAM, 0);
+        if (sock_ == INVALID_SOCKET) {
+            fprintf(stderr, "[transport] socket: error %d\n",
+                    platform_last_error());
+            return false;
+        }
 
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-    addr.sin_addr.s_addr = INADDR_ANY;
+        if (opts.broadcast) {
+            BOOL bcast = TRUE;
+            setsockopt(sock_, SOL_SOCKET, SO_BROADCAST, (const char*)&bcast, sizeof(bcast));
+        }
+        if (opts.reuseaddr) {
+            BOOL reuse = TRUE;
+            setsockopt(sock_, SOL_SOCKET, SO_REUSEADDR, (const char*)&reuse, sizeof(reuse));
+        }
 
-    if (::bind(sock_, (sockaddr*)&addr, sizeof(addr)) == SOCKET_ERROR) {
-        fprintf(stderr, "[transport] bind: error %d\n", platform_last_error());
-        close();
-        return false;
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(port);
+        addr.sin_addr.s_addr = INADDR_ANY;
+
+        if (::bind(sock_, (sockaddr*)&addr, sizeof(addr)) == SOCKET_ERROR) {
+            fprintf(stderr, "[transport] bind: error %d\n", platform_last_error());
+            close();
+            return false;
+        }
     }
 
     local_port_ = port;
@@ -67,6 +143,7 @@ void Transport::close() {
         sock_ = INVALID_SOCKET;
     }
     local_port_ = 0;
+    ipv6_socket_ = false;
 }
 
 bool Transport::set_max_datagram_size(size_t maximum) {
@@ -83,14 +160,12 @@ bool Transport::send(const uint8_t* data, size_t len, const Endpoint& dest,
         return false;
     }
     if (len > 0 && !data) return false;
-    const uint64_t peer_key =
-        (static_cast<uint64_t>(dest.ip) << 16) |
-        static_cast<uint64_t>(dest.port);
+    if (dest.is_ipv6() && !ipv6_socket_) return false;
     {
         std::lock_guard<std::mutex> lock(send_mutex_);
         if (sock_ == INVALID_SOCKET || !send_running_)
             return false;
-        if (send_queue_.enqueue(peer_key, data, len, priority) !=
+        if (send_queue_.enqueue(dest, data, len, priority) !=
             SendQueueResult::Queued) {
             queue_metrics_.record_drop(priority);
             return false;
@@ -112,17 +187,18 @@ std::optional<ReceivedDatagram> Transport::exchange(
         return std::nullopt;
     }
 
-    sockaddr_in destination{};
-    destination.sin_family = AF_INET;
-    destination.sin_addr.s_addr = dest.ip;
-    destination.sin_port = dest.port;
+    sockaddr_storage destination{};
+    const int destination_length =
+        endpoint_to_sockaddr(dest, ipv6_socket_, destination);
+    if (destination_length == 0)
+        return std::nullopt;
     {
         std::lock_guard<std::mutex> lock(socket_send_mutex_);
         const int sent = sendto(
             sock_, reinterpret_cast<const char*>(data),
             static_cast<int>(len), 0,
             reinterpret_cast<const sockaddr*>(&destination),
-            sizeof(destination));
+            destination_length);
         if (sent != static_cast<int>(len))
             return std::nullopt;
     }
@@ -141,7 +217,7 @@ std::optional<ReceivedDatagram> Transport::exchange(
                        sizeof(receive_timeout)) == SOCKET_ERROR)
             return std::nullopt;
 
-        sockaddr_in sender{};
+        sockaddr_storage sender{};
         int sender_length = sizeof(sender);
         const int received = recvfrom(
             sock_, reinterpret_cast<char*>(buffer.data()),
@@ -157,18 +233,19 @@ std::optional<ReceivedDatagram> Transport::exchange(
             return std::nullopt;
         }
 
-        const Endpoint source{sender.sin_addr.s_addr, sender.sin_port};
-        if (!(source == dest))
+        const auto source = endpoint_from_sockaddr(
+            reinterpret_cast<const sockaddr*>(&sender), sender_length);
+        if (!source || !(*source == dest))
             continue;
         buffer.resize(static_cast<size_t>(received));
-        return ReceivedDatagram{std::move(buffer), source};
+        return ReceivedDatagram{std::move(buffer), *source};
     }
     return std::nullopt;
 }
 
 void Transport::send_loop() {
     while (true) {
-        std::optional<QueuedDatagram> datagram;
+        std::optional<BasicQueuedDatagram<Endpoint>> datagram;
         {
             std::unique_lock<std::mutex> lock(send_mutex_);
             send_cv_.wait(lock, [this] {
@@ -181,13 +258,12 @@ void Transport::send_loop() {
         if (!datagram)
             continue;
 
-        Endpoint dest{};
-        dest.ip = static_cast<uint32_t>(datagram->peer_key >> 16);
-        dest.port = static_cast<uint16_t>(datagram->peer_key & 0xFFFFu);
-        sockaddr_in addr{};
-        addr.sin_family = AF_INET;
-        addr.sin_addr.s_addr = dest.ip;
-        addr.sin_port = dest.port;
+        const Endpoint& dest = datagram->peer_key;
+        sockaddr_storage addr{};
+        const int addr_length =
+            endpoint_to_sockaddr(dest, ipv6_socket_, addr);
+        if (addr_length == 0)
+            continue;
         const int length = static_cast<int>(datagram->bytes.size());
         int ret = SOCKET_ERROR;
         {
@@ -195,11 +271,11 @@ void Transport::send_loop() {
             ret = sendto(
                 sock_, reinterpret_cast<const char*>(datagram->bytes.data()),
                 length, 0, reinterpret_cast<const sockaddr*>(&addr),
-                sizeof(addr));
+                addr_length);
         }
         if (ret == SOCKET_ERROR)
-            fprintf(stderr, "[transport] sendto %08x:%04x failed: %d\n",
-                    ntohl(dest.ip), ntohs(dest.port), platform_last_error());
+            fprintf(stderr, "[transport] sendto port %u failed: %d\n",
+                    ntohs(dest.port), platform_last_error());
     }
 }
 
@@ -224,7 +300,7 @@ void Transport::recv_loop(OnReceiveCallback callback) {
 
     char buf[65536];
     while (running_) {
-        sockaddr_in sender{};
+        sockaddr_storage sender{};
         int from_len = sizeof(sender);
         int ret = recvfrom(sock_, buf, sizeof(buf), 0,
                            (sockaddr*)&sender, &from_len);
@@ -247,7 +323,10 @@ void Transport::recv_loop(OnReceiveCallback callback) {
             continue;
         }
 
-        Endpoint ep{sender.sin_addr.s_addr, sender.sin_port};
-        callback((const uint8_t*)buf, (size_t)ret, ep);
+        const auto ep = endpoint_from_sockaddr(
+            reinterpret_cast<const sockaddr*>(&sender), from_len);
+        if (!ep)
+            continue;
+        callback((const uint8_t*)buf, (size_t)ret, *ep);
     }
 }
