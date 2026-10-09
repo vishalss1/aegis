@@ -73,15 +73,13 @@ static bool parse_ipv4(const char* s, uint32_t& out) {
     return true;
 }
 
-// "a.b.c.d/plen" -> network-byte-order prefix + prefix length.
-static bool parse_cidr(const char* s, uint32_t& prefix, uint8_t& plen) {
-    char ip_part[32];
-    unsigned plen_raw = 0;
-    if (sscanf_s(s, "%31[^/]/%u", ip_part, (unsigned)sizeof(ip_part), &plen_raw) != 2 ||
-        plen_raw > 32)
-        return false;
-    if (!parse_ipv4(ip_part, prefix)) return false;
-    plen = (uint8_t)plen_raw;
+// Parse typed IPv4/IPv6 network prefixes for routing.
+static bool parse_cidr(const char* s, IPAddress& prefix, uint8_t& plen) {
+    if (!s) return false;
+    const auto parsed = IPPrefix::parse(s);
+    if (!parsed) return false;
+    prefix = parsed->address;
+    plen = parsed->length;
     return true;
 }
 
@@ -118,6 +116,24 @@ static void make_adapter_name(uint32_t local_ip, char* buf, size_t n) {
     snprintf(buf, n, "Aegis %u.%u.%u.%u",
              (ip_host >> 24) & 0xFF, (ip_host >> 16) & 0xFF,
              (ip_host >>  8) & 0xFF,  ip_host        & 0xFF);
+}
+
+static void make_adapter_name(const IPInterfaceAddress& local,
+                              char* buf, size_t n) {
+    if (local.address.family == IPAddressFamily::IPv4) {
+        const uint32_t ip = local.address.ipv4_value();
+        snprintf(buf, n, "Aegis %u.%u.%u.%u",
+                 (ip >> 24) & 0xFF, (ip >> 16) & 0xFF,
+                 (ip >> 8) & 0xFF, ip & 0xFF);
+        return;
+    }
+    size_t used = static_cast<size_t>(snprintf(buf, n, "Aegis IPv6 "));
+    for (uint8_t byte : local.address.bytes) {
+        if (used >= n) break;
+        const int written = snprintf(buf + used, n - used, "%02x", byte);
+        if (written < 0) break;
+        used += static_cast<size_t>(written);
+    }
 }
 
 static void print_usage(const char* prog) {
@@ -984,11 +1000,14 @@ static int run_config(const std::string& path) {
     const AppConfig& app = cfg.get();
 
     TunnelConfig tcfg;
-    if (!parse_cidr(app.iface.address.c_str(), tcfg.local_ip, tcfg.local_prefix)) {
-        fprintf(stderr, "error: invalid interface.address '%s' (expected a.b.c.d/plen)\n",
+    const auto overlay_address =
+        IPInterfaceAddress::parse(app.iface.address);
+    if (!overlay_address) {
+        fprintf(stderr, "error: invalid interface.address '%s' (expected IPv4/IPv6 CIDR)\n",
                 app.iface.address.c_str());
         return 1;
     }
+    tcfg.local_overlay_address = *overlay_address;
     tcfg.listen_port = app.iface.listen_port;
     tcfg.stun_server = app.iface.stun_server;
     tcfg.underlay_mtu = app.iface.underlay_mtu;
@@ -1069,7 +1088,8 @@ static int run_config(const std::string& path) {
         fprintf(stderr, "[config] no peers configured — node runs presence-only\n");
 
     char adapter_name_buf[64];
-    make_adapter_name(tcfg.local_ip, adapter_name_buf, sizeof(adapter_name_buf));
+    make_adapter_name(*overlay_address, adapter_name_buf,
+                      sizeof(adapter_name_buf));
 
     Tunnel tunnel;
     if (!tunnel.start(tcfg, adapter_name_buf)) {
@@ -1207,10 +1227,11 @@ static int run_invite(int argc, char* argv[]) {
             fprintf(stderr, "error: invalid endpoint (expected host:port)\n");
             return 1;
         }
-        uint32_t prefix = 0;
+        IPAddress prefix;
         uint8_t plen = 0;
-        if (!parse_cidr(argv[6], prefix, plen)) {
-            fprintf(stderr, "error: invalid prefix_cidr (expected a.b.c.d/plen)\n");
+        if (!parse_cidr(argv[6], prefix, plen) ||
+            prefix.family != IPAddressFamily::IPv4) {
+            fprintf(stderr, "error: invites currently require an IPv4 prefix\n");
             return 1;
         }
 
@@ -1218,7 +1239,7 @@ static int run_invite(int argc, char* argv[]) {
         std::memcpy(p.network_id.data(), nid_bytes.data(), 32);
         std::memcpy(p.bootstrap_pubkey.data(), pk_bytes.data(), 32);
         p.bootstrap_endpoint = ep;
-        p.bootstrap_prefix = prefix;
+        p.bootstrap_prefix = prefix.ipv4_value();
         p.bootstrap_prefix_len = plen;
 
         std::string invite = encode_invite(p);

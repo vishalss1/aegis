@@ -24,27 +24,9 @@ static std::string to_hex(const uint8_t* data, size_t len) {
     return s;
 }
 
-// "a.b.c.d" -> network-byte-order uint32
-static bool parse_ipv4_local(const char* s, uint32_t& out) {
-    uint8_t a, b, c, d;
-    if (sscanf_s(s, "%hhu.%hhu.%hhu.%hhu", &a, &b, &c, &d) != 4) return false;
-    out = htonl((static_cast<uint32_t>(a) << 24) |
-                (static_cast<uint32_t>(b) << 16) |
-                (static_cast<uint32_t>(c) << 8)  |
-                static_cast<uint32_t>(d));
-    return true;
-}
-
-// "a.b.c.d/plen" -> network-byte-order prefix + prefix length
-static bool parse_cidr_local(const char* s, uint32_t& prefix, uint8_t& plen) {
-    char ip_part[32];
-    unsigned plen_raw = 0;
-    if (sscanf_s(s, "%31[^/]/%u", ip_part, (unsigned)sizeof(ip_part), &plen_raw) != 2 ||
-        plen_raw > 32)
-        return false;
-    if (!parse_ipv4_local(ip_part, prefix)) return false;
-    plen = (uint8_t)plen_raw;
-    return true;
+static std::optional<IPInterfaceAddress> parse_interface_address_local(
+    const std::string& text) {
+    return IPInterfaceAddress::parse(text);
 }
 
 static void make_adapter_name_local(uint32_t local_ip, char* buf, size_t n) {
@@ -52,6 +34,24 @@ static void make_adapter_name_local(uint32_t local_ip, char* buf, size_t n) {
     snprintf(buf, n, "Aegis %u.%u.%u.%u",
              (ip_host >> 24) & 0xFF, (ip_host >> 16) & 0xFF,
              (ip_host >>  8) & 0xFF,  ip_host        & 0xFF);
+}
+
+static void make_adapter_name_local(const IPInterfaceAddress& local,
+                                    char* buf, size_t n) {
+    if (local.address.family == IPAddressFamily::IPv4) {
+        const uint32_t ip = local.address.ipv4_value();
+        snprintf(buf, n, "Aegis %u.%u.%u.%u",
+                 (ip >> 24) & 0xFF, (ip >> 16) & 0xFF,
+                 (ip >> 8) & 0xFF, ip & 0xFF);
+        return;
+    }
+    size_t used = static_cast<size_t>(snprintf(buf, n, "Aegis IPv6 "));
+    for (uint8_t byte : local.address.bytes) {
+        if (used >= n) break;
+        const int written = snprintf(buf + used, n - used, "%02x", byte);
+        if (written < 0) break;
+        used += static_cast<size_t>(written);
+    }
 }
 
 // Command: /help
@@ -91,7 +91,12 @@ static bool start_tunnel_helper(CliContext& ctx, const TunnelConfig& tcfg) {
     }
 
     char adapter_name[64];
-    make_adapter_name_local(tcfg.local_ip, adapter_name, sizeof(adapter_name));
+    if (tcfg.local_overlay_address)
+        make_adapter_name_local(*tcfg.local_overlay_address, adapter_name,
+                                sizeof(adapter_name));
+    else
+        make_adapter_name_local(tcfg.local_ip, adapter_name,
+                                sizeof(adapter_name));
 
     ctx.tunnel = std::make_unique<Tunnel>();
     bool is_creator = (ctx.identity.creator_node_id == ctx.identity.node_id);
@@ -207,10 +212,12 @@ static int cmd_config(const ParsedInput& input, CliContext& ctx) {
         TunnelConfig tcfg;
         tcfg.identity = ctx.identity;
         tcfg.network_name = net_name;
-        if (!parse_cidr_local(addr.c_str(), tcfg.local_ip, tcfg.local_prefix)) {
+        const auto overlay_address = parse_interface_address_local(addr);
+        if (!overlay_address) {
             std::printf("Error: Invalid CIDR format %s\n", addr.c_str());
             return 1;
         }
+        tcfg.local_overlay_address = *overlay_address;
         tcfg.listen_port = port;
 
         ctx.active_config.iface.address = addr;
@@ -272,10 +279,12 @@ static int cmd_config(const ParsedInput& input, CliContext& ctx) {
         TunnelConfig tcfg;
         tcfg.identity = ctx.identity;
         tcfg.network_name = inv->network_name.empty() ? "Joined Mesh" : inv->network_name;
-        if (!parse_cidr_local(addr.c_str(), tcfg.local_ip, tcfg.local_prefix)) {
+        const auto overlay_address = parse_interface_address_local(addr);
+        if (!overlay_address) {
             std::printf("Error: Invalid CIDR format %s\n", addr.c_str());
             return 1;
         }
+        tcfg.local_overlay_address = *overlay_address;
         tcfg.listen_port = port;
 
         TunnelPeer tp;
@@ -324,11 +333,14 @@ static int cmd_invite(const ParsedInput& input, CliContext& ctx) {
         p.bootstrap_endpoint = Endpoint{loopback_ip, htons(ctx.active_config.iface.listen_port)};
     }
 
-    uint32_t local_ip = 0;
-    uint8_t plen = 0;
-    parse_cidr_local(ctx.active_config.iface.address.c_str(), local_ip, plen);
-    p.bootstrap_prefix = local_ip;
-    p.bootstrap_prefix_len = plen;
+    const auto local = IPInterfaceAddress::parse(
+        ctx.active_config.iface.address);
+    if (!local || local->address.family != IPAddressFamily::IPv4) {
+        std::printf("Invites currently require an IPv4 overlay prefix.\n");
+        return 1;
+    }
+    p.bootstrap_prefix = local->address.ipv4_value();
+    p.bootstrap_prefix_len = local->prefix_length;
 
     std::string invite_code = encode_invite(p);
     std::printf("\nAEGIS Invite Code for network '%s':\n%s\n\n", p.network_name.c_str(), invite_code.c_str());

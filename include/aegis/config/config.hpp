@@ -1,6 +1,7 @@
 #pragma once
 
 #include "aegis/identity/identity.hpp"
+#include "aegis/net/ip_address.hpp"
 #include "aegis/packet/mtu.hpp"
 #include <cstdint>
 #include <string>

@@ -166,6 +166,26 @@ struct IPPrefix {
     IPPrefix(uint32_t ipv4_network, uint8_t prefix_length) noexcept
         : IPPrefix(IPAddress::from_ipv4(ipv4_network), prefix_length) {}
 
+    [[nodiscard]] static std::optional<IPPrefix> parse(
+        std::string_view text) noexcept {
+        const size_t slash = text.find('/');
+        if (slash == std::string_view::npos || slash == 0 ||
+            slash + 1 == text.size() ||
+            text.find('/', slash + 1) != std::string_view::npos)
+            return std::nullopt;
+        const auto address = IPAddress::parse(text.substr(0, slash));
+        if (!address) return std::nullopt;
+        unsigned length = 0;
+        for (size_t i = slash + 1; i < text.size(); ++i) {
+            const char ch = text[i];
+            if (ch < '0' || ch > '9') return std::nullopt;
+            length = length * 10 + static_cast<unsigned>(ch - '0');
+            if (length > 128) return std::nullopt;
+        }
+        if (length > address->bit_width()) return std::nullopt;
+        return IPPrefix(*address, static_cast<uint8_t>(length));
+    }
+
     [[nodiscard]] bool valid() const noexcept {
         return address.valid_family() && length <= address.bit_width();
     }
@@ -202,4 +222,36 @@ struct IPPrefix {
     }
 
     [[nodiscard]] bool operator==(const IPPrefix&) const = default;
+};
+
+// A host address assigned to an interface; unlike IPPrefix, this preserves
+// host bits while carrying the interface's on-link prefix length.
+struct IPInterfaceAddress {
+    IPAddress address{};
+    uint8_t prefix_length = 0;
+
+    [[nodiscard]] bool valid() const noexcept {
+        return address.valid_family() &&
+               prefix_length <= address.bit_width();
+    }
+
+    [[nodiscard]] static std::optional<IPInterfaceAddress> parse(
+        std::string_view text) noexcept {
+        const size_t slash = text.find('/');
+        if (slash == std::string_view::npos || slash == 0 ||
+            slash + 1 == text.size() ||
+            text.find('/', slash + 1) != std::string_view::npos)
+            return std::nullopt;
+        const auto parsed_address = IPAddress::parse(text.substr(0, slash));
+        if (!parsed_address) return std::nullopt;
+        unsigned length = 0;
+        for (size_t i = slash + 1; i < text.size(); ++i) {
+            const char ch = text[i];
+            if (ch < '0' || ch > '9') return std::nullopt;
+            length = length * 10 + static_cast<unsigned>(ch - '0');
+            if (length > parsed_address->bit_width()) return std::nullopt;
+        }
+        return IPInterfaceAddress{*parsed_address,
+                                  static_cast<uint8_t>(length)};
+    }
 };

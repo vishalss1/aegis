@@ -1,4 +1,5 @@
 #include "aegis/config/config.hpp"
+#include "aegis/adapter/adapter.hpp"
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -71,6 +72,40 @@ int main() {
         CHECK(app.peers[1].public_key[31] == 0x02);
         CHECK(app.peers[1].allowed_ips.size() == 1);
         CHECK(app.peers[1].allowed_ips[0] == "10.20.2.0/24");
+    }
+
+    // ---- 1b. IPv6 interface CIDRs preserve the host address ---------------
+    {
+        Config cfg;
+        CHECK(cfg.parse_yaml(
+            "interface:\n"
+            "  address: 2001:db8:abcd::7/64\n"
+            "  listen_port: 51820\n"));
+        const auto address = IPInterfaceAddress::parse(
+            cfg.get().iface.address);
+        CHECK(address.has_value());
+        CHECK(address && address->address.family == IPAddressFamily::IPv6);
+        CHECK(address && address->prefix_length == 64);
+        CHECK(address && address->address.bytes[0] == 0x20 &&
+              address->address.bytes[1] == 0x01 &&
+              address->address.bytes[15] == 0x07);
+        CHECK(IPPrefix::parse("2001:db8:abcd::/64").has_value());
+        CHECK(!IPInterfaceAddress::parse("2001:db8::1/129").has_value());
+        MIB_UNICASTIPADDRESS_ROW ipv6_row{};
+        CHECK(address && Adapter::build_unicast_address_row(
+            *address, 17, ipv6_row));
+        CHECK(ipv6_row.Address.si_family == AF_INET6);
+        CHECK(ipv6_row.OnLinkPrefixLength == 64);
+        CHECK(ipv6_row.InterfaceIndex == 17);
+        CHECK(std::memcmp(&ipv6_row.Address.Ipv6.sin6_addr,
+                          address->address.bytes.data(), 16) == 0);
+        const auto ipv4 = IPInterfaceAddress::parse("192.0.2.7/24");
+        MIB_UNICASTIPADDRESS_ROW ipv4_row{};
+        CHECK(ipv4 && Adapter::build_unicast_address_row(
+            *ipv4, 18, ipv4_row));
+        CHECK(ipv4_row.Address.si_family == AF_INET);
+        CHECK(ipv4_row.OnLinkPrefixLength == 24);
+        CHECK(ipv4_row.Address.Ipv4.sin_addr.s_addr == htonl(0xc0000207));
     }
 
     // ---- 2. Inline first key on a list item ---------------------------------

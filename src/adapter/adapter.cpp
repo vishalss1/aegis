@@ -59,8 +59,23 @@ bool Adapter::load_wintun_dll() {
 
 bool Adapter::create(uint32_t ip, uint8_t prefix, const wchar_t* adapter_name,
                      uint32_t mtu) {
-    if (mtu < MINIMUM_IPV4_MTU || mtu > MAXIMUM_IPV4_MTU) {
-        fprintf(stderr, "[adapter] invalid IPv4 MTU %u\n", mtu);
+    return create(IPInterfaceAddress{
+                      IPAddress::from_ipv4(ntohl(ip)), prefix},
+                  adapter_name, mtu);
+}
+
+bool Adapter::create(const IPInterfaceAddress& address,
+                     const wchar_t* adapter_name,
+                     uint32_t mtu) {
+    if (!address.valid()) {
+        fprintf(stderr, "[adapter] invalid overlay prefix\n");
+        return false;
+    }
+    const bool ipv6 = address.address.family == IPAddressFamily::IPv6;
+    const uint32_t minimum_mtu = ipv6 ? 1280 : MINIMUM_IPV4_MTU;
+    if (mtu < minimum_mtu || mtu > MAXIMUM_IPV4_MTU) {
+        fprintf(stderr, "[adapter] invalid IPv%u MTU %u (minimum %u)\n",
+                ipv6 ? 6 : 4, mtu, minimum_mtu);
         return false;
     }
     fprintf(stderr, "[adapter] create: loading dll\n");
@@ -79,28 +94,24 @@ bool Adapter::create(uint32_t ip, uint8_t prefix, const wchar_t* adapter_name,
     }
     fprintf(stderr, "[adapter] adapter created\n");
 
-    NET_LUID luid;
+    NET_LUID luid{};
     WintunGetAdapterLUID_(adapter_, &luid);
-
-    if (ConvertInterfaceLuidToIndex(&luid, &if_index_) != NO_ERROR) {
-        fprintf(stderr, "[adapter] ConvertInterfaceLuidToIndex failed (error %lu)\n",
-                GetLastError());
-        WintunCloseAdapter_(adapter_);
-        adapter_ = nullptr;
-        return false;
-    }
 
     // Wait for the interface to be ready for IP config
     for (int i = 0; i < 50; i++) {
         ULONG bufLen = 0;
-        GetAdaptersAddresses(AF_INET, 0, nullptr, nullptr, &bufLen);
+        GetAdaptersAddresses(AF_UNSPEC, 0, nullptr, nullptr, &bufLen);
         std::vector<uint8_t> buf(bufLen);
         PIP_ADAPTER_ADDRESSES addrs = reinterpret_cast<PIP_ADAPTER_ADDRESSES>(buf.data());
-        ULONG ret = GetAdaptersAddresses(AF_INET, 0, nullptr, addrs, &bufLen);
+        ULONG ret = GetAdaptersAddresses(AF_UNSPEC, 0, nullptr, addrs, &bufLen);
         if (ret == NO_ERROR) {
             for (PIP_ADAPTER_ADDRESSES a = addrs; a; a = a->Next) {
-                if (a->IfIndex == if_index_)
-                    goto interface_ready;
+                if (a->Luid.Value != luid.Value) continue;
+                if (ipv6 && a->Ipv6IfIndex != 0)
+                    if_index_ = a->Ipv6IfIndex;
+                else if (!ipv6 && a->IfIndex != 0)
+                    if_index_ = a->IfIndex;
+                if (if_index_ != 0) goto interface_ready;
             }
         }
         Sleep(100);
@@ -112,11 +123,11 @@ bool Adapter::create(uint32_t ip, uint8_t prefix, const wchar_t* adapter_name,
 
 interface_ready:
     // Configure IP BEFORE starting session (WireGuard example order)
-    if (!configure_ip(ip, prefix)) {
+    if (!configure_ip(address)) {
         close();
         return false;
     }
-    if (!configure_mtu(mtu)) {
+    if (!configure_mtu(mtu, ipv6 ? AF_INET6 : AF_INET)) {
         close();
         return false;
     }
@@ -131,15 +142,8 @@ interface_ready:
         return false;
     }
 
-    {
-        uint32_t ip_net = ntohl(ip);
-        fprintf(stderr,
-                "[adapter] up  if_index=%lu  ip=%u.%u.%u.%u/%u  mtu=%u\n",
-                if_index_,
-                (ip_net >> 24) & 0xFF, (ip_net >> 16) & 0xFF,
-                (ip_net >>  8) & 0xFF,  ip_net        & 0xFF,
-                prefix, mtu_);
-    }
+    fprintf(stderr, "[adapter] up if_index=%lu family=IPv%u prefix=/%u mtu=%u\n",
+            if_index_, ipv6 ? 6 : 4, address.prefix_length, mtu_);
     return true;
 }
 
@@ -160,10 +164,10 @@ void Adapter::close() {
     mtu_ = 0;
 }
 
-bool Adapter::configure_mtu(uint32_t mtu) {
+bool Adapter::configure_mtu(uint32_t mtu, ADDRESS_FAMILY family) {
     MIB_IPINTERFACE_ROW row{};
     InitializeIpInterfaceEntry(&row);
-    row.Family = AF_INET;
+    row.Family = family;
     row.InterfaceIndex = if_index_;
 
     ULONG ret = GetIpInterfaceEntry(&row);
@@ -181,34 +185,50 @@ bool Adapter::configure_mtu(uint32_t mtu) {
         return false;
     }
     mtu_ = mtu;
-    fprintf(stderr, "[adapter] IPv4 MTU %u configured\n", mtu_);
+    fprintf(stderr, "[adapter] IPv%u MTU %u configured\n",
+            family == AF_INET6 ? 6 : 4, mtu_);
     return true;
 }
 
-bool Adapter::configure_ip(uint32_t ip, uint8_t prefix) {
-    MIB_UNICASTIPADDRESS_ROW row = {};
+bool Adapter::build_unicast_address_row(
+    const IPInterfaceAddress& address, NET_IFINDEX interface_index,
+    MIB_UNICASTIPADDRESS_ROW& row) noexcept {
+    if (!address.valid() || interface_index == 0) return false;
+    row = {};
     InitializeUnicastIpAddressEntry(&row);
-    row.Address.Ipv4.sin_family = AF_INET;
-    row.Address.Ipv4.sin_addr.S_un.S_addr = ip;
-    row.OnLinkPrefixLength = prefix;
+    if (address.address.family == IPAddressFamily::IPv4) {
+        row.Address.Ipv4.sin_family = AF_INET;
+        row.Address.Ipv4.sin_addr.S_un.S_addr = htonl(
+            address.address.ipv4_value());
+    } else if (address.address.family == IPAddressFamily::IPv6) {
+        row.Address.Ipv6.sin6_family = AF_INET6;
+        std::memcpy(&row.Address.Ipv6.sin6_addr,
+                    address.address.bytes.data(), 16);
+    } else {
+        return false;
+    }
+    row.OnLinkPrefixLength = address.prefix_length;
     row.DadState = IpDadStatePreferred;
-    row.InterfaceIndex = if_index_;
+    row.InterfaceIndex = interface_index;
+    return true;
+}
+
+bool Adapter::configure_ip(const IPInterfaceAddress& address) {
+    MIB_UNICASTIPADDRESS_ROW row{};
+    if (!build_unicast_address_row(address, if_index_, row))
+        return false;
 
     ULONG ret = CreateUnicastIpAddressEntry(&row);
     if (ret == NO_ERROR) {
-        uint32_t ip_net = ntohl(ip);
-        fprintf(stderr, "[adapter] ip %u.%u.%u.%u/%u configured\n",
-                (ip_net >> 24) & 0xFF, (ip_net >> 16) & 0xFF,
-                (ip_net >>  8) & 0xFF,  ip_net        & 0xFF,
-                prefix);
+        fprintf(stderr, "[adapter] IPv%u prefix /%u configured\n",
+                address.address.family == IPAddressFamily::IPv6 ? 6 : 4,
+                address.prefix_length);
         return true;
     }
     if (ret == ERROR_OBJECT_ALREADY_EXISTS) {
-        uint32_t ip_net = ntohl(ip);
-        fprintf(stderr, "[adapter] ip %u.%u.%u.%u/%u already configured\n",
-                (ip_net >> 24) & 0xFF, (ip_net >> 16) & 0xFF,
-                (ip_net >>  8) & 0xFF,  ip_net        & 0xFF,
-                prefix);
+        fprintf(stderr, "[adapter] IPv%u prefix /%u already configured\n",
+                address.address.family == IPAddressFamily::IPv6 ? 6 : 4,
+                address.prefix_length);
         return true;
     }
     fprintf(stderr, "[adapter] CreateUnicastIpAddressEntry failed (error %lu)\n", ret);

@@ -148,7 +148,8 @@ bool Config::parse_yaml(const std::string& content) {
                 return false;
             }
             if (key == "address") {
-                if (value.empty()) return false;
+                if (!IPInterfaceAddress::parse(value).has_value())
+                    return false;
                 cfg.iface.address = value;
                 continue;
             }

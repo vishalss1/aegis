@@ -16,6 +16,7 @@
 #include <iphlpapi.h>
 #include <netioapi.h>
 #include <wintun.h>
+#include "aegis/net/ip_address.hpp"
 
 class Adapter {
 public:
@@ -29,6 +30,9 @@ public:
                 uint8_t prefix = 24,
                 const wchar_t* adapter_name = L"Aegis Tunnel",
                 uint32_t mtu = 1500);
+    bool create(const IPInterfaceAddress& address,
+                const wchar_t* adapter_name = L"Aegis Tunnel",
+                uint32_t mtu = 1500);
     void close();
 
     bool read_packet(std::vector<uint8_t>& out, DWORD timeout_ms = 5000);
@@ -38,12 +42,18 @@ public:
     uint32_t mtu() const { return mtu_; }
     bool is_open() const { return adapter_ != nullptr; }
 
+    // Builds the Windows address row without mutating system state; exercised
+    // by adapter-address tests for both address families.
+    static bool build_unicast_address_row(
+        const IPInterfaceAddress& address, NET_IFINDEX interface_index,
+        MIB_UNICASTIPADDRESS_ROW& row) noexcept;
+
     static void print_packet(const uint8_t* data, size_t len);
 
 private:
     bool load_wintun_dll();
-    bool configure_ip(uint32_t ip, uint8_t prefix);
-    bool configure_mtu(uint32_t mtu);
+    bool configure_ip(const IPInterfaceAddress& address);
+    bool configure_mtu(uint32_t mtu, ADDRESS_FAMILY family);
 
     HMODULE wintun_dll_ = nullptr;
 

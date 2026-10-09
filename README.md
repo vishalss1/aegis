@@ -191,6 +191,7 @@ Signed membership revocation notices can be stored and propagated over encrypted
 | **Multi-hop Onion Routing** | Each hop decrypts one layer and learns the next hop. Relays also receive the source NodeID, and unpadded packet size and timing remain visible. |
 | **Bounded Route Candidates and Circuit Fallback** | Each prefix retains up to eight distinct destination/next-hop candidates instead of overwriting alternatives. Direct and learned relay routes receive bounded 30-second end-to-end probes with authenticated responses and RTT observations. A timeout suppresses only that route, falling back to another viable route (including a bounded onion circuit) and resumes probing after a 30-second hold-down; only a later success restores the route. Relay paths remain capped by `max_relay_depth` and forwarding quotas. |
 | **Typed IPv4/IPv6 Routing Prefixes** | Routing uses family-tagged addresses and 32-/128-bit longest-prefix matching. IPv6 prefixes propagate in peer-table v4 records; adapter IPv6 address configuration and IPv6 packet injection remain follow-up work. |
+| **Wintun IPv6 Address Configuration** | IPv4 or IPv6 overlay host addresses can be configured with their CIDR prefix. Wintun's IPv6 interface MTU is clamped to at least 1280; the packet tunnel still accepts IPv4 only, so this does not yet provide end-to-end IPv6 traffic. |
 | **Peer Table Gossip** | Full mesh convergence without a coordinator. Version-4 prefix records carry family, origin sequence, bounded lease, and metric metadata; receivers bind the advertiser to the authenticated adjacent sender and reject older learned sequences. Version-3 IPv4 records remain readable. Changes fan out as bounded, coalesced per-recipient deltas with periodic full resynchronization. |
 | **Identity-Hiding Gossip** | Peer tables carry NodeID + public key + IP prefix routes. Physical endpoints are never transmitted in gossip — non-adjacent nodes cannot learn each other's real IP. |
 | **NetworkID Mesh Segmentation** | NetworkID mismatches are rejected before session creation. This separates accidental cross-mesh traffic but is not static peer authentication. |
@@ -454,7 +455,7 @@ Aegis uses a strict line-based YAML subset. Unknown top-level sections or unknow
 
 ```yaml
 interface:
-  # Overlay IPv4 address and CIDR prefix length for this node's virtual adapter
+  # Overlay IPv4 or IPv6 host address and CIDR prefix for this node's adapter
   address: 10.10.0.1/24
   # Physical UDP port — Winsock binds here for all overlay traffic
   listen_port: 51820
@@ -490,13 +491,16 @@ peer:
 
 **Validation rules:**
 - `interface.address` and `interface.listen_port` are required; missing either fails parsing.
+- `interface.address` accepts typed IPv4 or IPv6 CIDRs and preserves the host
+  address when configuring Wintun. IPv6 packet forwarding is not implemented yet.
 - `identity.network_id` must be exactly 64 hex characters if present.
 - Each `peer` entry must have both `endpoint` and `public_key`; missing either fails parsing.
 - `public_key` must be exactly 32 bytes (64 hex characters).
 - `listen_port` must be in range 1–65535.
 - `underlay_mtu` must leave at least a 576-byte overlay MTU after framing.
 - `max_relay_depth` must be in range 1–8; its worst-case overhead determines
-  the Wintun IPv4 MTU.
+  the Wintun IPv4 MTU. IPv6 Wintun addresses require an interface MTU of at
+  least 1280 bytes.
 - `padding_bucket_size` must be 32, 64, 128, or 256; all nodes should use the
   same value to apply a consistent relay-size policy.
 

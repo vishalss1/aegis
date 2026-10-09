@@ -547,7 +547,7 @@ int run_gossip_test() {
 
     // Relay routes: A -> 10.40.0.0/24 next-hop B dest D via [B, C, D];
     // D -> 10.10.0.0/24 next-hop C dest A via [C, B, A].
-    auto check_relay_route = [](const RoutingEngine& re, uint32_t prefix, uint8_t plen,
+    auto check_relay_route = [](const RoutingEngine& re, IPAddress prefix, uint8_t plen,
                                 const NodeId& next_hop, const NodeId& dest,
                                 const std::vector<NodeId>& path) {
         for (const auto& r : re.routes())
@@ -754,7 +754,7 @@ int run_segmentation_test() {
     }
 
     // No route toward net2's prefix may exist on net1 nodes.
-    auto has_route = [](const RoutingEngine& re, uint32_t prefix, uint8_t plen) {
+    auto has_route = [](const RoutingEngine& re, IPAddress prefix, uint8_t plen) {
         for (const auto& r : re.routes())
             if (r.prefix == prefix && r.prefix_length == plen)
                 return true;
@@ -855,7 +855,7 @@ int run_lifecycle_test() {
         const auto p = t.peers().get_peer(peer);
         return p ? p->state : PeerState::Unknown;
     };
-    auto has_prefix_route = [](const RoutingEngine& re, uint32_t prefix, uint8_t plen) {
+    auto has_prefix_route = [](const RoutingEngine& re, IPAddress prefix, uint8_t plen) {
         for (const auto& r : re.routes())
             if (r.prefix == prefix && r.prefix_length == plen)
                 return true;

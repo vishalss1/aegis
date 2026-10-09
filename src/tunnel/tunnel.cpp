@@ -55,6 +55,17 @@ Tunnel::Tunnel(ProtocolClock& clock, RandomSource& random)
 Tunnel::~Tunnel() { stop(); }
 
 bool Tunnel::start(const TunnelConfig& config, const std::string& adapter_name) {
+    const IPInterfaceAddress overlay_address = config.local_overlay_address
+        ? *config.local_overlay_address
+        : IPInterfaceAddress{
+              IPAddress::from_ipv4(ntohl(config.local_ip)),
+              config.local_prefix};
+    if (!overlay_address.valid()) {
+        aegis_log("[tunnel] invalid overlay address/prefix\n");
+        return false;
+    }
+    const bool ipv6_overlay =
+        overlay_address.address.family == IPAddressFamily::IPv6;
     const auto overlay_mtu = safe_overlay_mtu(
         config.underlay_mtu, config.max_relay_depth,
         config.padding_bucket_size);
@@ -123,9 +134,14 @@ bool Tunnel::start(const TunnelConfig& config, const std::string& adapter_name) 
     size_t converted = 0;
     mbstowcs_s(&converted, wname, adapter_name.c_str(), _TRUNCATE);
 
+    // Windows requires an IPv6 interface MTU of at least 1280. The tunnel's
+    // own overlay_mtu_ remains the stricter route-safe limit used for packet
+    // admission until the IPv6 packet data path is added.
     if (!adapter_.create(
-            config.local_ip, config.local_prefix, wname,
-            static_cast<uint32_t>(*overlay_mtu))) {
+            overlay_address, wname,
+            static_cast<uint32_t>(ipv6_overlay
+                ? (std::max)(*overlay_mtu, size_t{1280})
+                : *overlay_mtu))) {
         aegis_log( "[tunnel] adapter creation failed\n");
         return false;
     }
@@ -187,7 +203,8 @@ bool Tunnel::start(const TunnelConfig& config, const std::string& adapter_name) 
     if (stun_public_endpoint_) {
         announced = *stun_public_endpoint_;
     } else {
-        announced.ip = config.local_ip;
+        if (overlay_address.address.family == IPAddressFamily::IPv4)
+            announced.ip = htonl(overlay_address.address.ipv4_value());
         announced.port = htons(config.listen_port);
     }
     if (!discovery_.start(identity_, announced)) {
@@ -1903,14 +1920,21 @@ void Tunnel::send_endpoint_candidate_update(
 
 std::vector<AdvertisedPeer> Tunnel::build_advertised_peers() const {
     std::vector<AdvertisedPeer> out;
+    const IPInterfaceAddress local_address = config_.local_overlay_address
+        ? *config_.local_overlay_address
+        : IPInterfaceAddress{
+              IPAddress::from_ipv4(ntohl(config_.local_ip)),
+              config_.local_prefix};
 
     // Our own entry: we are always directly reachable by anyone who can reach
     // us, and only our configured prefix is advertised (never an endpoint).
     AdvertisedPeer self;
     self.node_id = identity_.node_id;
     self.public_key = identity_.keypair.public_key;
+    const IPPrefix local_network(
+        local_address.address, local_address.prefix_length);
     self.prefixes.emplace_back(
-        config_.local_ip, config_.local_prefix, 1,
+        local_network.address, local_address.prefix_length, 1,
         static_cast<uint32_t>(ROUTE_DEFAULT_LEASE.count()), 0);
     out.push_back(std::move(self));
 

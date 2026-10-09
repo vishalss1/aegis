@@ -31,11 +31,10 @@
 #include <memory>
 #include <optional>
 
-// One routable prefix this peer is responsible for.
-// `prefix` uses the same representation as IPPacket::dest_ip (big-endian
-// value, e.g. 10.20.0.0/24 -> 0x0A140000).
+// One typed routable prefix this peer is responsible for. `prefix` stores
+// network-order bytes and `prefix_length` is bounded by the address family.
 struct AllowedIP {
-    uint32_t prefix;
+    IPAddress prefix;
     uint8_t  prefix_length;
 };
 
@@ -53,6 +52,9 @@ struct TunnelPeer {
 struct TunnelConfig {
     std::optional<Identity> identity;   // nullopt -> generate a fresh one
     std::string network_name;           // Human-readable network name
+    // Typed overlay address used by YAML/interactive configuration. The
+    // legacy fields below remain for the IPv4-only direct CLI/test path.
+    std::optional<IPInterfaceAddress> local_overlay_address;
     uint32_t local_ip;                  // network byte order (adapter convention)
     uint8_t  local_prefix;              // e.g. 24
     uint16_t listen_port;               // host byte order

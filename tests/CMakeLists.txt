@@ -142,9 +142,10 @@ if(AEGIS_ENABLE_LIVE_DISCOVERY_TEST)
     )
 endif()
 
-add_executable(test_config test_config.cpp ../src/config/config.cpp)
+add_executable(test_config test_config.cpp ../src/config/config.cpp
+    ../src/adapter/adapter.cpp ../src/packet/packet.cpp)
 target_include_directories(test_config PRIVATE ../include)
-target_link_libraries(test_config OpenSSL::Crypto)
+target_link_libraries(test_config OpenSSL::Crypto wintun ws2_32 iphlpapi)
 add_test(NAME test_config COMMAND test_config)
 
 add_executable(test_invite test_invite.cpp ../src/invite/invite.cpp ../src/identity/identity.cpp ../src/crypto/x25519.cpp)
